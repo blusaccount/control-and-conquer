@@ -8,7 +8,7 @@ import { GameSession } from "./GameSession.js";
 
 const rootDir = fileURLToPath(new URL("../../", import.meta.url));
 const publicDir = join(rootDir, "public");
-const assetDir = join(rootDir, "dist", "Client");
+const assetDir = join(rootDir, "dist");
 const port = Number(process.env.PORT ?? 3000);
 const game = new GameSession();
 
