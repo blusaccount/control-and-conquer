@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { join, dirname, relative, posix } from "node:path";
+import { join, dirname, relative, posix, sep } from "node:path";
 
 /**
  * Verify that every ES module import specifier in the compiled client entry
@@ -44,9 +44,10 @@ test("compiled client entry point has no out-of-root import specifiers", async (
     // Resolve the specifier relative to the entry point directory.
     const resolved = join(dirname(entryPath), spec);
 
-    // Convert to a path relative to distRoot using posix separators so the
-    // assertion message is consistent on all platforms.
-    const rel = posix.normalize(relative(distRoot, resolved));
+    // Convert to a posix-style path relative to distRoot for a consistent
+    // assertion message and correct ".." detection on all platforms.
+    const relParts = relative(distRoot, resolved).split(sep);
+    const rel = posix.normalize(relParts.join("/"));
 
     assert.ok(
       !rel.startsWith(".."),
