@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Control & Conquer MVP</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, system-ui, sans-serif;
+      }
+
+      body {
+        margin: 0;
+        background: #101318;
+        color: #f3f4f6;
+      }
+
+      main {
+        display: grid;
+        grid-template-columns: 320px 1fr;
+        min-height: 100vh;
+      }
+
+      aside {
+        padding: 16px;
+        border-right: 1px solid #262b36;
+        background: #151922;
+      }
+
+      section {
+        margin-bottom: 16px;
+      }
+
+      h1,
+      h2,
+      p {
+        margin: 0 0 8px;
+      }
+
+      label,
+      button,
+      input,
+      select {
+        display: block;
+        width: 100%;
+        margin: 6px 0;
+      }
+
+      button {
+        padding: 10px;
+        border: 0;
+        border-radius: 8px;
+        background: #2d69ff;
+        color: white;
+        cursor: pointer;
+      }
+
+      button:disabled {
+        background: #4b5563;
+        cursor: not-allowed;
+      }
+
+      canvas {
+        display: block;
+        max-width: 100%;
+        margin: 16px auto;
+        background: #0b1220;
+        border: 1px solid #263041;
+        border-radius: 12px;
+      }
+
+      .layout {
+        padding: 16px;
+      }
+
+      .stats,
+      .events,
+      .battle-log {
+        font-size: 14px;
+        line-height: 1.4;
+        color: #d1d5db;
+      }
+
+      ul {
+        padding-left: 18px;
+        margin: 8px 0 0;
+      }
+
+      .hint {
+        color: #9ca3af;
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <aside>
+        <section>
+          <h1>Control &amp; Conquer</h1>
+          <p class="hint">Authoritative multiplayer MVP with 5 provinces.</p>
+        </section>
+
+        <section>
+          <h2>Commander</h2>
+          <label>
+            Active player
+            <select id="playerSelect"></select>
+          </label>
+          <div id="playerStats" class="stats"></div>
+        </section>
+
+        <section>
+          <h2>Province</h2>
+          <div id="provinceStats" class="stats">Select a province on the map.</div>
+        </section>
+
+        <section>
+          <h2>Deploy</h2>
+          <label>
+            Unit type
+            <select id="purchaseUnitType">
+              <option value="infantry">Infantry</option>
+              <option value="tank">Tank</option>
+            </select>
+          </label>
+          <label>
+            Count
+            <input id="purchaseCount" type="number" min="1" value="1" />
+          </label>
+          <button id="purchaseButton">Buy in selected province</button>
+        </section>
+
+        <section>
+          <h2>Orders</h2>
+          <label>
+            Target province
+            <select id="targetProvince"></select>
+          </label>
+          <label>
+            Unit type
+            <select id="moveUnitType">
+              <option value="infantry">Infantry</option>
+              <option value="tank">Tank</option>
+            </select>
+          </label>
+          <label>
+            Count
+            <input id="moveCount" type="number" min="1" value="1" />
+          </label>
+          <button id="moveButton">Move or attack</button>
+          <button id="mineButton">Place mine</button>
+          <p class="hint">GLA can tunnel between any two provinces it owns.</p>
+        </section>
+
+        <section>
+          <h2>Recent events</h2>
+          <div id="events" class="events"></div>
+        </section>
+      </aside>
+
+      <div class="layout">
+        <canvas id="mapCanvas" width="760" height="420"></canvas>
+        <canvas id="battleCanvas" width="760" height="180"></canvas>
+        <div id="battleLog" class="battle-log"></div>
+      </div>
+    </main>
+    <script type="module" src="/assets/main.js"></script>
+  </body>
+</html>
