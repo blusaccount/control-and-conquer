@@ -151,17 +151,18 @@ const renderSidebar = (): void => {
   }
 
   const province = currentProvince();
+  const currentState = state;
   provinceStats.innerHTML = province
     ? [
         `<strong>${province.name}</strong>`,
-        `Owner: ${state.players[province.ownerId].name}`,
+        `Owner: ${currentState.players[province.ownerId].name}`,
         `Units: ${province.units.infantry} infantry / ${province.units.tank} tank`,
         `Mine: ${province.hasMine ? "Armed" : "None"}`,
-        `Links: ${province.neighbors.map((id) => state.provinces[id].name).join(", ")}`,
+        `Links: ${province.neighbors.map((id) => currentState.provinces[id].name).join(", ")}`,
       ].join("<br />")
     : "Select a province on the map.";
 
-  eventsPanel.innerHTML = `<ul>${state.recentEvents.map((event) => `<li>${event}</li>`).join("")}</ul>`;
+  eventsPanel.innerHTML = `<ul>${currentState.recentEvents.map((event) => `<li>${event}</li>`).join("")}</ul>`;
 }
 
 const provinceAt = (x: number, y: number): Province | null => {
