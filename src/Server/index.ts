@@ -101,7 +101,7 @@ const runSimulationLoop = (): void => {
   const loopStart = performance.now();
   const driftMs = loopStart - nextTickAt;
 
-  if (loopStart >= nextTickAt && driftMs > DRIFT_WARN_MS) {
+  if (driftMs > DRIFT_WARN_MS) {
     console.warn(
       `Simulation drift detected (${driftMs.toFixed(2)}ms behind schedule). Pending inputs: ${game.getPendingCommandCount()}.`,
     );
