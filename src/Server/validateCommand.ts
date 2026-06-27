@@ -1,12 +1,18 @@
 import { ClientCommand, UnitType } from "../Core/types.js";
 
-const validUnitTypes = new Set<string>(Object.values(UnitType));
+const validUnitTypes: readonly string[] = Object.values(UnitType);
 
 const isNonEmptyString = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0;
 
 const isPositiveInteger = (value: unknown): value is number =>
   typeof value === "number" && Number.isInteger(value) && value > 0;
+
+const isValidUnitType = (value: unknown): boolean =>
+  isNonEmptyString(value) && validUnitTypes.includes(value);
+
+const accept = (cmd: Record<string, unknown>): ClientCommand =>
+  cmd as unknown as ClientCommand;
 
 /**
  * Validates the shape of a raw parsed JSON value and narrows it to
@@ -28,13 +34,13 @@ export const validateCommand = (raw: unknown): ClientCommand => {
     if (!isNonEmptyString(cmd.provinceId)) {
       throw new Error("purchase: provinceId must be a non-empty string.");
     }
-    if (!isNonEmptyString(cmd.unitType) || !validUnitTypes.has(cmd.unitType)) {
+    if (!isValidUnitType(cmd.unitType)) {
       throw new Error("purchase: unitType must be 'infantry' or 'tank'.");
     }
     if (!isPositiveInteger(cmd.count)) {
       throw new Error("purchase: count must be a positive integer.");
     }
-    return cmd as unknown as ClientCommand;
+    return accept(cmd);
   }
 
   if (cmd.type === "move") {
@@ -47,13 +53,13 @@ export const validateCommand = (raw: unknown): ClientCommand => {
     if (!isNonEmptyString(cmd.toProvinceId)) {
       throw new Error("move: toProvinceId must be a non-empty string.");
     }
-    if (!isNonEmptyString(cmd.unitType) || !validUnitTypes.has(cmd.unitType)) {
+    if (!isValidUnitType(cmd.unitType)) {
       throw new Error("move: unitType must be 'infantry' or 'tank'.");
     }
     if (!isPositiveInteger(cmd.count)) {
       throw new Error("move: count must be a positive integer.");
     }
-    return cmd as unknown as ClientCommand;
+    return accept(cmd);
   }
 
   if (cmd.type === "placeMine") {
@@ -63,8 +69,9 @@ export const validateCommand = (raw: unknown): ClientCommand => {
     if (!isNonEmptyString(cmd.provinceId)) {
       throw new Error("placeMine: provinceId must be a non-empty string.");
     }
-    return cmd as unknown as ClientCommand;
+    return accept(cmd);
   }
 
   throw new Error(`Unknown command type: ${String(cmd.type)}.`);
 };
+
