@@ -32,16 +32,12 @@ export class GameSession {
     this.pendingCommands.push(command);
   }
 
-  public handleCommand(command: ClientCommand): void {
-    this.queueCommand(command);
-  }
-
   public getPendingCommandCount(): number {
     return this.pendingCommands.length;
   }
 
   private processQueuedCommands(): void {
-    const queuedCommands = this.pendingCommands.splice(0, this.pendingCommands.length);
+    const queuedCommands = this.pendingCommands.splice(0);
 
     for (const queuedCommand of queuedCommands) {
       try {
