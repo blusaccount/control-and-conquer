@@ -3,8 +3,8 @@ import { readFile, stat } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { ClientCommand } from "../Core/types.js";
 import { GameSession } from "./GameSession.js";
+import { validateCommand } from "./validateCommand.js";
 
 const rootDir = fileURLToPath(new URL("../../", import.meta.url));
 const publicDir = join(rootDir, "public");
@@ -71,7 +71,8 @@ wss.on("connection", (socket) => {
 
   socket.on("message", (data) => {
     try {
-      const command = JSON.parse(String(data)) as ClientCommand;
+      const parsed: unknown = JSON.parse(String(data));
+      const command = validateCommand(parsed);
       game.handleCommand(command);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown command error.";
