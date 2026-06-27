@@ -4,6 +4,8 @@ import { GameSession } from "../src/Server/GameSession.js";
 import { UnitType } from "../src/Core/types.js";
 
 test("queued inputs are processed on tick and yield deterministic snapshots", () => {
+  const expectedInitialCredits = 220;
+
   const runScenario = () => {
     const session = new GameSession();
 
@@ -16,7 +18,7 @@ test("queued inputs are processed on tick and yield deterministic snapshots", ()
     });
 
     const beforeTick = session.getSnapshot();
-    assert.equal(beforeTick.players.usa.credits, 220);
+    assert.equal(beforeTick.players.usa.credits, expectedInitialCredits);
     assert.equal(beforeTick.provinces.alpha.units.infantry, 3);
 
     session.tick();

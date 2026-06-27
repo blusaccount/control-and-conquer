@@ -99,10 +99,11 @@ let nextTickAt = performance.now() + TICK_INTERVAL_MS;
 
 const runSimulationLoop = (): void => {
   const loopStart = performance.now();
+  const driftMs = loopStart - nextTickAt;
 
-  if (loopStart - nextTickAt > DRIFT_WARN_MS) {
+  if (loopStart >= nextTickAt && driftMs > DRIFT_WARN_MS) {
     console.warn(
-      `Simulation drift detected (${(loopStart - nextTickAt).toFixed(2)}ms behind schedule). Pending inputs: ${game.getPendingCommandCount()}.`,
+      `Simulation drift detected (${driftMs.toFixed(2)}ms behind schedule). Pending inputs: ${game.getPendingCommandCount()}.`,
     );
   }
 

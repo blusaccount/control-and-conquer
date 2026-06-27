@@ -37,7 +37,7 @@ export class GameSession {
   }
 
   private processQueuedCommands(): void {
-    const queuedCommands = this.pendingCommands.splice(0);
+    const queuedCommands = this.pendingCommands.splice(0, this.pendingCommands.length);
 
     for (const queuedCommand of queuedCommands) {
       try {
