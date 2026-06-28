@@ -1,5 +1,7 @@
 import { GameSession } from "./GameSession.js";
-import { AttackOrder, GameStateSnapshot, ServerMessage } from "../Core/types.js";
+import { RasterBotController } from "./RasterBotController.js";
+import { RasterGameSession, type RasterMessageHandler, type RasterGameSessionOptions } from "./RasterGameSession.js";
+import { AttackOrder, GameStateSnapshot, RasterExpandIntent, ServerMessage } from "../Core/types.js";
 
 type MessageHandler = (message: ServerMessage) => void;
 
@@ -100,6 +102,9 @@ export class MatchRegistry {
     for (const session of this.activeMatches.values()) {
       session.tick();
     }
+    for (const session of this.activeRasterMatches.values()) {
+      session.tick();
+    }
   }
 
   public getPendingAttackCount(): number {
@@ -113,6 +118,63 @@ export class MatchRegistry {
   private removeMatchIfEmpty(matchId: string, session: GameSession): void {
     if (session.getSubscriberCount() === 0) {
       this.activeMatches.delete(matchId);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Raster mode (PR #2): parallel set of helpers that drive RasterGameSession
+  // instances. The polygon-mode plumbing above is untouched and remains the
+  // default. Raster sessions live in their own map and tick separately so
+  // tickAll iterates BOTH families on each scheduler step.
+  // ---------------------------------------------------------------------
+
+  private readonly activeRasterMatches = new Map<string, RasterGameSession>();
+  private readonly clientToRasterSession = new Map<string, RasterGameSession>();
+
+  /** Start a SOLO raster match immediately (human vs server-side raster bot). */
+  public joinRasterSolo(
+    clientId: string,
+    send: RasterMessageHandler,
+    options: RasterGameSessionOptions = {},
+  ): () => void {
+    this.matchSequence += 1;
+    const matchId = `match-${this.matchSequence}-raster-solo`;
+    const session = new RasterGameSession(options);
+    this.activeRasterMatches.set(matchId, session);
+
+    const unsubHuman = session.subscribe(clientId, send);
+    this.clientToRasterSession.set(clientId, session);
+
+    const bot = new RasterBotController();
+    const unsubBot = bot.attach(session);
+
+    return () => {
+      unsubHuman();
+      unsubBot();
+      this.clientToRasterSession.delete(clientId);
+      this.removeRasterMatchIfEmpty(matchId, session);
+    };
+  }
+
+  public queueRasterExpand(clientId: string, intent: RasterExpandIntent): void {
+    this.clientToRasterSession.get(clientId)?.queueExpand(clientId, intent);
+  }
+
+  public getActiveRasterMatchCount(): number {
+    return this.activeRasterMatches.size;
+  }
+
+  public getPendingRasterExpandCount(): number {
+    let total = 0;
+    for (const session of this.activeRasterMatches.values()) {
+      total += session.getPendingExpandCount();
+    }
+    return total;
+  }
+
+  private removeRasterMatchIfEmpty(matchId: string, session: RasterGameSession): void {
+    if (session.getSubscriberCount() === 0) {
+      this.activeRasterMatches.delete(matchId);
     }
   }
 }
