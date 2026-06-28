@@ -21,6 +21,26 @@ export interface TeamState {
   color: string;
 }
 
+/**
+ * Authored, data-driven description of a single territory. This is the raw
+ * input format (e.g. from a JSON map file) before centers are computed and the
+ * map is validated into runtime `Territory` objects by the map loader.
+ */
+export interface MapTerritoryDefinition {
+  id: string;
+  name: string;
+  ownerId: TeamId;
+  troops: number;
+  neighbors: string[];
+  polygon: Point[];
+}
+
+/** A complete, authored map: a name plus its territory definitions. */
+export interface MapDefinition {
+  name: string;
+  territories: MapTerritoryDefinition[];
+}
+
 export interface GameStateSnapshot {
   tick: number;
   mapName: string;

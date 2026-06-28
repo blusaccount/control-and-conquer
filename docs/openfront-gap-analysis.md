@@ -33,12 +33,15 @@
 - Keine Lobby-UI, kein Ready-Check, kein Rematch.
 
 ### Map / Territory
-- Hardcoded 8-Polygon-Karte „Conqueror Basin" (`src/Core/mapData.ts`).
+- **Datengetriebenes Kartenformat:** `MapDefinition` (Daten) → `loadMap()` validiert (eindeutige IDs, existierende Nachbarn, **symmetrische Adjazenz**, Polygone ≥3 Punkte, Truppen-Integer, gültige Owner) → runtime `LoadedMap`.
+- **JSON-Loader:** Server lädt Karten aus `maps/<id>.json` (Fallback auf eingebaute Maps), wählbar via `MAP_ID`. Aktive Live-Karte: `frontline-grid` (36 Tiles).
+- **Grid-Generator** (`generateGridMap`) erzeugt große, garantiert valide Karten — Keim für prozedurale Roguelite-Level.
+- Eingebaute Default-Map „Conqueror Basin" (8 Tiles) als datenbasierter Fallback ohne Filesystem-Abhängigkeit.
 - Polygon-basierter Hit-Test im Client.
-- Noch kein datengetriebenes Kartenformat, keine prozedurale Generierung.
 
 ### UI / UX
-- Canvas 2D mit polygon-fill + Truppen-Labels (`src/Client/main.ts`).
+- Canvas 2D mit polygon-fill + Truppen-Labels.
+- **Client modularisiert** in `state` / `geometry` / `dom` / `render` / `net` / `input`; `main.ts` ist nur noch Bootstrap (~9 Zeilen). Module werden als ES-Module über `/assets/` ausgeliefert.
 - **Slider-basierte Attack-UX** (Range 10–90% in 5%-Schritten, Default 50%).
 - **Frontlinien-Overlay** mit Gradient + pulsierendem Border.
 - Victory-Banner über der Karte sobald `winnerTeamId` gesetzt ist.
@@ -48,20 +51,20 @@
 
 ### Build / CI / Observability
 - `npm test`, `npm run build`, `npm run lint`, `npm run dev` (Casing-Bug gefixt).
-- 33 Unit-Tests (Core + Server + Tick-Determinismus + Wachstum + Win-Condition).
+- 58 Unit-Tests (Core + Server + Tick-Determinismus + Wachstum + Win-Condition + Client-Geometrie + Map-Loader/Generator/Repository).
 - Auto-Deploy via Render auf https://control-and-conquer.onrender.com nach Push auf `main`.
-- Noch keine GitHub-Actions-Workflows.
+- **GitHub-Actions-CI** (`.github/workflows/ci.yml`): `lint + build + test` als PR-Gate auf jeden PR und Push nach `main`.
 
 ## 3) Priorisierte Gap-Analyse (offene Punkte)
 
 | Bereich | Status | Priorität | Aufwand | Risiko |
 |---|---|---|---|---|
-| Karte vergrößern + datengetrieben (JSON-Loader, 30+ Tiles) | offen | P1 | M | M |
+| Karte vergrößern + datengetrieben (JSON-Loader, 30+ Tiles) | ✅ erledigt (36 Tiles) | P1 | M | M |
 | N-Player-Support (Teams als Array, Color-Palette) | offen | P1 | M | M |
 | Bot-KI für Solo-Matches | offen | P1 | S | L |
 | Lobby-UI (Waiting-Screen, Rematch-Button) | offen | P1 | S | L |
-| Client-Modul-Splittung (`render`/`input`/`net`) | offen | P1 | S | L |
-| GitHub-Actions-CI (lint+build+test als PR-Gate) | offen | P1 | S | L |
+| Client-Modul-Splittung (`render`/`input`/`net`) | ✅ erledigt | P1 | S | L |
+| GitHub-Actions-CI (lint+build+test als PR-Gate) | ✅ erledigt | P1 | S | L |
 | Reconnect/Resync-Protokoll | offen | P2 | M | M |
 | Delta-Snapshots (relevant ab > ~30 Tiles) | offen | P2 | M | M |
 | Persistenz für Match-Resultate / MMR | offen | P2 | M | M |
@@ -101,7 +104,9 @@
 - Tests dürfen aus `src/Core/` und `src/Server/` importieren.
 
 ## 6) Nächste konkret kleine Schritte
-1. Karte auf JSON-Loader umstellen (50+ Tiles).
-2. Solo-Bot-KI (simpel: greedy „angreife schwächstes Nachbargebiet").
-3. Rematch-Flow (Client-Button → Server-Reset oder neue Session).
-4. GitHub-Actions-Workflow (`.github/workflows/ci.yml`).
+1. ~~Karte auf JSON-Loader umstellen.~~ ✅ erledigt (`maps/frontline-grid.json`, 36 Tiles, `MAP_ID`-wählbar)
+2. N-Player-Support: `TeamId` von `"blue" | "red"` auf Array/Palette umstellen (Voraussetzung für PvE & Fraktionen).
+3. Solo-Bot-KI (simpel: greedy „angreife schwächstes Nachbargebiet").
+4. Rematch-Flow (Client-Button → Server-Reset oder neue Session).
+5. ~~GitHub-Actions-Workflow (`.github/workflows/ci.yml`).~~ ✅ erledigt
+6. ~~Client-Modul-Splittung (`render`/`input`/`net`).~~ ✅ erledigt
