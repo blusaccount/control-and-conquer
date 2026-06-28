@@ -18,10 +18,15 @@ interface PendingAttack {
 const TEAM_ROTATION: TeamId[] = ["blue", "red"];
 
 export class GameSession {
-  private readonly mapState = new MapState();
+  private readonly mapState: MapState;
   private readonly subscribers = new Map<string, Subscriber>();
   private readonly pendingAttacks: PendingAttack[] = [];
   private nextTeamIndex = 0;
+  private matchEndedBroadcast = false;
+
+  public constructor(initialState?: ConstructorParameters<typeof MapState>[0]) {
+    this.mapState = new MapState(initialState);
+  }
 
   public subscribe(clientId: string, send: MessageHandler): () => void {
     const teamId = TEAM_ROTATION[this.nextTeamIndex % TEAM_ROTATION.length];
@@ -76,6 +81,19 @@ export class GameSession {
 
     for (const subscriber of this.subscribers.values()) {
       subscriber.send(snapshotMessage);
+    }
+
+    // Fire SERVER_MATCH_ENDED exactly once, after the final snapshot, so the
+    // client can render the end state before reacting to the end-of-match.
+    if (result.matchJustEnded && !this.matchEndedBroadcast && result.snapshot.winnerTeamId !== null) {
+      this.matchEndedBroadcast = true;
+      const endMessage: ServerMessage = {
+        type: "SERVER_MATCH_ENDED",
+        payload: { winnerTeamId: result.snapshot.winnerTeamId },
+      };
+      for (const subscriber of this.subscribers.values()) {
+        subscriber.send(endMessage);
+      }
     }
   }
 

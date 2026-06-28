@@ -50,7 +50,12 @@
         margin-top: 6px;
       }
 
-      input {
+      input[type="range"] {
+        accent-color: #2563eb;
+      }
+
+      input[type="number"],
+      input:not([type]) {
         padding: 8px;
         border-radius: 6px;
         border: 1px solid #374151;
@@ -94,6 +99,31 @@
         color: #fca5a5;
       }
 
+      .status.victory {
+        color: #fde68a;
+        font-weight: 600;
+      }
+
+      .slider-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 6px;
+      }
+
+      .slider-row input[type="range"] {
+        flex: 1;
+        margin-top: 0;
+      }
+
+      .slider-row output {
+        min-width: 52px;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+        color: #d1d5db;
+        font-size: 13px;
+      }
+
       ul {
         margin: 8px 0 0;
         padding-left: 20px;
@@ -117,8 +147,11 @@
           <h2>Attack</h2>
           <p class="hint">Click your territory, then click an adjacent enemy territory.</p>
           <label>
-            Troops to send
-            <input id="attackTroopsInput" type="number" min="1" value="1" />
+            Troops to send (% of source)
+            <div class="slider-row">
+              <input id="attackPercentInput" type="range" min="10" max="90" step="5" value="50" />
+              <output id="attackPercentOutput">50%</output>
+            </div>
           </label>
           <button id="clearSelectionButton" type="button">Clear selection</button>
           <div id="selectionInfo" class="hint">No source territory selected.</div>

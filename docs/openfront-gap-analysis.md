@@ -1,115 +1,107 @@
 # OpenFront-ähnliche Roadmap: Repository Audit + Gap-Analyse
 
-## 1) Zielbild (Referenz: OpenFront-ähnliches Browser-RTS)
-Ein OpenFront-ähnliches Erlebnis benötigt einen stabilen Gameplay-Loop mit laufenden Matches, echte Multiplayer-Sessions mit Lobby/Matchmaking, skalierbares Karten-/Territory-System, klare Progression/Persistenz, sowie belastbare Build-/CI-/Observability-Pipelines.
+> **Letztes Update:** 2026-06-28 (Bündel „Game Feel #1" gemerged).
+> Dieses Dokument spiegelt den Ist-Zustand auf `main`.
+
+## 1) Zielbild (Referenz: openfront.io)
+- Tile/Territory-Karte, Spieler starten auf einem Teil, expandieren über Nachbarschaft.
+- **Organisches Truppenwachstum** pro Tile pro Tick (keine manuelle Ressourcenverwaltung).
+- **One-Click-Angriff:** Klick eigenes Gebiet → Klick feindliches Nachbargebiet.
+- **Frontlinien-Visualisierung** als animierte Front zwischen zwei Gebieten.
+- **Deterministischer Server**, Client rendert nur.
+- **Echtzeit-Multiplayer** via WebSocket-Snapshots.
+- **Kein Spielereingriff im Kampf** — Kämpfe laufen autonom ab.
 
 ## 2) Aktueller Stand (Ist-Zustand)
 
 ### Gameplay-Loop
-- Deterministischer Core vorhanden (`src/Core/MapState.ts`, `src/Core/BattleEngine.ts`).
-- Tick-basierte Ökonomie (+10 Credits pro Provinz/Tick), Unit-Kauf, Movement/Angriff, Minen-Mechanik vorhanden.
-- 3 Fraktionen mit einfachen asymmetrischen Boni vorhanden (`src/FactionData/factions.ts`).
-- Battle-Timeline mit Visualisierung vorhanden (`src/Client/main.ts`).
+- Deterministischer Server-Tick bei 20 TPS (`src/Server/index.ts`, `simulationConfig.ts`).
+- `MapState.processTick()` führt pro Tick aus: **Attack-Validation → Income → Conflict-Advance → Win-Check** (`src/Core/MapState.ts`).
+- **Organisches Truppenwachstum** vorhanden (`INCOME_PER_TICK = 0.05`, ein voller Trupp pro Tile pro Sekunde, fraktionaler Akkumulator privat im MapState gehalten).
+- Conflict-Engine: Attrition + Progress-Advance/Retreat + automatische Resolution (Capture/Repel).
+- **Win-Condition:** Sobald ein Team alle Territorien hält und keine Conflicts laufen, wird `winnerTeamId` gesetzt und `SERVER_MATCH_ENDED` einmalig gebroadcastet.
 
 ### Networking / Multiplayer
-- Autoritativer Server mit WebSocket-Broadcast an alle verbundenen Clients (`src/Server/index.ts`, `src/Server/GameSession.ts`).
-- Eine globale In-Memory-Session (`new GameSession()`) für alle Spieler/Clients.
-- Keine Session-Isolation, kein Reconnect-State, keine Latenz-/Sequence-Strategie.
+- WebSocket + autoritativer Server (`ws`, `src/Server/index.ts`).
+- **Match-Isolation** via `MatchRegistry` (paart je zwei Clients in eine eigene `GameSession`).
+- Diskriminierte ServerMessage-Union (`SERVER_LOBBY_WAITING`, `SERVER_PLAYER_ASSIGNED`, `SERVER_STATE_SNAPSHOT`, `SERVER_ACTION_REJECTED`, `SERVER_MATCH_ENDED`).
+- Strikte Runtime-Validation eingehender Commands (`src/Server/validateCommand.ts`).
+- Drift-Detection, Slow-Tick-Warnung, Catch-up-Cap im Scheduler.
 
 ### Lobby / Matchmaking
-- Nicht vorhanden (keine Lobby, kein Ready-Check, keine Match-Erstellung, kein Team-/Slot-Management).
+- Implizites Pairing nach Connection-Order; 1v1 fixiert (`TEAM_ROTATION = ["blue", "red"]`).
+- Keine Lobby-UI, kein Ready-Check, kein Rematch.
 
 ### Map / Territory
-- Statische 5-Provinzen-Karte hardcoded in `createInitialState()`.
-- Besitzwechsel über Kämpfe vorhanden.
-- Keine prozeduralen/größeren Karten, keine Fog-of-War-/Sichtlinien-Mechanik, keine Skalierung auf viele Territorien.
+- Hardcoded 8-Polygon-Karte „Conqueror Basin" (`src/Core/mapData.ts`).
+- Polygon-basierter Hit-Test im Client.
+- Noch kein datengetriebenes Kartenformat, keine prozedurale Generierung.
 
 ### UI / UX
-- Funktionales MVP-UI auf Canvas + Sidebar (`public/index.html`, `src/Client/main.ts`).
-- Direkte Kommandos ohne Command-Queue, Hotkeys, Multi-Select, Kontextaktionen.
-- Kaum UX für Multiplayer-Flows (Join, Ready, Reconnect, Match-Ende/Rematch).
+- Canvas 2D mit polygon-fill + Truppen-Labels (`src/Client/main.ts`).
+- **Slider-basierte Attack-UX** (Range 10–90% in 5%-Schritten, Default 50%).
+- **Frontlinien-Overlay** mit Gradient + pulsierendem Border.
+- Victory-Banner über der Karte sobald `winnerTeamId` gesetzt ist.
 
 ### Persistenz / Stats
-- Vollständig In-Memory, kein Storage-Layer.
-- Keine Match-Historie, keine Player-Profile, keine ELO/MMR, keine Seasons/Leaderboards.
+- Komplett In-Memory, kein Storage-Layer.
 
 ### Build / CI / Observability
-- Lokale Skripte vorhanden: `npm run lint`, `npm run build`, `npm test`.
-- Unit-Tests für Core + Asset-Route vorhanden (`tests/*.test.ts`).
-- Keine GitHub Actions/CI-Workflows, kein Deployment-Workflow, keine Runtime-Metriken/Tracing/Logging-Standards.
+- `npm test`, `npm run build`, `npm run lint`, `npm run dev` (Casing-Bug gefixt).
+- 33 Unit-Tests (Core + Server + Tick-Determinismus + Wachstum + Win-Condition).
+- Auto-Deploy via Render auf https://control-and-conquer.onrender.com nach Push auf `main`.
+- Noch keine GitHub-Actions-Workflows.
 
-## 3) Priorisierte Gap-Analyse
+## 3) Priorisierte Gap-Analyse (offene Punkte)
 
-| Bereich | Ist-Stand | Gap | Priorität | Aufwand | Risiko |
-|---|---|---|---|---|---|
-| Multiplayer-Session-Architektur | Eine globale GameSession | Mehrere parallele Matches, Session-Lifecycle, Isolation pro Match | P0 | M | M |
-| Lobby/Matchmaking | Nicht vorhanden | Lobby, Player-Slots, Ready-Flow, Match-Start-Regeln | P0 | M | M |
-| Persistenz-Basis | Kein DB/Storage | Persistente Spieler, Match-Metadaten, Events, Ergebnisse | P0 | M | M |
-| Server-Protokoll | Freies JSON ohne Versioning/Ack | Versioniertes Command/Event-Schema, Validierung, Fehlercodes | P0 | M | M |
-| Reconnect/Resync | Nicht vorhanden | Session-Rejoin, Snapshot-Resync, Heartbeat/Timeout | P0 | M | H |
-| Autorisierungsmodell | Keine echte Identität | Spieleridentität (temporär Token-basiert), Match-Zugriffsrechte | P1 | M | H |
-| Map-System | Hardcoded 5 Provinzen | Datengetriebenes Kartenformat, größere Karten, Balancing-Tools | P1 | M | M |
-| Gameplay-Depth | Nur 2 Unit-Typen, einfache Economy | Zusätzliche Unit-/Ability-Tiers, Upgrades, Win-Conditions | P1 | L | M |
-| UI-Spielerführung | MVP-Panel | Lobby-UI, Matchmaking-Status, Combat/Map-Telemetrie, Command-Feedback | P1 | M | M |
-| Stats/Progression | Nur In-Memory Wins | MMR/ELO, Historie, Leaderboards, Profile | P1 | M | M |
-| Performance/Scale | In-Memory single process | Tick-Profiling, Lasttests, ggf. Raum-/Shard-Modell | P2 | L | H |
-| Observability | Nur Console-Output | Strukturierte Logs, Metriken (Tick-Zeit, WS-Verbindungen), Alerts | P2 | M | M |
-| CI/CD | Keine Workflows | PR-Checks (lint/build/test), Artifact/Deploy-Pipeline | P0 | S | L |
-| Security-Hardening | Basis-Validierung in Core | Rate-Limits, Input-Constraints, Abuse-Protection, Audit-Logging | P1 | M | H |
+| Bereich | Status | Priorität | Aufwand | Risiko |
+|---|---|---|---|---|
+| Karte vergrößern + datengetrieben (JSON-Loader, 30+ Tiles) | offen | P1 | M | M |
+| N-Player-Support (Teams als Array, Color-Palette) | offen | P1 | M | M |
+| Bot-KI für Solo-Matches | offen | P1 | S | L |
+| Lobby-UI (Waiting-Screen, Rematch-Button) | offen | P1 | S | L |
+| Client-Modul-Splittung (`render`/`input`/`net`) | offen | P1 | S | L |
+| GitHub-Actions-CI (lint+build+test als PR-Gate) | offen | P1 | S | L |
+| Reconnect/Resync-Protokoll | offen | P2 | M | M |
+| Delta-Snapshots (relevant ab > ~30 Tiles) | offen | P2 | M | M |
+| Persistenz für Match-Resultate / MMR | offen | P2 | M | M |
+| Strukturierte Logs + Metriken | offen | P2 | M | L |
 
-## 4) Technische Architektur-Skizze (inkl. Datenfluss Client ↔ Server)
+## 4) Architektur (Ist)
 
-### Zielarchitektur (Textskizze)
-- **Client (Browser)**: Rendering + Input + lokale UI-State-Maschine (keine Autorität über Spielzustand).
-- **Gateway/Realtime-Server (Node.js WS)**: Authentifiziert Verbindung, routet Commands in Match-Worker, sendet Events/Snapshots.
-- **Match-Service (authoritative simulation)**: Ein Match = ein isolierter Simulationskontext (Tick-Loop + MapState/BattleEngine).
-- **Persistence-Service**: Speichert Spielerprofil, Match-Resultate, Event-Summaries.
-- **Async-Stats-Pipeline**: Aggregiert Ergebnisse in Leaderboards/MMR.
-- **Observability-Stack**: strukturierte Logs + Metriken + Alerting.
+```
+                 ┌─────────────────────────────────┐
+                 │            Render               │
+                 │  control-and-conquer.onrender   │
+                 └────────────────┬────────────────┘
+                                  │ auto-deploy
+                                  ▼
+┌───────────────┐   WS    ┌────────────────────┐
+│  Browser      │ ◄─────► │  Node.js + ws      │
+│  Canvas 2D    │         │  src/Server/       │
+│  src/Client/  │         │  ┌──────────────┐  │
+└───────────────┘         │  │ MatchRegistry│  │
+                          │  └──────┬───────┘  │
+                          │         │ 1:N      │
+                          │  ┌──────▼───────┐  │
+                          │  │ GameSession  │  │
+                          │  └──────┬───────┘  │
+                          │         │ owns 1   │
+                          │  ┌──────▼───────┐  │
+                          │  │   MapState   │  │
+                          │  │ (Core)       │  │
+                          │  └──────────────┘  │
+                          └────────────────────┘
+```
 
-### Datenfluss
-1. Client verbindet via WS mit Token/Session-ID.
-2. Gateway validiert Identität und ordnet Client einer Lobby oder Match-Session zu.
-3. Client sendet **Command** (z. B. `move`, `purchase`, `placeMine`) mit Sequenznummer.
-4. Match-Service validiert Command gegen autoritativen State.
-5. Match-Service berechnet Tick/Battle deterministisch und erzeugt **Domain Events**.
-6. Gateway pusht inkrementelle Events + periodische Snapshots an alle Match-Teilnehmer.
-7. Client rendert State und bestätigt letzte verarbeitete Sequenz (Ack) für Reconnect/Replay.
-8. Match-Ende: Ergebnis + Telemetrie werden persistiert; Stats-Pipeline aktualisiert MMR/Leaderboard.
+## 5) Layering-Regeln
+- `src/Core/` darf **nicht** auf `src/Server/` zugreifen.
+- Game-Mechanik-Konstanten leben in `src/Core/conflictConfig.ts`.
+- Server-Scheduling lebt in `src/Server/simulationConfig.ts`.
+- Tests dürfen aus `src/Core/` und `src/Server/` importieren.
 
-## 5) Empfohlene Reihenfolge der Umsetzung (konkrete Schritte)
-
-1. **Session-Management einführen**: `GameSessionRegistry` statt globaler Singleton-Session.
-2. **Command/Event-Schema versionieren** (zod/io-ts oder äquivalente Runtime-Validierung) inkl. Fehlercodes.
-3. **Lobby-Domain modellieren**: Lobby erstellen/joinen/verlassen, Ready-Status, Startbedingungen.
-4. **Match-Lifecycle implementieren**: Create → Running → Finished, mit sauberem Cleanup.
-5. **Reconnect/Resync-Protokoll bauen**: Heartbeat, Disconnect-Toleranz, Snapshot-Rejoin.
-6. **Persistenz-Basis anbinden** (zunächst SQLite/Postgres-kompatibles Repository-Pattern) für Spieler + Match-Metadaten.
-7. **Match-Ergebnis-Pipeline ergänzen**: Ergebnisse schreiben, Win/Loss/MMR-Update.
-8. **Map-Daten entkoppeln**: Karten als JSON/Schema laden statt Hardcoding in `MapState`.
-9. **UI um Multiplayer-Flows erweitern**: Lobby-Screen, Matchmaking-Status, Reconnect-Hinweise.
-10. **Core-Gameplay ausbauen**: Win-Conditions, längere Progression, feinere Economy-Tuning-Parameter.
-11. **CI aufsetzen**: GitHub Actions mit lint/build/test als Pflicht-PR-Gates.
-12. **Observability ergänzen**: strukturierte Logs, Tick-Latenzmetrik, WS-Connection-Metriken, Basis-Alerts.
-
-## 6) Unknowns / Annahmen + Validierungsvorschläge
-
-| Unknown / Annahme | Risiko | Validierungsvorschlag |
-|---|---|---|
-| Ziel-Spielmodus ist primär 1v1 vs. FFA/Teams | Falsches Datenmodell für Lobby/Matchmaking | Product-Workshop + Event-Tracking-Prototyp; verbindliche Mode-Matrix definieren |
-| Tickrate/Match-Länge für gewünschtes Spielgefühl | Entweder träge oder chaotisch | Playtest mit 3 Tickraten + Telemetrie (APM, Matchdauer, Abbruchrate) |
-| MMR-System (ELO/TrueSkill) Anforderungen | Unfaire Matchups | Simulationsbasierter Vergleich + A/B in Closed Alpha |
-| Kartenkomplexität für Browser-Performance | FPS/Tick-Drops bei größeren Karten | Lasttest-Matrix (Provinzanzahl × Spielerzahl) + Performance-Budget festlegen |
-| Reconnect-Fenster (z. B. 30–120s) | Frust bei Disconnects oder Exploit-Risiko | Chaos-Tests mit künstlichem Paketverlust/Disconnect |
-| Mindestmaß an Anti-Abuse/Rate-Limit | Spam/DoS/Command-Flood | Load-/Abuse-Tests auf WS-Endpunkte + adaptive Rate-Limits |
-| Persistenzmodell (event-sourcing vs snapshot-basiert) | Hohe spätere Migrationskosten | Architektur-Spike mit 2 vertikalen Slice-Implementierungen |
-| Zielplattform (nur Desktop-Browser vs. Mobile) | UI/UX-Rework später | Analytics/Interviews + responsive Prototyp-Test |
-| Notwendigkeit von Spectator/Replays | Fehlende Community-Features | Nutzerinterviews + Feature-Flag-Experiment |
-| Operatives Ziel (Hobby-Scale vs. produktionsnah) | Over-/Under-Engineering | SLO-Definition (Uptime, max. Match-Join-Zeit, max. Tick-Zeit) |
-
-## 7) Top-5 nächste Schritte (für PR-Summary)
-1. Session-Registry + isolierte Match-Instanzen einführen.
-2. Lobby/Ready/Match-Start als separaten Domain-Flow implementieren.
-3. WS-Protokoll versionieren und Commands strikt validieren.
-4. Persistenz für Player- und Match-Ergebnisse aufbauen.
-5. CI-Pipeline (lint/build/test) und Basis-Observability etablieren.
+## 6) Nächste konkret kleine Schritte
+1. Karte auf JSON-Loader umstellen (50+ Tiles).
+2. Solo-Bot-KI (simpel: greedy „angreife schwächstes Nachbargebiet").
+3. Rematch-Flow (Client-Button → Server-Reset oder neue Session).
+4. GitHub-Actions-Workflow (`.github/workflows/ci.yml`).
