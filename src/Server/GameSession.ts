@@ -7,6 +7,7 @@ export class GameSession {
   private readonly mapState = new MapState();
 
   private readonly subscribers = new Set<Subscriber>();
+  private readonly pendingCommands: ClientCommand[] = [];
 
   public subscribe(subscriber: Subscriber): () => void {
     this.subscribers.add(subscriber);
@@ -22,13 +23,30 @@ export class GameSession {
   }
 
   public tick(): void {
+    this.processQueuedCommands();
     this.mapState.tick();
     this.broadcast();
   }
 
-  public handleCommand(command: ClientCommand): void {
-    this.mapState.applyCommand(command);
-    this.broadcast();
+  public queueCommand(command: ClientCommand): void {
+    this.pendingCommands.push(command);
+  }
+
+  public getPendingCommandCount(): number {
+    return this.pendingCommands.length;
+  }
+
+  private processQueuedCommands(): void {
+    const queuedCommands = this.pendingCommands.splice(0, this.pendingCommands.length);
+
+    for (const queuedCommand of queuedCommands) {
+      try {
+        this.mapState.applyCommand(queuedCommand);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown command error.";
+        console.warn(`Dropping invalid command from queue: ${message}`);
+      }
+    }
   }
 
   private broadcast(): void {
