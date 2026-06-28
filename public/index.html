@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Control & Conquer MVP</title>
+    <title>Control & Conquer</title>
     <style>
       :root {
         color-scheme: dark;
@@ -12,7 +12,7 @@
 
       body {
         margin: 0;
-        background: #101318;
+        background: #0f1117;
         color: #f3f4f6;
       }
 
@@ -23,13 +23,9 @@
       }
 
       aside {
+        background: #161a22;
+        border-right: 1px solid #2a3341;
         padding: 16px;
-        border-right: 1px solid #262b36;
-        background: #151922;
-      }
-
-      section {
-        margin-bottom: 16px;
       }
 
       h1,
@@ -38,58 +34,69 @@
         margin: 0 0 8px;
       }
 
+      section {
+        margin-bottom: 16px;
+      }
+
       label,
-      button,
       input,
-      select {
+      button {
         display: block;
         width: 100%;
-        margin: 6px 0;
+      }
+
+      input,
+      button {
+        margin-top: 6px;
+      }
+
+      input {
+        padding: 8px;
+        border-radius: 6px;
+        border: 1px solid #374151;
+        background: #0f172a;
+        color: #f3f4f6;
       }
 
       button {
         padding: 10px;
         border: 0;
         border-radius: 8px;
-        background: #2d69ff;
+        background: #2563eb;
         color: white;
         cursor: pointer;
-      }
-
-      button:disabled {
-        background: #4b5563;
-        cursor: not-allowed;
-      }
-
-      canvas {
-        display: block;
-        max-width: 100%;
-        margin: 16px auto;
-        background: #0b1220;
-        border: 1px solid #263041;
-        border-radius: 12px;
       }
 
       .layout {
         padding: 16px;
       }
 
-      .stats,
-      .events,
-      .battle-log {
-        font-size: 14px;
-        line-height: 1.4;
-        color: #d1d5db;
-      }
-
-      ul {
-        padding-left: 18px;
-        margin: 8px 0 0;
+      #mapCanvas {
+        width: 100%;
+        max-width: 760px;
+        background: #0b1220;
+        border: 1px solid #293447;
+        border-radius: 12px;
+        display: block;
       }
 
       .hint {
         color: #9ca3af;
         font-size: 13px;
+      }
+
+      .status {
+        min-height: 22px;
+        font-size: 14px;
+      }
+
+      .status.error {
+        color: #fca5a5;
+      }
+
+      ul {
+        margin: 8px 0 0;
+        padding-left: 20px;
       }
     </style>
   </head>
@@ -98,71 +105,34 @@
       <aside>
         <section>
           <h1>Control &amp; Conquer</h1>
-          <p class="hint">Authoritative multiplayer MVP with 5 provinces.</p>
+          <p class="hint">OpenFront-inspired territory combat MVP.</p>
         </section>
 
         <section>
-          <h2>Commander</h2>
-          <label>
-            Active player
-            <select id="playerSelect"></select>
-          </label>
-          <div id="playerStats" class="stats"></div>
+          <h2>Your Team</h2>
+          <div id="teamInfo">Connecting...</div>
         </section>
 
         <section>
-          <h2>Province</h2>
-          <div id="provinceStats" class="stats">Select a province on the map.</div>
+          <h2>Attack</h2>
+          <p class="hint">Click your territory, then click an adjacent enemy territory.</p>
+          <label>
+            Troops to send
+            <input id="attackTroopsInput" type="number" min="1" value="1" />
+          </label>
+          <button id="clearSelectionButton" type="button">Clear selection</button>
+          <div id="selectionInfo" class="hint">No source territory selected.</div>
+          <div id="statusMessage" class="status" aria-live="polite"></div>
         </section>
 
         <section>
-          <h2>Deploy</h2>
-          <label>
-            Unit type
-            <select id="purchaseUnitType">
-              <option value="infantry">Infantry</option>
-              <option value="tank">Tank</option>
-            </select>
-          </label>
-          <label>
-            Count
-            <input id="purchaseCount" type="number" min="1" value="1" />
-          </label>
-          <button id="purchaseButton">Buy in selected province</button>
-        </section>
-
-        <section>
-          <h2>Orders</h2>
-          <label>
-            Target province
-            <select id="targetProvince"></select>
-          </label>
-          <label>
-            Unit type
-            <select id="moveUnitType">
-              <option value="infantry">Infantry</option>
-              <option value="tank">Tank</option>
-            </select>
-          </label>
-          <label>
-            Count
-            <input id="moveCount" type="number" min="1" value="1" />
-          </label>
-          <button id="moveButton">Move or attack</button>
-          <button id="mineButton">Place mine</button>
-          <p class="hint">GLA can tunnel between any two provinces it owns.</p>
-        </section>
-
-        <section>
-          <h2>Recent events</h2>
-          <div id="events" class="events"></div>
+          <h2>Recent Events</h2>
+          <div id="events"></div>
         </section>
       </aside>
 
       <div class="layout">
-        <canvas id="mapCanvas" width="760" height="420"></canvas>
-        <canvas id="battleCanvas" width="760" height="180"></canvas>
-        <div id="battleLog" class="battle-log"></div>
+        <canvas id="mapCanvas" width="760" height="460"></canvas>
       </div>
     </main>
     <script type="module" src="/assets/Client/main.js"></script>

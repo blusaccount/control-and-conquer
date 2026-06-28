@@ -1,184 +1,73 @@
-import {
-  BattleFrame,
-  BattleSummary,
-  Faction,
-  GameState,
-  PlayerState,
-  Province,
-  UnitType,
-} from "../Core/types.js";
+import { ClientMessage, GameStateSnapshot, ServerMessage, TeamId, Territory } from "../Core/types.js";
 
 const mapCanvas = document.querySelector<HTMLCanvasElement>("#mapCanvas");
-const battleCanvas = document.querySelector<HTMLCanvasElement>("#battleCanvas");
-const playerSelect = document.querySelector<HTMLSelectElement>("#playerSelect");
-const playerStats = document.querySelector<HTMLDivElement>("#playerStats");
-const provinceStats = document.querySelector<HTMLDivElement>("#provinceStats");
-const purchaseUnitType = document.querySelector<HTMLSelectElement>("#purchaseUnitType");
-const purchaseCount = document.querySelector<HTMLInputElement>("#purchaseCount");
-const purchaseButton = document.querySelector<HTMLButtonElement>("#purchaseButton");
-const targetProvince = document.querySelector<HTMLSelectElement>("#targetProvince");
-const moveUnitType = document.querySelector<HTMLSelectElement>("#moveUnitType");
-const moveCount = document.querySelector<HTMLInputElement>("#moveCount");
-const moveButton = document.querySelector<HTMLButtonElement>("#moveButton");
-const mineButton = document.querySelector<HTMLButtonElement>("#mineButton");
+const teamInfo = document.querySelector<HTMLDivElement>("#teamInfo");
+const attackTroopsInput = document.querySelector<HTMLInputElement>("#attackTroopsInput");
+const clearSelectionButton = document.querySelector<HTMLButtonElement>("#clearSelectionButton");
+const selectionInfo = document.querySelector<HTMLDivElement>("#selectionInfo");
+const statusMessage = document.querySelector<HTMLDivElement>("#statusMessage");
 const eventsPanel = document.querySelector<HTMLDivElement>("#events");
-const battleLog = document.querySelector<HTMLDivElement>("#battleLog");
 
-if (
-  !mapCanvas ||
-  !battleCanvas ||
-  !playerSelect ||
-  !playerStats ||
-  !provinceStats ||
-  !purchaseUnitType ||
-  !purchaseCount ||
-  !purchaseButton ||
-  !targetProvince ||
-  !moveUnitType ||
-  !moveCount ||
-  !moveButton ||
-  !mineButton ||
-  !eventsPanel ||
-  !battleLog
-) {
+if (!mapCanvas || !teamInfo || !attackTroopsInput || !clearSelectionButton || !selectionInfo || !statusMessage || !eventsPanel) {
   throw new Error("UI failed to initialize.");
 }
 
 const mapContext = mapCanvas.getContext("2d");
-const battleContext = battleCanvas.getContext("2d");
-
-if (!mapContext || !battleContext) {
-  throw new Error("Canvas contexts are unavailable.");
+if (!mapContext) {
+  throw new Error("Canvas context unavailable.");
 }
-
-let state: GameState | null = null;
-let selectedProvinceId: string | null = null;
-let animatedBattleId: string | null = null;
-let battleStartTime = 0;
 
 const socketProtocol = window.location.protocol === "https:" ? "wss" : "ws";
 const socket = new WebSocket(`${socketProtocol}://${window.location.host}`);
 
-const factionLabel = (faction: Faction): string => {
-  switch (faction) {
-    case Faction.USA:
-      return "USA";
-    case Faction.China:
-      return "China";
-    case Faction.GLA:
-      return "GLA";
-  }
+let state: GameStateSnapshot | null = null;
+let myTeamId: TeamId | null = null;
+let selectedSourceTerritoryId: string | null = null;
+
+const isPositiveInteger = (value: number): boolean => Number.isInteger(value) && value > 0;
+
+const setStatus = (message: string, isError = false): void => {
+  statusMessage.textContent = message;
+  statusMessage.classList.toggle("error", isError);
 };
 
-const currentPlayer = (): PlayerState | null => {
-  if (!state) {
-    return null;
-  }
-
-  return state.players[playerSelect.value] ?? null;
-};
-
-const currentProvince = (): Province | null => {
-  if (!state || !selectedProvinceId) {
-    return null;
-  }
-
-  return state.provinces[selectedProvinceId] ?? null;
-};
-
-const sendCommand = (command: unknown): void => {
-  socket.send(JSON.stringify(command));
-};
-
-const renderPlayerOptions = (): void => {
-  if (!state) {
+const renderTeamInfo = (): void => {
+  if (!state || !myTeamId) {
+    teamInfo.textContent = "Connecting...";
     return;
   }
 
-  if (playerSelect.options.length === 0) {
-    for (const player of Object.values(state.players)) {
-      const option = document.createElement("option");
-      option.value = player.id;
-      option.textContent = `${player.name} (${factionLabel(player.faction)})`;
-      playerSelect.append(option);
+  const team = state.teams[myTeamId];
+  teamInfo.innerHTML = `<strong style="color:${team.color}">${team.name}</strong>`;
+};
+
+const pointInPolygon = (x: number, y: number, polygon: Array<{ x: number; y: number }>): boolean => {
+  let inside = false;
+
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
+    const xi = polygon[i].x;
+    const yi = polygon[i].y;
+    const xj = polygon[j].x;
+    const yj = polygon[j].y;
+
+    const intersects = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+    if (intersects) {
+      inside = !inside;
     }
   }
 
-  if (!playerSelect.value) {
-    playerSelect.value = "usa";
-  }
+  return inside;
 };
 
-const refreshTargetOptions = (): void => {
-  const province = currentProvince();
-  targetProvince.replaceChildren();
-
-  if (!state || !province) {
-    return;
-  }
-
-  for (const provinceId of state.provinceOrder) {
-    if (provinceId === province.id) {
-      continue;
-    }
-
-    const target = state.provinces[provinceId];
-    const option = document.createElement("option");
-    option.value = provinceId;
-    option.textContent = `${target.name} (${target.ownerId})`;
-    targetProvince.append(option);
-  }
-};
-
-const renderSidebar = (): void => {
-  if (!state) {
-    return;
-  }
-
-  renderPlayerOptions();
-  refreshTargetOptions();
-
-  const player = currentPlayer();
-  if (player) {
-    playerStats.innerHTML = [
-      `<strong>${player.name}</strong>`,
-      `Faction: ${factionLabel(player.faction)}`,
-      `Credits: ${player.credits}`,
-      `General level: ${player.generalLevel}`,
-      `Mine charges: ${player.mineCharges}`,
-      `Wins: ${player.wins}`,
-    ].join("<br />");
-  }
-
-  const province = currentProvince();
-  const currentState = state;
-  provinceStats.innerHTML = province
-    ? [
-        `<strong>${province.name}</strong>`,
-        `Owner: ${currentState.players[province.ownerId].name}`,
-        `Units: ${province.units.infantry} infantry / ${province.units.tank} tank`,
-        `Mine: ${province.hasMine ? "Armed" : "None"}`,
-        `Links: ${province.neighbors.map((id) => currentState.provinces[id].name).join(", ")}`,
-      ].join("<br />")
-    : "Select a province on the map.";
-
-  eventsPanel.innerHTML = `<ul>${currentState.recentEvents.map((event) => `<li>${event}</li>`).join("")}</ul>`;
-}
-
-const provinceAt = (x: number, y: number): Province | null => {
+const territoryAt = (x: number, y: number): Territory | null => {
   if (!state) {
     return null;
   }
 
-  for (const provinceId of state.provinceOrder) {
-    const province = state.provinces[provinceId];
-    if (
-      x >= province.x &&
-      x <= province.x + province.width &&
-      y >= province.y &&
-      y <= province.y + province.height
-    ) {
-      return province;
+  for (const territoryId of state.territoryOrder) {
+    const territory = state.territories[territoryId];
+    if (pointInPolygon(x, y, territory.polygon)) {
+      return territory;
     }
   }
 
@@ -191,193 +80,146 @@ const renderMap = (): void => {
   }
 
   mapContext.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
-  mapContext.fillStyle = "#09111d";
+  mapContext.fillStyle = "#0b1220";
   mapContext.fillRect(0, 0, mapCanvas.width, mapCanvas.height);
 
-  for (const provinceId of state.provinceOrder) {
-    const province = state.provinces[provinceId];
-    const owner = state.players[province.ownerId];
+  for (const territoryId of state.territoryOrder) {
+    const territory = state.territories[territoryId];
+    const team = state.teams[territory.ownerId];
+    const isSelected = territory.id === selectedSourceTerritoryId;
 
-    mapContext.fillStyle = owner.color;
-    mapContext.globalAlpha = selectedProvinceId === province.id ? 0.95 : 0.75;
-    mapContext.fillRect(province.x, province.y, province.width, province.height);
+    mapContext.beginPath();
+    mapContext.moveTo(territory.polygon[0].x, territory.polygon[0].y);
+    for (let i = 1; i < territory.polygon.length; i += 1) {
+      mapContext.lineTo(territory.polygon[i].x, territory.polygon[i].y);
+    }
+    mapContext.closePath();
+
+    mapContext.fillStyle = team.color;
+    mapContext.globalAlpha = isSelected ? 0.95 : 0.72;
+    mapContext.fill();
     mapContext.globalAlpha = 1;
-    mapContext.strokeStyle = "#f9fafb";
-    mapContext.lineWidth = selectedProvinceId === province.id ? 3 : 1;
-    mapContext.strokeRect(province.x, province.y, province.width, province.height);
+    mapContext.strokeStyle = isSelected ? "#f8fafc" : "#1f2937";
+    mapContext.lineWidth = isSelected ? 4 : 2;
+    mapContext.stroke();
 
-    mapContext.fillStyle = "#ffffff";
-    mapContext.font = "bold 16px sans-serif";
-    mapContext.fillText(province.name, province.x + 10, province.y + 24);
+    mapContext.fillStyle = "#f8fafc";
+    mapContext.font = "bold 14px sans-serif";
+    mapContext.fillText(territory.name, territory.center.x - 45, territory.center.y - 2);
     mapContext.font = "13px sans-serif";
-    mapContext.fillText(`Owner: ${owner.name}`, province.x + 10, province.y + 45);
-    mapContext.fillText(
-      `${province.units.infantry} inf / ${province.units.tank} tank`,
-      province.x + 10,
-      province.y + 64,
-    );
-    if (province.hasMine) {
-      mapContext.fillText("Mine armed", province.x + 10, province.y + 82);
-    }
+    mapContext.fillText(`${territory.troops} troops`, territory.center.x - 36, territory.center.y + 16);
   }
 
-  mapContext.fillStyle = "#d1d5db";
+  mapContext.fillStyle = "#cbd5e1";
   mapContext.font = "14px sans-serif";
-  mapContext.fillText(`Tick ${state.tick}`, 16, mapCanvas.height - 16);
-}
-
-const battleFrameForTime = (battle: BattleSummary): BattleFrame | null => {
-  if (battle.timeline.length === 0) {
-    return null;
-  }
-
-  const elapsedSeconds = (performance.now() - battleStartTime) / 1000;
-  const finalFrame = battle.timeline[battle.timeline.length - 1];
-
-  if (elapsedSeconds >= finalFrame.time) {
-    return finalFrame;
-  }
-
-  for (const frame of battle.timeline) {
-    if (frame.time >= elapsedSeconds) {
-      return frame;
-    }
-  }
-
-  return finalFrame;
+  mapContext.fillText(`Tick ${state.tick}`, 16, mapCanvas.height - 14);
 };
 
-const renderBattle = (): void => {
-  battleContext.clearRect(0, 0, battleCanvas.width, battleCanvas.height);
-  battleContext.fillStyle = "#0f172a";
-  battleContext.fillRect(0, 0, battleCanvas.width, battleCanvas.height);
-
-  if (!state?.lastBattle) {
-    battleContext.fillStyle = "#e5e7eb";
-    battleContext.font = "16px sans-serif";
-    battleContext.fillText("No battle has been fought yet.", 24, 40);
-    battleLog.textContent = "";
+const renderSidebar = (): void => {
+  if (!state) {
     return;
   }
 
-  const battle = state.lastBattle;
-  if (animatedBattleId !== battle.id) {
-    animatedBattleId = battle.id;
-    battleStartTime = performance.now();
-  }
-
-  const frame = battleFrameForTime(battle);
-  const attacker = state.players[battle.attackerId];
-  const defender = state.players[battle.defenderId];
-
-  battleContext.fillStyle = "#e5e7eb";
-  battleContext.font = "bold 15px sans-serif";
-  battleContext.fillText(`${attacker.name} vs ${defender.name}`, 24, 24);
-  battleContext.font = "14px sans-serif";
-  battleContext.fillText(
-    battle.winnerId ? `Winner: ${state.players[battle.winnerId].name}` : "Result: draw",
-    24,
-    46,
-  );
-
-  if (frame) {
-    for (const unit of frame.units) {
-      battleContext.fillStyle = unit.side === "attacker" ? attacker.color : defender.color;
-      const y = unit.side === "attacker" ? 90 : 130;
-      const radius = unit.unitType === UnitType.Tank ? 10 : 6;
-      battleContext.beginPath();
-      battleContext.arc(70 + unit.x, y, radius, 0, Math.PI * 2);
-      battleContext.fill();
+  if (selectedSourceTerritoryId) {
+    const source = state.territories[selectedSourceTerritoryId];
+    if (!source || source.ownerId !== myTeamId) {
+      selectedSourceTerritoryId = null;
+      selectionInfo.textContent = "No source territory selected.";
+    } else {
+      selectionInfo.textContent = `Source: ${source.name} (${source.troops} troops, keep at least 1).`;
     }
+  } else {
+    selectionInfo.textContent = "No source territory selected.";
   }
 
-  battleLog.innerHTML = `<strong>Battle log</strong><ul>${battle.log.map((entry) => `<li>${entry}</li>`).join("")}</ul>`;
-}
+  eventsPanel.innerHTML = `<ul>${state.recentEvents.map((event) => `<li>${event}</li>`).join("")}</ul>`;
+};
 
 const render = (): void => {
+  renderTeamInfo();
   renderSidebar();
   renderMap();
-  renderBattle();
-  requestAnimationFrame(render);
+};
+
+const sendAttack = (sourceTerritoryId: string, targetTerritoryId: string, troops: number): void => {
+  const message: ClientMessage = {
+    type: "CLIENT_ATTACK_REQUEST",
+    payload: {
+      sourceTerritoryId,
+      targetTerritoryId,
+      troops,
+    },
+  };
+
+  socket.send(JSON.stringify(message));
 };
 
 mapCanvas.addEventListener("click", (event) => {
+  if (!state || !myTeamId) {
+    return;
+  }
+
   const bounds = mapCanvas.getBoundingClientRect();
-  const province = provinceAt(event.clientX - bounds.left, event.clientY - bounds.top);
+  const territory = territoryAt(event.clientX - bounds.left, event.clientY - bounds.top);
 
-  if (province) {
-    selectedProvinceId = province.id;
-    refreshTargetOptions();
-    renderSidebar();
-  }
-});
-
-purchaseButton.addEventListener("click", () => {
-  const player = currentPlayer();
-  const province = currentProvince();
-  if (!player || !province) {
+  if (!territory) {
     return;
   }
 
-  sendCommand({
-    type: "purchase",
-    playerId: player.id,
-    provinceId: province.id,
-    unitType: purchaseUnitType.value,
-    count: Number(purchaseCount.value),
-  });
-});
-
-moveButton.addEventListener("click", () => {
-  const player = currentPlayer();
-  const province = currentProvince();
-  if (!player || !province || !targetProvince.value) {
+  if (territory.ownerId === myTeamId) {
+    selectedSourceTerritoryId = territory.id;
+    setStatus(`Selected ${territory.name} as source territory.`);
+    render();
     return;
   }
 
-  sendCommand({
-    type: "move",
-    playerId: player.id,
-    fromProvinceId: province.id,
-    toProvinceId: targetProvince.value,
-    unitType: moveUnitType.value,
-    count: Number(moveCount.value),
-  });
-});
-
-mineButton.addEventListener("click", () => {
-  const player = currentPlayer();
-  const province = currentProvince();
-  if (!player || !province) {
+  if (!selectedSourceTerritoryId) {
+    setStatus("Select one of your own territories first.", true);
     return;
   }
 
-  sendCommand({
-    type: "placeMine",
-    playerId: player.id,
-    provinceId: province.id,
-  });
+  const source = state.territories[selectedSourceTerritoryId];
+  const troops = Number(attackTroopsInput.value);
+
+  if (!isPositiveInteger(troops)) {
+    setStatus("Troops must be a positive integer.", true);
+    return;
+  }
+
+  if (!source.neighbors.includes(territory.id)) {
+    setStatus("Invalid target: not adjacent.", true);
+    return;
+  }
+
+  sendAttack(source.id, territory.id, troops);
+  setStatus(`Attack queued: ${source.name} -> ${territory.name} with ${troops} troops.`);
 });
 
-playerSelect.addEventListener("change", () => {
-  renderSidebar();
+clearSelectionButton.addEventListener("click", () => {
+  selectedSourceTerritoryId = null;
+  setStatus("Selection cleared.");
+  render();
 });
 
 socket.addEventListener("message", (event) => {
-  const message = JSON.parse(String(event.data)) as
-    | { type: "snapshot"; payload: GameState }
-    | { type: "error"; payload: { message: string } };
+  const message = JSON.parse(String(event.data)) as ServerMessage;
 
-  if (message.type === "snapshot") {
-    state = message.payload;
-    if (!selectedProvinceId) {
-      selectedProvinceId = state.provinceOrder[0];
-    }
-    renderSidebar();
+  if (message.type === "SERVER_PLAYER_ASSIGNED") {
+    myTeamId = message.payload.teamId;
+    setStatus(`You joined as ${message.payload.teamId.toUpperCase()} team.`);
+    render();
     return;
   }
 
-  window.alert(message.payload.message);
+  if (message.type === "SERVER_STATE_SNAPSHOT") {
+    state = message.payload;
+    render();
+    return;
+  }
+
+  setStatus(message.payload.message, true);
 });
 
-requestAnimationFrame(render);
+socket.addEventListener("close", () => {
+  setStatus("Connection closed.", true);
+});

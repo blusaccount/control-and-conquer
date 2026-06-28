@@ -1,3 +1,75 @@
+export type TeamId = "blue" | "red";
+
+export interface Point {
+  x: number;
+  y: number;
+}
+
+export interface Territory {
+  id: string;
+  name: string;
+  ownerId: TeamId;
+  troops: number;
+  neighbors: string[];
+  polygon: Point[];
+  center: Point;
+}
+
+export interface TeamState {
+  id: TeamId;
+  name: string;
+  color: string;
+}
+
+export interface GameStateSnapshot {
+  tick: number;
+  mapName: string;
+  teams: Record<TeamId, TeamState>;
+  territories: Record<string, Territory>;
+  territoryOrder: string[];
+  recentEvents: string[];
+}
+
+export interface AttackOrder {
+  sourceTerritoryId: string;
+  targetTerritoryId: string;
+  troops: number;
+}
+
+export type ActionRejectedReason =
+  | "INVALID_TERRITORY"
+  | "NOT_OWNER"
+  | "NOT_ADJACENT"
+  | "INSUFFICIENT_TROOPS"
+  | "SAME_OWNER"
+  | "INVALID_TROOP_COUNT";
+
+export interface ActionRejectedEvent {
+  reason: ActionRejectedReason;
+  message: string;
+  order: AttackOrder;
+}
+
+export type ClientMessage = {
+  type: "CLIENT_ATTACK_REQUEST";
+  payload: AttackOrder;
+};
+
+export type ServerMessage =
+  | {
+      type: "SERVER_PLAYER_ASSIGNED";
+      payload: { teamId: TeamId };
+    }
+  | {
+      type: "SERVER_STATE_SNAPSHOT";
+      payload: GameStateSnapshot;
+    }
+  | {
+      type: "SERVER_ACTION_REJECTED";
+      payload: ActionRejectedEvent;
+    };
+
+// Legacy enums kept for existing non-MVP modules.
 export enum Faction {
   USA = "usa",
   China = "china",
@@ -9,31 +81,8 @@ export enum UnitType {
   Tank = "tank",
 }
 
+// Legacy battle model kept to avoid breaking existing modules not used by MVP.
 export type UnitRoster = Record<UnitType, number>;
-
-export interface Province {
-  id: string;
-  name: string;
-  ownerId: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  neighbors: string[];
-  units: UnitRoster;
-  hasMine: boolean;
-}
-
-export interface PlayerState {
-  id: string;
-  name: string;
-  color: string;
-  faction: Faction;
-  credits: number;
-  generalLevel: number;
-  mineCharges: number;
-  wins: number;
-}
 
 export interface BattleFrameUnit {
   side: "attacker" | "defender";
@@ -63,38 +112,6 @@ export interface BattleSummary {
   log: string[];
 }
 
-export interface GameState {
-  tick: number;
-  mapName: string;
-  players: Record<string, PlayerState>;
-  provinces: Record<string, Province>;
-  provinceOrder: string[];
-  lastBattle: BattleSummary | null;
-  recentEvents: string[];
-}
-
-export type ClientCommand =
-  | {
-      type: "purchase";
-      playerId: string;
-      provinceId: string;
-      unitType: UnitType;
-      count: number;
-    }
-  | {
-      type: "move";
-      playerId: string;
-      fromProvinceId: string;
-      toProvinceId: string;
-      unitType: UnitType;
-      count: number;
-    }
-  | {
-      type: "placeMine";
-      playerId: string;
-      provinceId: string;
-    };
-
 export const createEmptyRoster = (): UnitRoster => ({
   [UnitType.Infantry]: 0,
   [UnitType.Tank]: 0,
@@ -105,5 +122,4 @@ export const cloneRoster = (roster: UnitRoster): UnitRoster => ({
   [UnitType.Tank]: roster[UnitType.Tank],
 });
 
-export const rosterTotal = (roster: UnitRoster): number =>
-  roster[UnitType.Infantry] + roster[UnitType.Tank];
+export const rosterTotal = (roster: UnitRoster): number => roster[UnitType.Infantry] + roster[UnitType.Tank];

@@ -19,6 +19,7 @@ const publicDir = join(rootDir, "public");
 const assetDir = join(rootDir, "dist");
 const port = Number(process.env.PORT ?? 3000);
 const game = new GameSession();
+let clientSequence = 0;
 
 const mimeTypes: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -73,18 +74,33 @@ const server = createServer(async (request, response) => {
 const wss = new WebSocketServer({ server });
 
 wss.on("connection", (socket) => {
-  const unsubscribe = game.subscribe((snapshot) => {
-    socket.send(JSON.stringify({ type: "snapshot", payload: snapshot }));
+  clientSequence += 1;
+  const clientId = `client-${clientSequence}`;
+
+  const unsubscribe = game.subscribe(clientId, (message) => {
+    socket.send(JSON.stringify(message));
   });
 
   socket.on("message", (data) => {
     try {
       const parsed: unknown = JSON.parse(String(data));
-      const command = validateCommand(parsed);
-      game.queueCommand(command);
+      const message = validateCommand(parsed);
+
+      if (message.type === "CLIENT_ATTACK_REQUEST") {
+        game.queueAttack(clientId, message.payload);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown command error.";
-      socket.send(JSON.stringify({ type: "error", payload: { message } }));
+      socket.send(
+        JSON.stringify({
+          type: "SERVER_ACTION_REJECTED",
+          payload: {
+            reason: "INVALID_TROOP_COUNT",
+            message,
+            order: { sourceTerritoryId: "", targetTerritoryId: "", troops: 0 },
+          },
+        }),
+      );
     }
   });
 
@@ -117,9 +133,7 @@ const runSimulationLoop = (): void => {
     const tickDuration = performance.now() - tickStart;
 
     if (tickDuration > TICK_DURATION_WARN_MS) {
-      console.warn(
-        `Slow simulation tick (${tickDuration.toFixed(2)}ms) over budget ${TICK_INTERVAL_MS.toFixed(2)}ms.`,
-      );
+      console.warn(`Slow simulation tick (${tickDuration.toFixed(2)}ms) over budget ${TICK_INTERVAL_MS.toFixed(2)}ms.`);
     }
 
     processedTicks += 1;

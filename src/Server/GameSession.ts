@@ -1,59 +1,85 @@
-import { ClientCommand, GameState } from "../Core/types.js";
 import { MapState } from "../Core/MapState.js";
+import { AttackOrder, ServerMessage, TeamId } from "../Core/types.js";
 
-type Subscriber = (snapshot: GameState) => void;
+type MessageHandler = (message: ServerMessage) => void;
+
+interface Subscriber {
+  id: string;
+  teamId: TeamId;
+  send: MessageHandler;
+}
+
+interface PendingAttack {
+  clientId: string;
+  teamId: TeamId;
+  order: AttackOrder;
+}
+
+const TEAM_ROTATION: TeamId[] = ["blue", "red"];
 
 export class GameSession {
   private readonly mapState = new MapState();
+  private readonly subscribers = new Map<string, Subscriber>();
+  private readonly pendingAttacks: PendingAttack[] = [];
+  private nextTeamIndex = 0;
 
-  private readonly subscribers = new Set<Subscriber>();
-  private readonly pendingCommands: ClientCommand[] = [];
+  public subscribe(clientId: string, send: MessageHandler): () => void {
+    const teamId = TEAM_ROTATION[this.nextTeamIndex % TEAM_ROTATION.length];
+    this.nextTeamIndex += 1;
 
-  public subscribe(subscriber: Subscriber): () => void {
-    this.subscribers.add(subscriber);
-    subscriber(this.mapState.getSnapshot());
+    const subscriber: Subscriber = { id: clientId, teamId, send };
+    this.subscribers.set(clientId, subscriber);
+
+    send({
+      type: "SERVER_PLAYER_ASSIGNED",
+      payload: { teamId },
+    });
+    send({
+      type: "SERVER_STATE_SNAPSHOT",
+      payload: this.mapState.getSnapshot(),
+    });
 
     return () => {
-      this.subscribers.delete(subscriber);
+      this.subscribers.delete(clientId);
     };
   }
 
-  public getSnapshot(): GameState {
-    return this.mapState.getSnapshot();
+  public queueAttack(clientId: string, order: AttackOrder): void {
+    const subscriber = this.subscribers.get(clientId);
+    if (!subscriber) {
+      return;
+    }
+
+    this.pendingAttacks.push({
+      clientId,
+      teamId: subscriber.teamId,
+      order,
+    });
   }
 
   public tick(): void {
-    this.processQueuedCommands();
-    this.mapState.tick();
-    this.broadcast();
-  }
+    const queuedAttacks = this.pendingAttacks.splice(0, this.pendingAttacks.length);
+    const result = this.mapState.processTick(queuedAttacks);
 
-  public queueCommand(command: ClientCommand): void {
-    this.pendingCommands.push(command);
+    for (const { clientId, rejection } of result.rejections) {
+      const subscriber = this.subscribers.get(clientId);
+      subscriber?.send({
+        type: "SERVER_ACTION_REJECTED",
+        payload: rejection,
+      });
+    }
+
+    const snapshotMessage: ServerMessage = {
+      type: "SERVER_STATE_SNAPSHOT",
+      payload: result.snapshot,
+    };
+
+    for (const subscriber of this.subscribers.values()) {
+      subscriber.send(snapshotMessage);
+    }
   }
 
   public getPendingCommandCount(): number {
-    return this.pendingCommands.length;
-  }
-
-  private processQueuedCommands(): void {
-    const queuedCommands = this.pendingCommands.splice(0, this.pendingCommands.length);
-
-    for (const queuedCommand of queuedCommands) {
-      try {
-        this.mapState.applyCommand(queuedCommand);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Unknown command error.";
-        console.warn(`Dropping invalid command from queue: ${message}`);
-      }
-    }
-  }
-
-  private broadcast(): void {
-    const snapshot = this.mapState.getSnapshot();
-
-    for (const subscriber of this.subscribers) {
-      subscriber(snapshot);
-    }
+    return this.pendingAttacks.length;
   }
 }
