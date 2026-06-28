@@ -1,305 +1,161 @@
-import { resolveBattle } from "./BattleEngine.js";
 import {
-  BattleSummary,
-  ClientCommand,
-  Faction,
-  GameState,
-  PlayerState,
-  Province,
-  UnitRoster,
-  UnitType,
-  cloneRoster,
-  createEmptyRoster,
-  rosterTotal,
+  ActionRejectedEvent,
+  AttackOrder,
+  GameStateSnapshot,
+  TeamId,
+  TeamState,
+  Territory,
 } from "./types.js";
-import { canUseTunnel, getUnitCost } from "../FactionData/factions.js";
+import { createTerritories, territoryOrder } from "./mapData.js";
 
-const provinceIncome = 10;
+interface QueuedAttack {
+  clientId: string;
+  teamId: TeamId;
+  order: AttackOrder;
+}
 
-const initialPlayers = (): Record<string, PlayerState> => ({
-  usa: {
-    id: "usa",
-    name: "USA Vanguard",
-    color: "#4da3ff",
-    faction: Faction.USA,
-    credits: 220,
-    generalLevel: 0,
-    mineCharges: 0,
-    wins: 0,
-  },
-  china: {
-    id: "china",
-    name: "China Legion",
-    color: "#f87171",
-    faction: Faction.China,
-    credits: 220,
-    generalLevel: 0,
-    mineCharges: 0,
-    wins: 0,
-  },
-  gla: {
-    id: "gla",
-    name: "GLA Cell",
-    color: "#34d399",
-    faction: Faction.GLA,
-    credits: 220,
-    generalLevel: 0,
-    mineCharges: 0,
-    wins: 0,
-  },
+export interface TickResult {
+  snapshot: GameStateSnapshot;
+  rejections: Array<{ clientId: string; rejection: ActionRejectedEvent }>;
+}
+
+const MAX_EVENTS = 10;
+const MIN_CAPTURE_GARRISON = 1;
+
+const createTeams = (): Record<TeamId, TeamState> => ({
+  blue: { id: "blue", name: "Blue Team", color: "#3b82f6" },
+  red: { id: "red", name: "Red Team", color: "#ef4444" },
 });
 
-const makeProvince = (
-  id: string,
-  name: string,
-  ownerId: string,
-  x: number,
-  y: number,
-  neighbors: string[],
-  units: UnitRoster,
-): Province => ({
-  id,
-  name,
-  ownerId,
-  x,
-  y,
-  width: 150,
-  height: 92,
-  neighbors,
-  units,
-  hasMine: false,
-});
-
-export const createInitialState = (): GameState => ({
+const createInitialState = (): GameStateSnapshot => ({
   tick: 0,
-  mapName: "Trusted Front",
-  players: initialPlayers(),
-  provinces: {
-    alpha: makeProvince("alpha", "Alpha Ridge", "usa", 40, 40, ["bravo", "charlie"], {
-      [UnitType.Infantry]: 3,
-      [UnitType.Tank]: 1,
-    }),
-    bravo: makeProvince("bravo", "Bravo Hub", "usa", 240, 40, ["alpha", "charlie", "delta"], {
-      [UnitType.Infantry]: 2,
-      [UnitType.Tank]: 0,
-    }),
-    charlie: makeProvince("charlie", "Charlie Pass", "china", 140, 180, ["alpha", "bravo", "delta", "echo"], {
-      [UnitType.Infantry]: 3,
-      [UnitType.Tank]: 1,
-    }),
-    delta: makeProvince("delta", "Delta Gate", "china", 340, 180, ["bravo", "charlie", "echo"], {
-      [UnitType.Infantry]: 2,
-      [UnitType.Tank]: 1,
-    }),
-    echo: makeProvince("echo", "Echo Tunnels", "gla", 240, 320, ["charlie", "delta"], {
-      [UnitType.Infantry]: 4,
-      [UnitType.Tank]: 0,
-    }),
-  },
-  provinceOrder: ["alpha", "bravo", "charlie", "delta", "echo"],
-  lastBattle: null,
-  recentEvents: ["Simulation initialized."],
+  mapName: "Conqueror Basin",
+  teams: createTeams(),
+  territories: createTerritories(),
+  territoryOrder,
+  recentEvents: ["Match started."],
 });
 
-const assertWholeNumber = (value: number): boolean => Number.isInteger(value) && value > 0;
+const isPositiveInteger = (value: number): boolean => Number.isInteger(value) && value > 0;
 
-const appendEvent = (state: GameState, message: string): void => {
-  state.recentEvents = [message, ...state.recentEvents].slice(0, 8);
-};
-
-const awardWin = (player: PlayerState): void => {
-  player.wins += 1;
-  player.generalLevel += 1;
-  player.mineCharges += 1;
-};
-
-const takeUnits = (roster: UnitRoster, unitType: UnitType, count: number): UnitRoster => {
-  const taken = createEmptyRoster();
-  taken[unitType] = count;
-  roster[unitType] -= count;
-  return taken;
+const appendEvent = (snapshot: GameStateSnapshot, event: string): void => {
+  snapshot.recentEvents = [event, ...snapshot.recentEvents].slice(0, MAX_EVENTS);
 };
 
 export class MapState {
-  private state: GameState;
+  private state: GameStateSnapshot;
 
-  public constructor(initialState: GameState = createInitialState()) {
+  public constructor(initialState: GameStateSnapshot = createInitialState()) {
     this.state = structuredClone(initialState);
   }
 
-  public getSnapshot(): GameState {
+  public getSnapshot(): GameStateSnapshot {
     return structuredClone(this.state);
   }
 
-  public tick(): GameState {
+  public processTick(attacks: QueuedAttack[]): TickResult {
+    const rejections: TickResult["rejections"] = [];
+
+    for (const attack of attacks) {
+      const rejection = this.validateAttack(attack.teamId, attack.order);
+      if (rejection) {
+        rejections.push({ clientId: attack.clientId, rejection });
+        continue;
+      }
+
+      this.resolveAttack(attack.teamId, attack.order);
+    }
+
     this.state.tick += 1;
-
-    for (const provinceId of this.state.provinceOrder) {
-      const province = this.state.provinces[provinceId];
-      this.state.players[province.ownerId].credits += provinceIncome;
-    }
-
-    appendEvent(this.state, `Tick ${this.state.tick}: province income distributed.`);
-    return this.getSnapshot();
+    return {
+      snapshot: this.getSnapshot(),
+      rejections,
+    };
   }
 
-  public applyCommand(command: ClientCommand): GameState {
-    if (command.type === "purchase") {
-      return this.purchase(command.playerId, command.provinceId, command.unitType, command.count);
+  private validateAttack(teamId: TeamId, order: AttackOrder): ActionRejectedEvent | null {
+    const source = this.state.territories[order.sourceTerritoryId];
+    const target = this.state.territories[order.targetTerritoryId];
+
+    if (!source || !target) {
+      return {
+        reason: "INVALID_TERRITORY",
+        message: "Unknown source or target territory.",
+        order,
+      };
     }
 
-    if (command.type === "move") {
-      return this.move(command.playerId, command.fromProvinceId, command.toProvinceId, command.unitType, command.count);
+    if (!isPositiveInteger(order.troops)) {
+      return {
+        reason: "INVALID_TROOP_COUNT",
+        message: "Troop count must be a positive integer.",
+        order,
+      };
     }
 
-    return this.placeMine(command.playerId, command.provinceId);
+    if (source.ownerId !== teamId) {
+      return {
+        reason: "NOT_OWNER",
+        message: "You can only attack from your own territory.",
+        order,
+      };
+    }
+
+    if (source.ownerId === target.ownerId) {
+      return {
+        reason: "SAME_OWNER",
+        message: "Target territory is owned by your team.",
+        order,
+      };
+    }
+
+    if (!source.neighbors.includes(target.id)) {
+      return {
+        reason: "NOT_ADJACENT",
+        message: "You can only attack adjacent territories.",
+        order,
+      };
+    }
+
+    const maxAttackTroops = source.troops - 1;
+    if (maxAttackTroops < 1 || order.troops > maxAttackTroops) {
+      return {
+        reason: "INSUFFICIENT_TROOPS",
+        message: "Not enough troops. At least one troop must stay in the source territory.",
+        order,
+      };
+    }
+
+    return null;
   }
 
-  public purchase(playerId: string, provinceId: string, unitType: UnitType, count: number): GameState {
-    if (!assertWholeNumber(count)) {
-      throw new Error("Purchase count must be a positive integer.");
+  private resolveAttack(attackerTeamId: TeamId, order: AttackOrder): void {
+    const source = this.state.territories[order.sourceTerritoryId];
+    const target = this.state.territories[order.targetTerritoryId];
+    const sourceTroopsBefore = source.troops;
+    const defendingBefore = target.troops;
+
+    source.troops = sourceTroopsBefore - order.troops;
+    target.troops = defendingBefore - order.troops;
+
+    if (target.troops <= 0) {
+      const excessAttackTroops = order.troops - defendingBefore;
+      const remainingAttackTroops = excessAttackTroops > 0 ? excessAttackTroops : MIN_CAPTURE_GARRISON;
+      const previousOwner = target.ownerId;
+      target.ownerId = attackerTeamId;
+      target.troops = remainingAttackTroops;
+      appendEvent(
+        this.state,
+        `${this.state.teams[attackerTeamId].name} captured ${target.name} from ${this.state.teams[previousOwner].name} and established a ${remainingAttackTroops}-troop garrison.`,
+      );
+      return;
     }
 
-    const player = this.state.players[playerId];
-    const province = this.state.provinces[provinceId];
-
-    if (!player || !province) {
-      throw new Error("Invalid player or province.");
-    }
-
-    if (province.ownerId !== playerId) {
-      throw new Error("You can only deploy in your own province.");
-    }
-
-    const totalCost = getUnitCost(unitType) * count;
-    if (player.credits < totalCost) {
-      throw new Error("Not enough credits.");
-    }
-
-    player.credits -= totalCost;
-    province.units[unitType] += count;
-    appendEvent(this.state, `${player.name} deployed ${count} ${unitType} to ${province.name}.`);
-    return this.getSnapshot();
-  }
-
-  public placeMine(playerId: string, provinceId: string): GameState {
-    const player = this.state.players[playerId];
-    const province = this.state.provinces[provinceId];
-
-    if (!player || !province) {
-      throw new Error("Invalid player or province.");
-    }
-
-    if (province.ownerId !== playerId) {
-      throw new Error("Mines can only be placed in your own province.");
-    }
-
-    if (player.generalLevel < 1 || player.mineCharges < 1) {
-      throw new Error("You need a general level and an unused mine charge.");
-    }
-
-    if (province.hasMine) {
-      throw new Error("This province already has a mine.");
-    }
-
-    province.hasMine = true;
-    player.mineCharges -= 1;
-    appendEvent(this.state, `${player.name} armed a mine in ${province.name}.`);
-    return this.getSnapshot();
-  }
-
-  public move(
-    playerId: string,
-    fromProvinceId: string,
-    toProvinceId: string,
-    unitType: UnitType,
-    count: number,
-  ): GameState {
-    if (!assertWholeNumber(count)) {
-      throw new Error("Move count must be a positive integer.");
-    }
-
-    const player = this.state.players[playerId];
-    const fromProvince = this.state.provinces[fromProvinceId];
-    const toProvince = this.state.provinces[toProvinceId];
-
-    if (!player || !fromProvince || !toProvince) {
-      throw new Error("Invalid player or province.");
-    }
-
-    if (fromProvince.ownerId !== playerId) {
-      throw new Error("You can only move units from your own province.");
-    }
-
-    if (fromProvince.units[unitType] < count) {
-      throw new Error("Not enough units in the source province.");
-    }
-
-    const isNeighbor = fromProvince.neighbors.includes(toProvinceId);
-    const sameOwner = toProvince.ownerId === playerId;
-    const isTunnel = sameOwner && canUseTunnel(player.faction);
-
-    if (!isNeighbor && !isTunnel) {
-      throw new Error("Provinces are not connected for this move.");
-    }
-
-    const movingUnits = takeUnits(fromProvince.units, unitType, count);
-
-    if (sameOwner) {
-      toProvince.units[unitType] += count;
-      appendEvent(this.state, `${player.name} repositioned ${count} ${unitType} to ${toProvince.name}.`);
-      return this.getSnapshot();
-    }
-
-    const defender = this.state.players[toProvince.ownerId];
-    const battle = resolveBattle({
-      battleId: `battle-${this.state.tick}-${fromProvinceId}-${toProvinceId}`,
-      attackerId: playerId,
-      defenderId: defender.id,
-      attackerFaction: player.faction,
-      defenderFaction: defender.faction,
-      attackerProvinceId: fromProvinceId,
-      defenderProvinceId: toProvinceId,
-      attackerUnits: movingUnits,
-      defenderUnits: cloneRoster(toProvince.units),
-      defenderHasMine: toProvince.hasMine,
-    });
-
-    this.finishBattle(battle, toProvinceId);
     appendEvent(
       this.state,
-      `${player.name} attacked ${toProvince.name}. ${battle.log[battle.log.length - 1]}`,
+      `${this.state.teams[attackerTeamId].name} attacked ${target.name} with ${order.troops}. Defender holds with ${target.troops}.`,
     );
-    return this.getSnapshot();
-  }
-
-  private finishBattle(battle: BattleSummary, targetProvinceId: string): void {
-    const province = this.state.provinces[targetProvinceId];
-    const attacker = this.state.players[battle.attackerId];
-    const defender = this.state.players[battle.defenderId];
-
-    province.hasMine = false;
-    this.state.lastBattle = battle;
-
-    if (battle.winnerId === battle.attackerId) {
-      province.ownerId = battle.attackerId;
-      province.units = cloneRoster(battle.attackerRemaining);
-      awardWin(attacker);
-      if (rosterTotal(province.units) === 0) {
-        province.units[UnitType.Infantry] = 1;
-      }
-      return;
-    }
-
-    if (battle.winnerId === battle.defenderId) {
-      province.units = cloneRoster(battle.defenderRemaining);
-      awardWin(defender);
-      if (rosterTotal(province.units) === 0) {
-        province.units[UnitType.Infantry] = 1;
-      }
-      return;
-    }
-
-    province.units = createEmptyRoster();
   }
 }
+
+export type { QueuedAttack, Territory };

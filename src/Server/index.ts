@@ -19,6 +19,19 @@ const publicDir = join(rootDir, "public");
 const assetDir = join(rootDir, "dist");
 const port = Number(process.env.PORT ?? 3000);
 const game = new GameSession();
+let clientSequence = 0;
+const fallbackOrder = (raw: unknown) => {
+  const message = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+  const payload = typeof message.payload === "object" && message.payload !== null
+    ? (message.payload as Record<string, unknown>)
+    : {};
+
+  return {
+    sourceTerritoryId: typeof payload.sourceTerritoryId === "string" ? payload.sourceTerritoryId : "",
+    targetTerritoryId: typeof payload.targetTerritoryId === "string" ? payload.targetTerritoryId : "",
+    troops: typeof payload.troops === "number" && Number.isInteger(payload.troops) ? payload.troops : 1,
+  };
+};
 
 const mimeTypes: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -73,18 +86,35 @@ const server = createServer(async (request, response) => {
 const wss = new WebSocketServer({ server });
 
 wss.on("connection", (socket) => {
-  const unsubscribe = game.subscribe((snapshot) => {
-    socket.send(JSON.stringify({ type: "snapshot", payload: snapshot }));
+  clientSequence += 1;
+  const clientId = `client-${clientSequence}`;
+
+  const unsubscribe = game.subscribe(clientId, (message) => {
+    socket.send(JSON.stringify(message));
   });
 
   socket.on("message", (data) => {
+    let parsed: unknown;
+
     try {
-      const parsed: unknown = JSON.parse(String(data));
-      const command = validateCommand(parsed);
-      game.queueCommand(command);
+      parsed = JSON.parse(String(data));
+      const message = validateCommand(parsed);
+
+      if (message.type === "CLIENT_ATTACK_REQUEST") {
+        game.queueAttack(clientId, message.payload);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown command error.";
-      socket.send(JSON.stringify({ type: "error", payload: { message } }));
+      socket.send(
+        JSON.stringify({
+          type: "SERVER_ACTION_REJECTED",
+          payload: {
+            reason: "INVALID_MESSAGE_FORMAT",
+            message,
+            order: fallbackOrder(parsed),
+          },
+        }),
+      );
     }
   });
 
@@ -104,7 +134,7 @@ const runSimulationLoop = (): void => {
 
   if (driftMs > DRIFT_WARN_MS) {
     console.warn(
-      `Simulation drift detected (${driftMs.toFixed(2)}ms behind schedule). Pending inputs: ${game.getPendingCommandCount()}.`,
+      `Simulation drift detected (${driftMs.toFixed(2)}ms behind schedule). Pending inputs: ${game.getPendingAttackCount()}.`,
     );
   }
 
@@ -117,9 +147,7 @@ const runSimulationLoop = (): void => {
     const tickDuration = performance.now() - tickStart;
 
     if (tickDuration > TICK_DURATION_WARN_MS) {
-      console.warn(
-        `Slow simulation tick (${tickDuration.toFixed(2)}ms) over budget ${TICK_INTERVAL_MS.toFixed(2)}ms.`,
-      );
+      console.warn(`Slow simulation tick (${tickDuration.toFixed(2)}ms) over budget ${TICK_INTERVAL_MS.toFixed(2)}ms.`);
     }
 
     processedTicks += 1;
