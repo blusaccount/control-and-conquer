@@ -4,8 +4,8 @@ import { extname, join, normalize } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { ClientCommand } from "../Core/types.js";
 import { GameSession } from "./GameSession.js";
+import { validateCommand } from "./validateCommand.js";
 import {
   DRIFT_WARN_MS,
   MAX_CATCH_UP_TICKS,
@@ -79,7 +79,8 @@ wss.on("connection", (socket) => {
 
   socket.on("message", (data) => {
     try {
-      const command = JSON.parse(String(data)) as ClientCommand;
+      const parsed: unknown = JSON.parse(String(data));
+      const command = validateCommand(parsed);
       game.queueCommand(command);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown command error.";
