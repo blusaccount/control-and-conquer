@@ -28,12 +28,27 @@ export interface GameStateSnapshot {
   territories: Record<string, Territory>;
   territoryOrder: string[];
   recentEvents: string[];
+  activeConflicts: ActiveConflict[];
 }
 
 export interface AttackOrder {
   sourceTerritoryId: string;
   targetTerritoryId: string;
   troops: number;
+}
+
+export interface ActiveConflict {
+  id: string;
+  attackerTeamId: TeamId;
+  defenderTeamId: TeamId;
+  sourceTerritoryId: string;
+  targetTerritoryId: string;
+  /** Remaining attacker troops engaged in the fight. */
+  attackingTroops: number;
+  /** Remaining defender troops in the contested territory. */
+  defendingTroops: number;
+  /** 0.0 = front at the border, 1.0 = territory fully overrun. */
+  progress: number;
 }
 
 export type ActionRejectedReason =
@@ -43,7 +58,8 @@ export type ActionRejectedReason =
   | "NOT_ADJACENT"
   | "INSUFFICIENT_TROOPS"
   | "SAME_OWNER"
-  | "INVALID_TROOP_COUNT";
+  | "INVALID_TROOP_COUNT"
+  | "TERRITORY_CONTESTED";
 
 export interface ActionRejectedEvent {
   reason: ActionRejectedReason;

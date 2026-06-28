@@ -1,4 +1,4 @@
-import { ClientMessage, GameStateSnapshot, ServerMessage, TeamId, Territory } from "../Core/types.js";
+import { ActiveConflict, ClientMessage, GameStateSnapshot, ServerMessage, TeamId, Territory } from "../Core/types.js";
 
 const mapCanvas = document.querySelector<HTMLCanvasElement>("#mapCanvas");
 const teamInfo = document.querySelector<HTMLDivElement>("#teamInfo");
@@ -87,6 +87,74 @@ const territoryAt = (x: number, y: number): Territory | null => {
   return null;
 };
 
+/**
+ * Draw the conflict overlay for a contested territory.
+ * A gradient washes the attacker's color from the source-centroid direction
+ * inward, covering `conflict.progress` of the territory depth.
+ * A pulsing stroke on the border indicates active fighting.
+ */
+const renderConflictOverlay = (territory: Territory, conflict: ActiveConflict): void => {
+  const source = state!.territories[conflict.sourceTerritoryId];
+  const attackerColor = state!.teams[conflict.attackerTeamId].color;
+
+  // Direction vector from source centroid to target centroid.
+  const dx = territory.center.x - source.center.x;
+  const dy = territory.center.y - source.center.y;
+  const length = Math.sqrt(dx * dx + dy * dy) || 1;
+  const ndx = dx / length;
+  const ndy = dy / length;
+
+  // Approximate "depth" of the territory along that axis using its bounding box diagonal.
+  let minProj = Infinity;
+  let maxProj = -Infinity;
+  for (const pt of territory.polygon) {
+    const proj = (pt.x - territory.center.x) * ndx + (pt.y - territory.center.y) * ndy;
+    if (proj < minProj) minProj = proj;
+    if (proj > maxProj) maxProj = proj;
+  }
+  const depth = maxProj - minProj || 1;
+
+  // Gradient origin: at the "near" edge (source side), end: deep into the territory.
+  const originX = territory.center.x + ndx * minProj;
+  const originY = territory.center.y + ndy * minProj;
+  const endX = originX + ndx * depth;
+  const endY = originY + ndy * depth;
+
+  const gradient = mapContext.createLinearGradient(originX, originY, endX, endY);
+  gradient.addColorStop(0, `${attackerColor}cc`);
+  gradient.addColorStop(conflict.progress, `${attackerColor}44`);
+  gradient.addColorStop(Math.min(1, conflict.progress + 0.05), `${attackerColor}00`);
+
+  mapContext.save();
+  mapContext.beginPath();
+  mapContext.moveTo(territory.polygon[0].x, territory.polygon[0].y);
+  for (let i = 1; i < territory.polygon.length; i += 1) {
+    mapContext.lineTo(territory.polygon[i].x, territory.polygon[i].y);
+  }
+  mapContext.closePath();
+  mapContext.clip();
+
+  mapContext.fillStyle = gradient;
+  mapContext.globalAlpha = 0.85;
+  mapContext.fill();
+  mapContext.globalAlpha = 1;
+  mapContext.restore();
+
+  // Pulsing conflict border.
+  const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 160);
+  mapContext.beginPath();
+  mapContext.moveTo(territory.polygon[0].x, territory.polygon[0].y);
+  for (let i = 1; i < territory.polygon.length; i += 1) {
+    mapContext.lineTo(territory.polygon[i].x, territory.polygon[i].y);
+  }
+  mapContext.closePath();
+  mapContext.strokeStyle = attackerColor;
+  mapContext.lineWidth = 2 + pulse * 3;
+  mapContext.globalAlpha = 0.6 + pulse * 0.4;
+  mapContext.stroke();
+  mapContext.globalAlpha = 1;
+};
+
 const renderMap = (): void => {
   if (!state) {
     return;
@@ -96,10 +164,17 @@ const renderMap = (): void => {
   mapContext.fillStyle = "#0b1220";
   mapContext.fillRect(0, 0, mapCanvas.width, mapCanvas.height);
 
+  // Build a lookup: targetTerritoryId → ActiveConflict for O(1) access per territory.
+  const conflictByTarget = new Map<string, ActiveConflict>();
+  for (const conflict of state.activeConflicts) {
+    conflictByTarget.set(conflict.targetTerritoryId, conflict);
+  }
+
   for (const territoryId of state.territoryOrder) {
     const territory = state.territories[territoryId];
     const team = state.teams[territory.ownerId];
     const isSelected = territory.id === selectedSourceTerritoryId;
+    const conflict = conflictByTarget.get(territory.id);
 
     mapContext.beginPath();
     mapContext.moveTo(territory.polygon[0].x, territory.polygon[0].y);
@@ -112,19 +187,42 @@ const renderMap = (): void => {
     mapContext.globalAlpha = isSelected ? 0.95 : 0.72;
     mapContext.fill();
     mapContext.globalAlpha = 1;
-    mapContext.strokeStyle = isSelected ? "#f8fafc" : "#1f2937";
-    mapContext.lineWidth = isSelected ? 4 : 2;
-    mapContext.stroke();
+
+    // Draw conflict overlay on top of the base fill.
+    if (conflict) {
+      renderConflictOverlay(territory, conflict);
+    }
+
+    mapContext.beginPath();
+    mapContext.moveTo(territory.polygon[0].x, territory.polygon[0].y);
+    for (let i = 1; i < territory.polygon.length; i += 1) {
+      mapContext.lineTo(territory.polygon[i].x, territory.polygon[i].y);
+    }
+    mapContext.closePath();
+    if (!conflict) {
+      mapContext.strokeStyle = isSelected ? "#f8fafc" : "#1f2937";
+      mapContext.lineWidth = isSelected ? 4 : 2;
+      mapContext.stroke();
+    }
 
     mapContext.fillStyle = "#f8fafc";
     mapContext.font = "bold 14px sans-serif";
     mapContext.fillText(territory.name, territory.center.x - territoryNameOffsetX, territory.center.y + territoryNameOffsetY);
     mapContext.font = "13px sans-serif";
-    mapContext.fillText(
-      `${territory.troops} troops`,
-      territory.center.x - troopCountOffsetX,
-      territory.center.y + troopCountOffsetY,
-    );
+
+    if (conflict) {
+      mapContext.fillText(
+        `${conflict.attackingTroops} ⚔ ${conflict.defendingTroops}`,
+        territory.center.x - troopCountOffsetX,
+        territory.center.y + troopCountOffsetY,
+      );
+    } else {
+      mapContext.fillText(
+        `${territory.troops} troops`,
+        territory.center.x - troopCountOffsetX,
+        territory.center.y + troopCountOffsetY,
+      );
+    }
   }
 
   mapContext.fillStyle = "#cbd5e1";
@@ -158,11 +256,19 @@ const renderSidebar = (): void => {
   eventsPanel.replaceChildren(list);
 };
 
-const render = (): void => {
+/** Called on each server snapshot — updates non-animated UI elements. */
+const renderSnapshot = (): void => {
   renderTeamInfo();
   renderSidebar();
-  renderMap();
 };
+
+/** Animation loop — redraws the map every frame so conflict overlays pulse smoothly. */
+const animationLoop = (): void => {
+  renderMap();
+  requestAnimationFrame(animationLoop);
+};
+
+requestAnimationFrame(animationLoop);
 
 const sendAttack = (sourceTerritoryId: string, targetTerritoryId: string, troops: number): void => {
   const message: ClientMessage = {
@@ -192,7 +298,7 @@ mapCanvas.addEventListener("click", (event) => {
   if (territory.ownerId === myTeamId) {
     selectedSourceTerritoryId = territory.id;
     setStatus(`Selected ${territory.name} as source territory.`);
-    render();
+    renderSnapshot();
     return;
   }
 
@@ -221,7 +327,7 @@ mapCanvas.addEventListener("click", (event) => {
 clearSelectionButton.addEventListener("click", () => {
   selectedSourceTerritoryId = null;
   setStatus("Selection cleared.");
-  render();
+  renderSnapshot();
 });
 
 socket.addEventListener("message", (event) => {
@@ -231,13 +337,13 @@ socket.addEventListener("message", (event) => {
     myTeamId = message.payload.teamId;
     const teamName = state?.teams[message.payload.teamId]?.name ?? teamNames[message.payload.teamId];
     setStatus(`You joined as ${teamName}.`);
-    render();
+    renderSnapshot();
     return;
   }
 
   if (message.type === "SERVER_STATE_SNAPSHOT") {
     state = message.payload;
-    render();
+    renderSnapshot();
     return;
   }
 
