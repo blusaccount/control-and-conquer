@@ -47,6 +47,7 @@ const buildTwoTerritoryState = (srcTroops: number, tgtTroops: number): GameState
   territoryOrder: ["src", "tgt"],
   recentEvents: ["Match started."],
   activeConflicts: [],
+  winnerTeamId: null,
 });
 
 test("attack validation rejects non-adjacent targets", () => {

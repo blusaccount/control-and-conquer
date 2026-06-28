@@ -13,7 +13,9 @@ import {
   CONFLICT_ADVANCE_RATE,
   CONFLICT_INITIAL_PROGRESS,
   CONFLICT_RETREAT_RATE,
-} from "../Server/simulationConfig.js";
+  INCOME_PER_TICK,
+  MAX_TROOPS_PER_TERRITORY,
+} from "./conflictConfig.js";
 
 interface QueuedAttack {
   clientId: string;
@@ -24,6 +26,8 @@ interface QueuedAttack {
 export interface TickResult {
   snapshot: GameStateSnapshot;
   rejections: Array<{ clientId: string; rejection: ActionRejectedEvent }>;
+  /** True on the tick the winner is first determined; false on every other tick. */
+  matchJustEnded: boolean;
 }
 
 const MAX_EVENTS = 10;
@@ -42,6 +46,7 @@ const createInitialState = (): GameStateSnapshot => ({
   territoryOrder,
   recentEvents: ["Match started."],
   activeConflicts: [],
+  winnerTeamId: null,
 });
 
 const isPositiveInteger = (value: number): boolean => Number.isInteger(value) && value > 0;
@@ -55,9 +60,18 @@ const conflictId = (sourceTerritoryId: string, targetTerritoryId: string): strin
 
 export class MapState {
   private state: GameStateSnapshot;
+  /**
+   * Fractional troop income accumulated per territory. Kept private so the
+   * public snapshot stays integer-clean. Drained into `troops` whenever the
+   * accumulator reaches >= 1.
+   */
+  private growthAccumulator: Record<string, number> = {};
 
   public constructor(initialState: GameStateSnapshot = createInitialState()) {
     this.state = structuredClone(initialState);
+    for (const id of this.state.territoryOrder) {
+      this.growthAccumulator[id] = 0;
+    }
   }
 
   public getSnapshot(): GameStateSnapshot {
@@ -66,6 +80,26 @@ export class MapState {
 
   public processTick(attacks: QueuedAttack[]): TickResult {
     const rejections: TickResult["rejections"] = [];
+
+    // Match already over: ignore all incoming attacks, no growth, no conflicts.
+    if (this.state.winnerTeamId !== null) {
+      for (const attack of attacks) {
+        rejections.push({
+          clientId: attack.clientId,
+          rejection: {
+            reason: "MATCH_ENDED",
+            message: "The match has already ended.",
+            order: attack.order,
+          },
+        });
+      }
+      this.state.tick += 1;
+      return {
+        snapshot: this.getSnapshot(),
+        rejections,
+        matchJustEnded: false,
+      };
+    }
 
     for (const attack of attacks) {
       const rejection = this.validateAttack(attack.teamId, attack.order);
@@ -77,12 +111,16 @@ export class MapState {
       this.startOrReinforceConflict(attack.teamId, attack.order);
     }
 
+    this.applyTroopGrowth();
     this.advanceConflicts();
+
+    const matchJustEnded = this.checkVictory();
 
     this.state.tick += 1;
     return {
       snapshot: this.getSnapshot(),
       rejections,
+      matchJustEnded,
     };
   }
 
@@ -201,6 +239,38 @@ export class MapState {
   }
 
   /**
+   * Each non-contested territory accumulates fractional income. When the
+   * accumulator reaches >= 1, whole troops are flushed into `territory.troops`
+   * up to MAX_TROOPS_PER_TERRITORY.
+   *
+   * Contested territories do not grow — the defending count is owned by the
+   * conflict and synced back via `advanceConflicts`.
+   */
+  private applyTroopGrowth(): void {
+    const contestedTargets = new Set<string>(
+      this.state.activeConflicts.map((c) => c.targetTerritoryId),
+    );
+
+    for (const id of this.state.territoryOrder) {
+      if (contestedTargets.has(id)) {
+        continue;
+      }
+      const territory = this.state.territories[id];
+      if (territory.troops >= MAX_TROOPS_PER_TERRITORY) {
+        this.growthAccumulator[id] = 0;
+        continue;
+      }
+
+      this.growthAccumulator[id] += INCOME_PER_TICK;
+      if (this.growthAccumulator[id] >= 1) {
+        const whole = Math.floor(this.growthAccumulator[id]);
+        territory.troops = Math.min(MAX_TROOPS_PER_TERRITORY, territory.troops + whole);
+        this.growthAccumulator[id] -= whole;
+      }
+    }
+  }
+
+  /**
    * Run one simulation step for every active conflict: apply attrition,
    * advance or retreat the front line, and resolve captures/repels.
    */
@@ -235,6 +305,9 @@ export class MapState {
         const previousOwner = target.ownerId;
         target.ownerId = conflict.attackerTeamId;
         target.troops = garrison;
+        // Reset growth accumulator on capture so the new owner doesn't inherit
+        // a half-cooked progress bar from the previous owner.
+        this.growthAccumulator[target.id] = 0;
         appendEvent(
           this.state,
           `${this.state.teams[conflict.attackerTeamId].name} captured ${target.name} from ${this.state.teams[previousOwner].name} and established a ${garrison}-troop garrison.`,
@@ -263,6 +336,41 @@ export class MapState {
     this.state.activeConflicts = this.state.activeConflicts.filter(
       (c) => !resolved.includes(c),
     );
+  }
+
+  /**
+   * If every territory is owned by the same team and no conflicts are active,
+   * declare that team the winner. Returns true on the tick the winner is
+   * first detected (so the session can fire SERVER_MATCH_ENDED exactly once).
+   */
+  private checkVictory(): boolean {
+    if (this.state.winnerTeamId !== null) {
+      return false;
+    }
+    if (this.state.activeConflicts.length > 0) {
+      return false;
+    }
+
+    let candidate: TeamId | null = null;
+    for (const id of this.state.territoryOrder) {
+      const owner = this.state.territories[id].ownerId;
+      if (candidate === null) {
+        candidate = owner;
+      } else if (candidate !== owner) {
+        return false;
+      }
+    }
+
+    if (candidate === null) {
+      return false;
+    }
+
+    this.state.winnerTeamId = candidate;
+    appendEvent(
+      this.state,
+      `${this.state.teams[candidate].name} has conquered the map. Match ended.`,
+    );
+    return true;
   }
 }
 

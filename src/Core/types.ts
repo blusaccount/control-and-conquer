@@ -29,6 +29,8 @@ export interface GameStateSnapshot {
   territoryOrder: string[];
   recentEvents: string[];
   activeConflicts: ActiveConflict[];
+  /** Set once a single team owns every territory. `null` while the match is live. */
+  winnerTeamId: TeamId | null;
 }
 
 export interface AttackOrder {
@@ -59,7 +61,8 @@ export type ActionRejectedReason =
   | "INSUFFICIENT_TROOPS"
   | "SAME_OWNER"
   | "INVALID_TROOP_COUNT"
-  | "TERRITORY_CONTESTED";
+  | "TERRITORY_CONTESTED"
+  | "MATCH_ENDED";
 
 export interface ActionRejectedEvent {
   reason: ActionRejectedReason;
@@ -87,59 +90,8 @@ export type ServerMessage =
   | {
       type: "SERVER_ACTION_REJECTED";
       payload: ActionRejectedEvent;
+    }
+  | {
+      type: "SERVER_MATCH_ENDED";
+      payload: { winnerTeamId: TeamId };
     };
-
-// Legacy enums kept for existing non-MVP modules.
-export enum Faction {
-  USA = "usa",
-  China = "china",
-  GLA = "gla",
-}
-
-export enum UnitType {
-  Infantry = "infantry",
-  Tank = "tank",
-}
-
-// Legacy battle model kept to avoid breaking existing modules not used by MVP.
-export type UnitRoster = Record<UnitType, number>;
-
-export interface BattleFrameUnit {
-  side: "attacker" | "defender";
-  unitType: UnitType;
-  x: number;
-  hp: number;
-  maxHp: number;
-}
-
-export interface BattleFrame {
-  time: number;
-  units: BattleFrameUnit[];
-}
-
-export interface BattleSummary {
-  id: string;
-  attackerId: string;
-  defenderId: string;
-  attackerProvinceId: string;
-  defenderProvinceId: string;
-  winnerId: string | null;
-  winnerFaction: Faction | null;
-  attackerRemaining: UnitRoster;
-  defenderRemaining: UnitRoster;
-  provinceCaptured: boolean;
-  timeline: BattleFrame[];
-  log: string[];
-}
-
-export const createEmptyRoster = (): UnitRoster => ({
-  [UnitType.Infantry]: 0,
-  [UnitType.Tank]: 0,
-});
-
-export const cloneRoster = (roster: UnitRoster): UnitRoster => ({
-  [UnitType.Infantry]: roster[UnitType.Infantry],
-  [UnitType.Tank]: roster[UnitType.Tank],
-});
-
-export const rosterTotal = (roster: UnitRoster): number => roster[UnitType.Infantry] + roster[UnitType.Tank];
