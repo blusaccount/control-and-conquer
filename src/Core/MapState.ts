@@ -20,6 +20,7 @@ export interface TickResult {
 }
 
 const MAX_EVENTS = 10;
+const MIN_CAPTURE_GARRISON = 1;
 
 const createTeams = (): Record<TeamId, TeamState> => ({
   blue: { id: "blue", name: "Blue Team", color: "#3b82f6" },
@@ -131,19 +132,21 @@ export class MapState {
   private resolveAttack(attackerTeamId: TeamId, order: AttackOrder): void {
     const source = this.state.territories[order.sourceTerritoryId];
     const target = this.state.territories[order.targetTerritoryId];
+    const sourceTroopsBefore = source.troops;
     const defendingBefore = target.troops;
 
-    source.troops -= order.troops;
-    target.troops -= order.troops;
+    source.troops = sourceTroopsBefore - order.troops;
+    target.troops = defendingBefore - order.troops;
 
     if (target.troops <= 0) {
-      const remainingAttackTroops = Math.max(1, order.troops - defendingBefore);
+      const excessAttackTroops = order.troops - defendingBefore;
+      const remainingAttackTroops = excessAttackTroops > 0 ? excessAttackTroops : MIN_CAPTURE_GARRISON;
       const previousOwner = target.ownerId;
       target.ownerId = attackerTeamId;
       target.troops = remainingAttackTroops;
       appendEvent(
         this.state,
-        `${this.state.teams[attackerTeamId].name} captured ${target.name} from ${this.state.teams[previousOwner].name} with ${remainingAttackTroops} troops.`,
+        `${this.state.teams[attackerTeamId].name} captured ${target.name} from ${this.state.teams[previousOwner].name} and established a ${remainingAttackTroops}-troop garrison.`,
       );
       return;
     }

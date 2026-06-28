@@ -6,6 +6,9 @@ const isNonEmptyString = (value: unknown): value is string =>
 const isPositiveInteger = (value: unknown): value is number =>
   typeof value === "number" && Number.isInteger(value) && value > 0;
 
+const asTrimmedString = (value: unknown): string =>
+  typeof value === "string" ? value.trim() : "";
+
 const parseAttackOrder = (payload: unknown): AttackOrder => {
   if (typeof payload !== "object" || payload === null) {
     throw new Error("CLIENT_ATTACK_REQUEST.payload must be an object.");
@@ -26,8 +29,8 @@ const parseAttackOrder = (payload: unknown): AttackOrder => {
   }
 
   return {
-    sourceTerritoryId: attack.sourceTerritoryId,
-    targetTerritoryId: attack.targetTerritoryId,
+    sourceTerritoryId: asTrimmedString(attack.sourceTerritoryId),
+    targetTerritoryId: asTrimmedString(attack.targetTerritoryId),
     troops: attack.troops,
   };
 };

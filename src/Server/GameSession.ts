@@ -79,7 +79,7 @@ export class GameSession {
     }
   }
 
-  public getPendingCommandCount(): number {
+  public getPendingAttackCount(): number {
     return this.pendingAttacks.length;
   }
 }

@@ -37,6 +37,7 @@ export interface AttackOrder {
 }
 
 export type ActionRejectedReason =
+  | "INVALID_MESSAGE_FORMAT"
   | "INVALID_TERRITORY"
   | "NOT_OWNER"
   | "NOT_ADJACENT"

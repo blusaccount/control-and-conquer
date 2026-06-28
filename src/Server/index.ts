@@ -20,6 +20,18 @@ const assetDir = join(rootDir, "dist");
 const port = Number(process.env.PORT ?? 3000);
 const game = new GameSession();
 let clientSequence = 0;
+const fallbackOrder = (raw: unknown) => {
+  const message = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+  const payload = typeof message.payload === "object" && message.payload !== null
+    ? (message.payload as Record<string, unknown>)
+    : {};
+
+  return {
+    sourceTerritoryId: typeof payload.sourceTerritoryId === "string" ? payload.sourceTerritoryId : "",
+    targetTerritoryId: typeof payload.targetTerritoryId === "string" ? payload.targetTerritoryId : "",
+    troops: typeof payload.troops === "number" && Number.isInteger(payload.troops) ? payload.troops : 1,
+  };
+};
 
 const mimeTypes: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -82,8 +94,10 @@ wss.on("connection", (socket) => {
   });
 
   socket.on("message", (data) => {
+    let parsed: unknown;
+
     try {
-      const parsed: unknown = JSON.parse(String(data));
+      parsed = JSON.parse(String(data));
       const message = validateCommand(parsed);
 
       if (message.type === "CLIENT_ATTACK_REQUEST") {
@@ -95,9 +109,9 @@ wss.on("connection", (socket) => {
         JSON.stringify({
           type: "SERVER_ACTION_REJECTED",
           payload: {
-            reason: "INVALID_TROOP_COUNT",
+            reason: "INVALID_MESSAGE_FORMAT",
             message,
-            order: { sourceTerritoryId: "", targetTerritoryId: "", troops: 0 },
+            order: fallbackOrder(parsed),
           },
         }),
       );
@@ -120,7 +134,7 @@ const runSimulationLoop = (): void => {
 
   if (driftMs > DRIFT_WARN_MS) {
     console.warn(
-      `Simulation drift detected (${driftMs.toFixed(2)}ms behind schedule). Pending inputs: ${game.getPendingCommandCount()}.`,
+      `Simulation drift detected (${driftMs.toFixed(2)}ms behind schedule). Pending inputs: ${game.getPendingAttackCount()}.`,
     );
   }
 

@@ -23,6 +23,11 @@ const socket = new WebSocket(`${socketProtocol}://${window.location.host}`);
 let state: GameStateSnapshot | null = null;
 let myTeamId: TeamId | null = null;
 let selectedSourceTerritoryId: string | null = null;
+const teamNames: Record<TeamId, string> = { blue: "Blue Team", red: "Red Team" };
+const territoryNameOffsetX = 45;
+const territoryNameOffsetY = -2;
+const troopCountOffsetX = 36;
+const troopCountOffsetY = 16;
 
 const isPositiveInteger = (value: number): boolean => Number.isInteger(value) && value > 0;
 
@@ -38,20 +43,28 @@ const renderTeamInfo = (): void => {
   }
 
   const team = state.teams[myTeamId];
-  teamInfo.innerHTML = `<strong style="color:${team.color}">${team.name}</strong>`;
+  teamInfo.textContent = team.name;
+  teamInfo.style.color = team.color;
 };
 
-const pointInPolygon = (x: number, y: number, polygon: Array<{ x: number; y: number }>): boolean => {
+const pointInPolygon = (x: number, y: number, points: Array<{ x: number; y: number }>): boolean => {
   let inside = false;
 
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
-    const xi = polygon[i].x;
-    const yi = polygon[i].y;
-    const xj = polygon[j].x;
-    const yj = polygon[j].y;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i, i += 1) {
+    const xi = points[i].x;
+    const yi = points[i].y;
+    const xj = points[j].x;
+    const yj = points[j].y;
 
-    const intersects = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
-    if (intersects) {
+    const crossesScanline = (yi > y) !== (yj > y);
+    const denominator = yj - yi;
+    if (denominator === 0) {
+      continue;
+    }
+    const edgeIntersectionX = ((xj - xi) * (y - yi)) / denominator + xi;
+    const isLeftOfIntersection = x < edgeIntersectionX;
+
+    if (crossesScanline && isLeftOfIntersection) {
       inside = !inside;
     }
   }
@@ -105,9 +118,13 @@ const renderMap = (): void => {
 
     mapContext.fillStyle = "#f8fafc";
     mapContext.font = "bold 14px sans-serif";
-    mapContext.fillText(territory.name, territory.center.x - 45, territory.center.y - 2);
+    mapContext.fillText(territory.name, territory.center.x - territoryNameOffsetX, territory.center.y + territoryNameOffsetY);
     mapContext.font = "13px sans-serif";
-    mapContext.fillText(`${territory.troops} troops`, territory.center.x - 36, territory.center.y + 16);
+    mapContext.fillText(
+      `${territory.troops} troops`,
+      territory.center.x - troopCountOffsetX,
+      territory.center.y + troopCountOffsetY,
+    );
   }
 
   mapContext.fillStyle = "#cbd5e1";
@@ -132,7 +149,13 @@ const renderSidebar = (): void => {
     selectionInfo.textContent = "No source territory selected.";
   }
 
-  eventsPanel.innerHTML = `<ul>${state.recentEvents.map((event) => `<li>${event}</li>`).join("")}</ul>`;
+  const list = document.createElement("ul");
+  for (const event of state.recentEvents) {
+    const item = document.createElement("li");
+    item.textContent = event;
+    list.append(item);
+  }
+  eventsPanel.replaceChildren(list);
 };
 
 const render = (): void => {
@@ -206,7 +229,8 @@ socket.addEventListener("message", (event) => {
 
   if (message.type === "SERVER_PLAYER_ASSIGNED") {
     myTeamId = message.payload.teamId;
-    setStatus(`You joined as ${message.payload.teamId.toUpperCase()} team.`);
+    const teamName = state?.teams[message.payload.teamId]?.name ?? teamNames[message.payload.teamId];
+    setStatus(`You joined as ${teamName}.`);
     render();
     return;
   }
