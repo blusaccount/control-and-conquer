@@ -89,7 +89,6 @@ test("two matches are isolated — each pair gets its own state snapshot", () =>
   assert.equal(snapshots(m2c2).length, 1);
 
   // Queue an attack in match 1 and tick — only match-1 players get the update.
-  const m1c1Snap0 = snapshots(m1c1)[0];
   registry.queueAttack("m1c1", {
     sourceTerritoryId: "west",
     targetTerritoryId: "center",
@@ -97,17 +96,17 @@ test("two matches are isolated — each pair gets its own state snapshot", () =>
   });
   registry.tickAll();
 
-  const m1c1SnapsAfterTick = snapshots(m1c1);
-  const m2c1SnapsAfterTick = snapshots(m2c1);
+  const m1c1Snaps = snapshots(m1c1);
+  const m2c1Snaps = snapshots(m2c1);
 
   // Match-1 client gets a new snapshot after the tick.
-  assert.ok(m1c1SnapsAfterTick.length > 1, "match-1 player should receive post-tick snapshot");
+  assert.ok(m1c1Snaps.length > 1, "match-1 player should receive post-tick snapshot");
   // Match-2 client also receives a post-tick snapshot (its own isolated game ticked too).
-  assert.ok(m2c1SnapsAfterTick.length > 1, "match-2 player should receive post-tick snapshot");
+  assert.ok(m2c1Snaps.length > 1, "match-2 player should receive post-tick snapshot");
 
   // The snapshots of the two matches must evolve independently.
-  const m1Tick1 = m1c1SnapsAfterTick[m1c1SnapsAfterTick.length - 1];
-  const m2Tick1 = m2c1SnapsAfterTick[m2c1SnapsAfterTick.length - 1];
+  const m1Tick1 = m1c1Snaps[m1c1Snaps.length - 1];
+  const m2Tick1 = m2c1Snaps[m2c1Snaps.length - 1];
 
   // Match-1 has an active conflict; match-2 does not (no attack was queued there).
   assert.ok(m1Tick1.activeConflicts.length > 0, "match-1 should have an active conflict after the attack");
