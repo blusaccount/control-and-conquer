@@ -1,0 +1,135 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { GameMap } from "../src/Core/GameMap.js";
+import { NEUTRAL_PLAYER, TerritoryGrid } from "../src/Core/TerritoryGrid.js";
+import { RasterConflict, type AttackIntent } from "../src/Core/RasterConflict.js";
+import { encodeTile } from "../src/Core/terrainCodec.js";
+import { INCOME_PER_TILE_PER_TICK } from "../src/Core/rasterCombatConfig.js";
+
+const flatLand = (width: number, height: number): GameMap => {
+  const terrain = new Uint8Array(width * height);
+  terrain.fill(encodeTile({ land: true, shoreline: false, ocean: false, magnitude: 0 }));
+  return new GameMap(width, height, terrain);
+};
+
+/** Run `n` empty ticks. */
+const runTicks = (conflict: RasterConflict, n: number): void => {
+  for (let i = 0; i < n; i += 1) conflict.processTick();
+};
+
+test("income grows the pool proportionally to owned tiles", () => {
+  const grid = new TerritoryGrid(flatLand(10, 10));
+  grid.addPlayer(1, 0);
+  for (let ref = 0; ref < 10; ref += 1) grid.claim(ref, 1); // 10 tiles, far from victory
+  const conflict = new RasterConflict(grid);
+
+  // 10 tiles * 0.02 = 0.2 troops/tick -> exactly 1 whole troop after 5 ticks.
+  const ticksForOne = Math.round(1 / (10 * INCOME_PER_TILE_PER_TICK));
+  runTicks(conflict, ticksForOne);
+  assert.equal(grid.troopsOf(1), 1);
+});
+
+test("launchAttack rejects invalid intents without mutating state", () => {
+  const grid = new TerritoryGrid(flatLand(5, 1));
+  grid.addPlayer(1, 5);
+  grid.addPlayer(2, 5);
+  grid.claim(0, 1); // player 1 at the far left
+  grid.claim(4, 2); // player 2 at the far right (not adjacent)
+  const conflict = new RasterConflict(grid);
+
+  assert.equal(conflict.launchAttack({ attacker: 99, target: 0, troops: 1 }), "UNKNOWN_PLAYER");
+  assert.equal(conflict.launchAttack({ attacker: 1, target: 1, troops: 1 }), "INVALID_TARGET");
+  assert.equal(conflict.launchAttack({ attacker: 1, target: 77, troops: 1 }), "INVALID_TARGET");
+  assert.equal(conflict.launchAttack({ attacker: 1, target: 0, troops: 0 }), "INVALID_TROOP_COUNT");
+  assert.equal(conflict.launchAttack({ attacker: 1, target: 0, troops: 1.5 }), "INVALID_TROOP_COUNT");
+  assert.equal(conflict.launchAttack({ attacker: 1, target: 0, troops: 999 }), "INSUFFICIENT_TROOPS");
+  // Player 2 is not adjacent to player 1, so an attack against it has no frontier.
+  assert.equal(conflict.launchAttack({ attacker: 1, target: 2, troops: 1 }), "NO_FRONTIER");
+
+  // No successful attack was launched and the pool is untouched.
+  assert.equal(conflict.activeAttackCount, 0);
+  assert.equal(grid.troopsOf(1), 5);
+});
+
+test("neutral expansion claims a line of tiles ring by ring until troops run out", () => {
+  const grid = new TerritoryGrid(flatLand(5, 1));
+  grid.addPlayer(1, 4);
+  grid.claim(0, 1);
+  const conflict = new RasterConflict(grid);
+
+  // Commit all 4 troops toward the 4 neutral tiles (cost 1 each on flat land).
+  assert.equal(conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 4 }), null);
+  assert.equal(grid.troopsOf(1), 0, "committed troops leave the pool immediately");
+
+  // After the first expansion tick only the adjacent tile is taken (ring 1).
+  conflict.processTick();
+  assert.equal(grid.ownerOf(1), 1);
+  assert.equal(grid.ownerOf(2), NEUTRAL_PLAYER);
+
+  // A handful more ticks captures the whole line and wins the (5-tile) map.
+  runTicks(conflict, 10);
+  for (let ref = 0; ref < 5; ref += 1) assert.equal(grid.ownerOf(ref), 1);
+  assert.equal(conflict.winner, 1);
+});
+
+test("enemy capture costs more, drains the defender, and transfers tiles", () => {
+  // 4x1 land: player 1 holds tiles 0-1, player 2 holds tiles 2-3.
+  const grid = new TerritoryGrid(flatLand(4, 1));
+  grid.addPlayer(1, 20);
+  grid.addPlayer(2, 5);
+  grid.claim(0, 1);
+  grid.claim(1, 1);
+  grid.claim(2, 2);
+  grid.claim(3, 2);
+  const conflict = new RasterConflict(grid);
+
+  assert.equal(conflict.launchAttack({ attacker: 1, target: 2, troops: 20 }), null);
+  runTicks(conflict, 30);
+
+  assert.equal(grid.tileCountOf(2), 0, "defender loses all tiles");
+  assert.equal(grid.tileCountOf(1), 4);
+  // Defender lost 1 troop per captured tile (2 tiles) from its starting pool of 5.
+  assert.ok(grid.troopsOf(2) <= 3, `defender pool should drop, got ${grid.troopsOf(2)}`);
+  assert.equal(conflict.winner, 1);
+});
+
+test("a finished match ignores further intents", () => {
+  const grid = new TerritoryGrid(flatLand(2, 1));
+  grid.addPlayer(1, 5);
+  grid.addPlayer(2, 5);
+  grid.claim(0, 1);
+  grid.claim(1, 1); // player 1 already owns everything -> immediate winner
+  const conflict = new RasterConflict(grid);
+
+  conflict.processTick();
+  assert.equal(conflict.winner, 1);
+
+  const result = conflict.processTick([{ attacker: 2, target: 1, troops: 1 }]);
+  assert.equal(result.winner, 1);
+  assert.equal(result.activeAttacks, 0);
+});
+
+test("simulation is deterministic for identical setup and intents", () => {
+  const build = (): { grid: TerritoryGrid; conflict: RasterConflict } => {
+    const grid = new TerritoryGrid(flatLand(6, 1));
+    grid.addPlayer(1, 6);
+    grid.addPlayer(2, 6);
+    grid.claim(0, 1);
+    grid.claim(5, 2);
+    return { grid, conflict: new RasterConflict(grid) };
+  };
+  const intents: AttackIntent[] = [
+    { attacker: 1, target: NEUTRAL_PLAYER, troops: 5 },
+    { attacker: 2, target: NEUTRAL_PLAYER, troops: 5 },
+  ];
+
+  const a = build();
+  const b = build();
+  a.conflict.processTick(intents);
+  b.conflict.processTick(intents);
+  for (let i = 0; i < 20; i += 1) {
+    a.conflict.processTick();
+    b.conflict.processTick();
+  }
+  assert.deepEqual(Array.from(a.grid.owner), Array.from(b.grid.owner));
+});
