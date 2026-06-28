@@ -82,4 +82,8 @@ export class GameSession {
   public getPendingAttackCount(): number {
     return this.pendingAttacks.length;
   }
+
+  public getSubscriberCount(): number {
+    return this.subscribers.size;
+  }
 }

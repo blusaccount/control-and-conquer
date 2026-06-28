@@ -334,6 +334,11 @@ clearSelectionButton.addEventListener("click", () => {
 socket.addEventListener("message", (event) => {
   const message = JSON.parse(String(event.data)) as ServerMessage;
 
+  if (message.type === "SERVER_LOBBY_WAITING") {
+    setStatus("Waiting for an opponent...");
+    return;
+  }
+
   if (message.type === "SERVER_PLAYER_ASSIGNED") {
     myTeamId = message.payload.teamId;
     const teamName = state?.teams[message.payload.teamId]?.name ?? teamNames[message.payload.teamId];
