@@ -7,7 +7,8 @@ import {
   TeamState,
   Territory,
 } from "./types.js";
-import { createTerritories, territoryOrder } from "./mapData.js";
+import { loadMap, type LoadedMap } from "./mapLoader.js";
+import { CONQUEROR_BASIN } from "./maps/conquerorBasin.js";
 import {
   ATTRITION_RATE,
   CONFLICT_ADVANCE_RATE,
@@ -38,12 +39,19 @@ const createTeams = (): Record<TeamId, TeamState> => ({
   red: { id: "red", name: "Red Team", color: "#ef4444" },
 });
 
-const createInitialState = (): GameStateSnapshot => ({
+/** The built-in default map, validated once at module load. */
+const DEFAULT_MAP: LoadedMap = loadMap(CONQUEROR_BASIN);
+
+/**
+ * Build a fresh starting snapshot from a loaded map. Defaults to the built-in
+ * Conqueror Basin so `new MapState()` works with no arguments.
+ */
+export const createInitialState = (map: LoadedMap = DEFAULT_MAP): GameStateSnapshot => ({
   tick: 0,
-  mapName: "Conqueror Basin",
+  mapName: map.name,
   teams: createTeams(),
-  territories: createTerritories(),
-  territoryOrder,
+  territories: structuredClone(map.territories),
+  territoryOrder: [...map.territoryOrder],
   recentEvents: ["Match started."],
   activeConflicts: [],
   winnerTeamId: null,

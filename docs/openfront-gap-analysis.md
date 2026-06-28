@@ -33,9 +33,11 @@
 - Keine Lobby-UI, kein Ready-Check, kein Rematch.
 
 ### Map / Territory
-- Hardcoded 8-Polygon-Karte „Conqueror Basin" (`src/Core/mapData.ts`).
+- **Datengetriebenes Kartenformat:** `MapDefinition` (Daten) → `loadMap()` validiert (eindeutige IDs, existierende Nachbarn, **symmetrische Adjazenz**, Polygone ≥3 Punkte, Truppen-Integer, gültige Owner) → runtime `LoadedMap`.
+- **JSON-Loader:** Server lädt Karten aus `maps/<id>.json` (Fallback auf eingebaute Maps), wählbar via `MAP_ID`. Aktive Live-Karte: `frontline-grid` (36 Tiles).
+- **Grid-Generator** (`generateGridMap`) erzeugt große, garantiert valide Karten — Keim für prozedurale Roguelite-Level.
+- Eingebaute Default-Map „Conqueror Basin" (8 Tiles) als datenbasierter Fallback ohne Filesystem-Abhängigkeit.
 - Polygon-basierter Hit-Test im Client.
-- Noch kein datengetriebenes Kartenformat, keine prozedurale Generierung.
 
 ### UI / UX
 - Canvas 2D mit polygon-fill + Truppen-Labels.
@@ -49,7 +51,7 @@
 
 ### Build / CI / Observability
 - `npm test`, `npm run build`, `npm run lint`, `npm run dev` (Casing-Bug gefixt).
-- 39 Unit-Tests (Core + Server + Tick-Determinismus + Wachstum + Win-Condition + Client-Geometrie).
+- 58 Unit-Tests (Core + Server + Tick-Determinismus + Wachstum + Win-Condition + Client-Geometrie + Map-Loader/Generator/Repository).
 - Auto-Deploy via Render auf https://control-and-conquer.onrender.com nach Push auf `main`.
 - **GitHub-Actions-CI** (`.github/workflows/ci.yml`): `lint + build + test` als PR-Gate auf jeden PR und Push nach `main`.
 
@@ -57,7 +59,7 @@
 
 | Bereich | Status | Priorität | Aufwand | Risiko |
 |---|---|---|---|---|
-| Karte vergrößern + datengetrieben (JSON-Loader, 30+ Tiles) | offen | P1 | M | M |
+| Karte vergrößern + datengetrieben (JSON-Loader, 30+ Tiles) | ✅ erledigt (36 Tiles) | P1 | M | M |
 | N-Player-Support (Teams als Array, Color-Palette) | offen | P1 | M | M |
 | Bot-KI für Solo-Matches | offen | P1 | S | L |
 | Lobby-UI (Waiting-Screen, Rematch-Button) | offen | P1 | S | L |
@@ -102,8 +104,9 @@
 - Tests dürfen aus `src/Core/` und `src/Server/` importieren.
 
 ## 6) Nächste konkret kleine Schritte
-1. Karte auf JSON-Loader umstellen (50+ Tiles).
-2. Solo-Bot-KI (simpel: greedy „angreife schwächstes Nachbargebiet").
-3. Rematch-Flow (Client-Button → Server-Reset oder neue Session).
-4. ~~GitHub-Actions-Workflow (`.github/workflows/ci.yml`).~~ ✅ erledigt
-5. ~~Client-Modul-Splittung (`render`/`input`/`net`).~~ ✅ erledigt
+1. ~~Karte auf JSON-Loader umstellen.~~ ✅ erledigt (`maps/frontline-grid.json`, 36 Tiles, `MAP_ID`-wählbar)
+2. N-Player-Support: `TeamId` von `"blue" | "red"` auf Array/Palette umstellen (Voraussetzung für PvE & Fraktionen).
+3. Solo-Bot-KI (simpel: greedy „angreife schwächstes Nachbargebiet").
+4. Rematch-Flow (Client-Button → Server-Reset oder neue Session).
+5. ~~GitHub-Actions-Workflow (`.github/workflows/ci.yml`).~~ ✅ erledigt
+6. ~~Client-Modul-Splittung (`render`/`input`/`net`).~~ ✅ erledigt

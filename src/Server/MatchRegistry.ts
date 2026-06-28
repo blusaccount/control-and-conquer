@@ -1,5 +1,5 @@
 import { GameSession } from "./GameSession.js";
-import { AttackOrder, ServerMessage } from "../Core/types.js";
+import { AttackOrder, GameStateSnapshot, ServerMessage } from "../Core/types.js";
 
 type MessageHandler = (message: ServerMessage) => void;
 
@@ -35,6 +35,13 @@ export class MatchRegistry {
   private matchSequence = 0;
 
   /**
+   * Optional starting snapshot every new match is seeded from (the selected
+   * map). GameSession deep-clones it, so a single template is safe to share
+   * across all sessions. Defaults to the built-in map when omitted.
+   */
+  public constructor(private readonly initialState?: GameStateSnapshot) {}
+
+  /**
    * Register a new client connection.  Returns an unsubscribe function that
    * must be called when the client disconnects.
    */
@@ -59,7 +66,7 @@ export class MatchRegistry {
       const p1 = this.pendingEntry;
       this.pendingEntry = null;
 
-      const session = new GameSession();
+      const session = new GameSession(this.initialState);
       this.activeMatches.set(p1.matchId, session);
 
       const unsub1 = session.subscribe(p1.clientId, p1.send);
