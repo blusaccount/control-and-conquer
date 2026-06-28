@@ -128,9 +128,73 @@
         margin: 8px 0 0;
         padding-left: 20px;
       }
+
+      .menu-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        background: rgba(15, 17, 23, 0.94);
+        backdrop-filter: blur(4px);
+      }
+      .menu-overlay h1 {
+        font-size: 36px;
+        margin: 0 0 8px;
+        letter-spacing: 1px;
+      }
+      .menu-overlay p.hint {
+        max-width: 400px;
+        text-align: center;
+        margin: 0 0 16px;
+      }
+      .menu-button {
+        width: 320px;
+        padding: 14px 24px;
+        border: 0;
+        border-radius: 10px;
+        font-size: 16px;
+        font-weight: 600;
+        cursor: pointer;
+        color: white;
+      }
+      .menu-button.primary { background: #2563eb; }
+      .menu-button.primary:hover { background: #1d4ed8; }
+      .menu-button.secondary { background: #374151; }
+      .menu-button.secondary:hover { background: #4b5563; }
+      .menu-button .sub {
+        display: block;
+        font-size: 12px;
+        font-weight: 400;
+        opacity: 0.8;
+        margin-top: 4px;
+      }
+      .menu-overlay.hidden { display: none; }
+      #events .event {
+        font-size: 12px;
+        padding: 4px 0;
+        border-bottom: 1px solid #1f2937;
+        color: #cbd5e1;
+      }
     </style>
   </head>
   <body>
+
+    <div id="menuOverlay" class="menu-overlay">
+      <h1>Control &amp; Conquer</h1>
+      <p class="hint">OpenFront-inspired territory combat. Pick a mode to begin.</p>
+      <button id="playRasterSoloButton" class="menu-button primary" type="button">
+        Play vs Bot — Raster Mode
+        <span class="sub">Pixel terrain, organic fronts, instant start (openfront-style)</span>
+      </button>
+      <button id="playMultiButton" class="menu-button secondary" type="button">
+        Play 1v1 Multiplayer
+        <span class="sub">Polygon territories, queue for a human opponent</span>
+      </button>
+    </div>
     <main>
       <aside>
         <section>

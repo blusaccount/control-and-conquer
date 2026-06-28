@@ -103,13 +103,24 @@ const server = createServer(async (request, response) => {
 
 const wss = new WebSocketServer({ server });
 
-wss.on("connection", (socket) => {
+wss.on("connection", (socket, request) => {
   clientSequence += 1;
   const clientId = `client-${clientSequence}`;
 
-  const unsubscribe = registry.join(clientId, (message) => {
+  // Mode is selected by the client via the WebSocket URL query string:
+  //   ws://host/?mode=multi        -> 1v1 polygon lobby pairing (default)
+  //   ws://host/?mode=raster-solo  -> instant raster (openfront-style) match vs bot
+  const requestUrl = new URL(request.url ?? "/", `ws://${request.headers.host ?? "localhost"}`);
+  const requestedMode = requestUrl.searchParams.get("mode");
+  const mode: "multi" | "raster-solo" = requestedMode === "raster-solo" ? "raster-solo" : "multi";
+
+  const send = (message: unknown): void => {
     socket.send(JSON.stringify(message));
-  });
+  };
+
+  const unsubscribe = mode === "raster-solo"
+    ? registry.joinRasterSolo(clientId, send)
+    : registry.join(clientId, send);
 
   socket.on("message", (data) => {
     let parsed: unknown;
@@ -120,19 +131,31 @@ wss.on("connection", (socket) => {
 
       if (message.type === "CLIENT_ATTACK_REQUEST") {
         registry.queueAttack(clientId, message.payload);
+      } else if (message.type === "CLIENT_RASTER_EXPAND") {
+        registry.queueRasterExpand(clientId, message.payload);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown command error.";
-      socket.send(
-        JSON.stringify({
+      // Send a mode-appropriate rejection envelope.
+      if (mode === "raster-solo") {
+        socket.send(JSON.stringify({
+          type: "SERVER_RASTER_ACTION_REJECTED",
+          payload: {
+            reason: "INVALID_MESSAGE_FORMAT",
+            message,
+            intent: { targetX: 0, targetY: 0, percent: 50 },
+          },
+        }));
+      } else {
+        socket.send(JSON.stringify({
           type: "SERVER_ACTION_REJECTED",
           payload: {
             reason: "INVALID_MESSAGE_FORMAT",
             message,
             order: fallbackOrder(parsed),
           },
-        }),
-      );
+        }));
+      }
     }
   });
 

@@ -13,6 +13,9 @@ export interface UiElements {
   selectionInfo: HTMLDivElement;
   statusMessage: HTMLDivElement;
   eventsPanel: HTMLDivElement;
+  menuOverlay: HTMLDivElement;
+  playRasterSoloButton: HTMLButtonElement;
+  playMultiButton: HTMLButtonElement;
 }
 
 export type StatusKind = "info" | "error" | "victory";
@@ -26,6 +29,9 @@ export const getUiElements = (): UiElements => {
   const selectionInfo = document.querySelector<HTMLDivElement>("#selectionInfo");
   const statusMessage = document.querySelector<HTMLDivElement>("#statusMessage");
   const eventsPanel = document.querySelector<HTMLDivElement>("#events");
+  const menuOverlay = document.querySelector<HTMLDivElement>("#menuOverlay");
+  const playRasterSoloButton = document.querySelector<HTMLButtonElement>("#playRasterSoloButton");
+  const playMultiButton = document.querySelector<HTMLButtonElement>("#playMultiButton");
 
   if (
     !mapCanvas ||
@@ -35,7 +41,10 @@ export const getUiElements = (): UiElements => {
     !clearSelectionButton ||
     !selectionInfo ||
     !statusMessage ||
-    !eventsPanel
+    !eventsPanel ||
+    !menuOverlay ||
+    !playRasterSoloButton ||
+    !playMultiButton
   ) {
     throw new Error("UI failed to initialize.");
   }
@@ -55,6 +64,9 @@ export const getUiElements = (): UiElements => {
     selectionInfo,
     statusMessage,
     eventsPanel,
+    menuOverlay,
+    playRasterSoloButton,
+    playMultiButton,
   };
 };
 
@@ -62,4 +74,8 @@ export const setStatus = (ui: UiElements, message: string, kind: StatusKind = "i
   ui.statusMessage.textContent = message;
   ui.statusMessage.classList.toggle("error", kind === "error");
   ui.statusMessage.classList.toggle("victory", kind === "victory");
+};
+
+export const hideMenu = (ui: UiElements): void => {
+  ui.menuOverlay.classList.add("hidden");
 };
