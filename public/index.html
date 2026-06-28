@@ -128,9 +128,69 @@
         margin: 8px 0 0;
         padding-left: 20px;
       }
+
+      .menu-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        background: rgba(15, 17, 23, 0.94);
+        backdrop-filter: blur(4px);
+      }
+
+      .menu-overlay h1 {
+        font-size: 36px;
+        margin: 0 0 8px;
+        letter-spacing: 1px;
+      }
+
+      .menu-overlay p.hint {
+        max-width: 360px;
+        text-align: center;
+        margin: 0 0 16px;
+      }
+
+      .menu-button {
+        width: 280px;
+        padding: 14px 24px;
+        border: 0;
+        border-radius: 10px;
+        font-size: 16px;
+        font-weight: 600;
+        cursor: pointer;
+        color: white;
+      }
+
+      .menu-button.primary {
+        background: #2563eb;
+      }
+      .menu-button.primary:hover {
+        background: #1d4ed8;
+      }
+      .menu-button.secondary {
+        background: #374151;
+      }
+      .menu-button.secondary:hover {
+        background: #4b5563;
+      }
+
+      .menu-overlay.hidden {
+        display: none;
+      }
     </style>
   </head>
   <body>
+
+    <div id="menuOverlay" class="menu-overlay">
+      <h1>Control &amp; Conquer</h1>
+      <p class="hint">OpenFront-inspired territory combat. Pick a mode to begin.</p>
+      <button id="playSoloButton" class="menu-button primary" type="button">Play vs Bot (Solo)</button>
+      <button id="playMultiButton" class="menu-button secondary" type="button">Play 1v1 Multiplayer</button>
+    </div>
     <main>
       <aside>
         <section>

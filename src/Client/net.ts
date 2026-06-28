@@ -8,6 +8,9 @@ export interface Net {
   sendAttack: (sourceTerritoryId: string, targetTerritoryId: string, troops: number) => void;
 }
 
+/** Connection mode selected from the lobby menu. */
+export type ConnectMode = "solo" | "multi";
+
 const handleServerMessage = (ui: UiElements, message: ServerMessage): void => {
   if (message.type === "SERVER_LOBBY_WAITING") {
     setStatus(ui, "Waiting for an opponent...");
@@ -46,9 +49,9 @@ const handleServerMessage = (ui: UiElements, message: ServerMessage): void => {
   setStatus(ui, message.payload.message, "error");
 };
 
-export const connect = (ui: UiElements): Net => {
+export const connect = (ui: UiElements, mode: ConnectMode = "multi"): Net => {
   const socketProtocol = window.location.protocol === "https:" ? "wss" : "ws";
-  const socket = new WebSocket(`${socketProtocol}://${window.location.host}`);
+  const socket = new WebSocket(`${socketProtocol}://${window.location.host}/?mode=${mode}`);
 
   socket.addEventListener("message", (event) => {
     const message = JSON.parse(String(event.data)) as ServerMessage;

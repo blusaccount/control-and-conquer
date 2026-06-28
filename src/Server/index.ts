@@ -103,13 +103,24 @@ const server = createServer(async (request, response) => {
 
 const wss = new WebSocketServer({ server });
 
-wss.on("connection", (socket) => {
+wss.on("connection", (socket, request) => {
   clientSequence += 1;
   const clientId = `client-${clientSequence}`;
 
-  const unsubscribe = registry.join(clientId, (message) => {
+  // Mode is selected by the client via the WebSocket URL query string:
+  //   ws://host/?mode=solo  -> immediate match vs server-side bot
+  //   ws://host/?mode=multi -> 1v1 lobby pairing (default)
+  const requestUrl = new URL(request.url ?? "/", `ws://${request.headers.host ?? "localhost"}`);
+  const requestedMode = requestUrl.searchParams.get("mode");
+  const mode: "solo" | "multi" = requestedMode === "solo" ? "solo" : "multi";
+
+  const send = (message: unknown): void => {
     socket.send(JSON.stringify(message));
-  });
+  };
+
+  const unsubscribe = mode === "solo"
+    ? registry.joinSolo(clientId, (m) => send(m))
+    : registry.join(clientId, (m) => send(m));
 
   socket.on("message", (data) => {
     let parsed: unknown;

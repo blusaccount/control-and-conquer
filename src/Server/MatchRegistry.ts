@@ -1,3 +1,4 @@
+import { BotController } from "./BotController.js";
 import { GameSession } from "./GameSession.js";
 import { AttackOrder, GameStateSnapshot, ServerMessage } from "../Core/types.js";
 
@@ -16,17 +17,16 @@ interface PendingLobbyEntry {
 }
 
 /**
- * Manages isolated 1v1 matches.  Each pair of connecting clients is placed in
- * its own GameSession so that multiple player pairs can play simultaneously
- * without sharing state.
+ * Manages isolated matches. Two flavours:
  *
- * Flow:
- *  1. First client to connect is placed in a "lobby slot" and receives
- *     SERVER_LOBBY_WAITING while waiting for an opponent.
- *  2. The next client to connect is paired with the waiting client.  Both
- *     receive SERVER_PLAYER_ASSIGNED + SERVER_STATE_SNAPSHOT and the match
- *     begins.
- *  3. Subsequent pairs repeat the same process in parallel matches.
+ *  - 1v1 PvP (via `join`): first connection is queued, second connection is
+ *    paired and the match begins.
+ *  - Solo vs bot (via `joinSolo`): a fresh session is created immediately
+ *    with the human as one player and a server-side BotController as the
+ *    other. The human plays alone against the bot.
+ *
+ * Each match owns its own GameSession so multiple matches can run in
+ * parallel without sharing state.
  */
 export class MatchRegistry {
   private readonly activeMatches = new Map<string, GameSession>();
@@ -34,22 +34,15 @@ export class MatchRegistry {
   private pendingEntry: PendingLobbyEntry | null = null;
   private matchSequence = 0;
 
-  /**
-   * Optional starting snapshot every new match is seeded from (the selected
-   * map). GameSession deep-clones it, so a single template is safe to share
-   * across all sessions. Defaults to the built-in map when omitted.
-   */
   public constructor(private readonly initialState?: GameStateSnapshot) {}
 
   /**
-   * Register a new client connection.  Returns an unsubscribe function that
-   * must be called when the client disconnects.
+   * Join the PvP lobby. First client waits, second client triggers pairing.
    */
   public join(clientId: string, send: MessageHandler): () => void {
     const cleanup: CleanupRef = { fn: () => {} };
 
     if (this.pendingEntry === null) {
-      // No lobby slot open — create one and wait for a second player.
       this.matchSequence += 1;
       const matchId = `match-${this.matchSequence}`;
 
@@ -62,7 +55,6 @@ export class MatchRegistry {
       this.pendingEntry = { matchId, clientId, send, cleanup };
       send({ type: "SERVER_LOBBY_WAITING" });
     } else {
-      // Lobby slot is open — pair with the waiting player and start the match.
       const p1 = this.pendingEntry;
       this.pendingEntry = null;
 
@@ -75,7 +67,6 @@ export class MatchRegistry {
       this.clientToSession.set(p1.clientId, session);
       this.clientToSession.set(clientId, session);
 
-      // Update p1's cleanup to unsubscribe from the live session.
       p1.cleanup.fn = () => {
         unsub1();
         this.clientToSession.delete(p1.clientId);
@@ -90,6 +81,32 @@ export class MatchRegistry {
     }
 
     return () => cleanup.fn();
+  }
+
+  /**
+   * Start a solo match: the human is seated first (becomes Blue under the
+   * default rotation) and a BotController is attached as the second player
+   * (becomes Red). The match starts immediately — no lobby wait.
+   */
+  public joinSolo(clientId: string, send: MessageHandler): () => void {
+    this.matchSequence += 1;
+    const matchId = `match-${this.matchSequence}-solo`;
+
+    const session = new GameSession(this.initialState);
+    this.activeMatches.set(matchId, session);
+
+    const unsubHuman = session.subscribe(clientId, send);
+    this.clientToSession.set(clientId, session);
+
+    const bot = new BotController();
+    const unsubBot = bot.attach(session);
+
+    return () => {
+      unsubHuman();
+      unsubBot();
+      this.clientToSession.delete(clientId);
+      this.removeMatchIfEmpty(matchId, session);
+    };
   }
 
   public queueAttack(clientId: string, order: AttackOrder): void {
@@ -108,6 +125,10 @@ export class MatchRegistry {
       total += session.getPendingAttackCount();
     }
     return total;
+  }
+
+  public getActiveMatchCount(): number {
+    return this.activeMatches.size;
   }
 
   private removeMatchIfEmpty(matchId: string, session: GameSession): void {
