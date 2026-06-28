@@ -4,7 +4,7 @@ import { extname, join, normalize } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { GameSession } from "./GameSession.js";
+import { MatchRegistry } from "./MatchRegistry.js";
 import { validateCommand } from "./validateCommand.js";
 import {
   DRIFT_WARN_MS,
@@ -18,7 +18,7 @@ const rootDir = fileURLToPath(new URL("../../", import.meta.url));
 const publicDir = join(rootDir, "public");
 const assetDir = join(rootDir, "dist");
 const port = Number(process.env.PORT ?? 3000);
-const game = new GameSession();
+const registry = new MatchRegistry();
 let clientSequence = 0;
 const fallbackOrder = (raw: unknown) => {
   const message = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
@@ -89,7 +89,7 @@ wss.on("connection", (socket) => {
   clientSequence += 1;
   const clientId = `client-${clientSequence}`;
 
-  const unsubscribe = game.subscribe(clientId, (message) => {
+  const unsubscribe = registry.join(clientId, (message) => {
     socket.send(JSON.stringify(message));
   });
 
@@ -101,7 +101,7 @@ wss.on("connection", (socket) => {
       const message = validateCommand(parsed);
 
       if (message.type === "CLIENT_ATTACK_REQUEST") {
-        game.queueAttack(clientId, message.payload);
+        registry.queueAttack(clientId, message.payload);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown command error.";
@@ -134,7 +134,7 @@ const runSimulationLoop = (): void => {
 
   if (driftMs > DRIFT_WARN_MS) {
     console.warn(
-      `Simulation drift detected (${driftMs.toFixed(2)}ms behind schedule). Pending inputs: ${game.getPendingAttackCount()}.`,
+      `Simulation drift detected (${driftMs.toFixed(2)}ms behind schedule). Pending inputs: ${registry.getPendingAttackCount()}.`,
     );
   }
 
@@ -143,7 +143,7 @@ const runSimulationLoop = (): void => {
 
   while (now >= nextTickAt && processedTicks < MAX_CATCH_UP_TICKS) {
     const tickStart = performance.now();
-    game.tick();
+    registry.tickAll();
     const tickDuration = performance.now() - tickStart;
 
     if (tickDuration > TICK_DURATION_WARN_MS) {

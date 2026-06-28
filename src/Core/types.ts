@@ -74,6 +74,9 @@ export type ClientMessage = {
 
 export type ServerMessage =
   | {
+      type: "SERVER_LOBBY_WAITING";
+    }
+  | {
       type: "SERVER_PLAYER_ASSIGNED";
       payload: { teamId: TeamId };
     }
