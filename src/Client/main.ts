@@ -28,6 +28,7 @@ const territoryNameOffsetX = 45;
 const territoryNameOffsetY = -2;
 const troopCountOffsetX = 36;
 const troopCountOffsetY = 16;
+const PULSE_ANIMATION_PERIOD_MS = 160;
 
 const isPositiveInteger = (value: number): boolean => Number.isInteger(value) && value > 0;
 
@@ -141,7 +142,7 @@ const renderConflictOverlay = (territory: Territory, conflict: ActiveConflict): 
   mapContext.restore();
 
   // Pulsing conflict border.
-  const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 160);
+  const pulse = 0.5 + 0.5 * Math.sin(Date.now() / PULSE_ANIMATION_PERIOD_MS);
   mapContext.beginPath();
   mapContext.moveTo(territory.polygon[0].x, territory.polygon[0].y);
   for (let i = 1; i < territory.polygon.length; i += 1) {

@@ -211,8 +211,13 @@ export class MapState {
       const target = this.state.territories[conflict.targetTerritoryId];
 
       // Attrition: each side loses floor(opponent * ATTRITION_RATE), min 1.
-      const attackerLosses = Math.max(1, Math.floor(conflict.defendingTroops * ATTRITION_RATE));
-      const defenderLosses = Math.max(1, Math.floor(conflict.attackingTroops * ATTRITION_RATE));
+      // Only apply if the opponent has troops left to fight back.
+      const attackerLosses = conflict.defendingTroops > 0
+        ? Math.max(1, Math.floor(conflict.defendingTroops * ATTRITION_RATE))
+        : 0;
+      const defenderLosses = conflict.attackingTroops > 0
+        ? Math.max(1, Math.floor(conflict.attackingTroops * ATTRITION_RATE))
+        : 0;
 
       conflict.attackingTroops = Math.max(0, conflict.attackingTroops - attackerLosses);
       conflict.defendingTroops = Math.max(0, conflict.defendingTroops - defenderLosses);

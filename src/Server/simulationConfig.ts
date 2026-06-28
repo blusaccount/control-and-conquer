@@ -10,5 +10,6 @@ export const ATTRITION_RATE = 0.08;
 // How fast the front line advances or retreats per tick when one side has more troops.
 export const CONFLICT_ADVANCE_RATE = 0.05;
 export const CONFLICT_RETREAT_RATE = 0.05;
-// Starting progress for a new conflict: troops have just crossed the border (2 retreat steps from 0).
-export const CONFLICT_INITIAL_PROGRESS = 2 * CONFLICT_ADVANCE_RATE;
+// Starting progress for a new conflict: troops have just crossed the border.
+// Must be > 0 so a single retreat step does not immediately repel on the first tick.
+export const CONFLICT_INITIAL_PROGRESS = 2 * CONFLICT_RETREAT_RATE;
