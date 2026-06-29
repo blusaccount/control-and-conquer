@@ -53,6 +53,15 @@ test("two subscribers get distinct playerIds and distinct spawn tiles", () => {
   assert.equal(claimedB, 1);
 });
 
+test("startingTroops option seeds each player's pool", () => {
+  const session = new RasterGameSession({ width: 24, height: 16, seed: 3, startingTroops: 123 });
+  session.subscribe("human", () => {});
+  const grid = session.peekGrid();
+  // The human is player 1; income has not run yet (no tick), so the pool equals
+  // the configured starting troops — proving the option is actually applied.
+  assert.equal(grid.troopsOf(1), 123);
+});
+
 test("queueExpand with invalid tile is rejected on tick", () => {
   const session = new RasterGameSession({ width: 32, height: 24, seed: 3 });
   const messages = collect(session, "human");
