@@ -92,6 +92,35 @@ export const ENEMY_CAPTURE_SURCHARGE = 2;
 export const ELEVATION_COST_PER_LEVEL = 0.1;
 
 /**
+ * Defender-strength clamp bounds for {@link defenderStrengthFactor}. Mirrors
+ * OpenFront's combat model, where the cost an attacker pays per captured tile
+ * scales with the ratio of the *defender's* troops to the attacking force,
+ * clamped to a band: a defender holding a large army relative to the assault
+ * makes every tile dearer (up to {@link DEFENDER_STRENGTH_MAX}×), grinding an
+ * under-committed poke to a halt; an overwhelming assault floors the factor at
+ * {@link DEFENDER_STRENGTH_MIN}× and rolls through. This is what gives a
+ * stockpiled troop pool real *defensive* value — without it, holding troops does
+ * nothing to repel an attack (capture cost would depend only on terrain).
+ */
+export const DEFENDER_STRENGTH_MIN = 0.6;
+export const DEFENDER_STRENGTH_MAX = 2.5;
+
+/**
+ * Capture-cost multiplier from the defender's relative strength: the defender's
+ * current troop pool divided by the attacking force, clamped to
+ * [{@link DEFENDER_STRENGTH_MIN}, {@link DEFENDER_STRENGTH_MAX}]. At parity it is
+ * ~1 (no change); a defender far stronger than the assault drives it toward the
+ * max (each tile costs the attacker much more); an attacker far stronger drives
+ * it toward the min. A spent-out attacking force (`attackerTroops <= 0`) yields
+ * the max — there is nothing left to push with.
+ */
+export const defenderStrengthFactor = (defenderTroops: number, attackerTroops: number): number => {
+  if (attackerTroops <= 0) return DEFENDER_STRENGTH_MAX;
+  const ratio = Math.max(0, defenderTroops) / attackerTroops;
+  return Math.min(DEFENDER_STRENGTH_MAX, Math.max(DEFENDER_STRENGTH_MIN, ratio));
+};
+
+/**
  * Defense-post aura. A defense post is a fortified location (e.g. a player's
  * capital) that makes capturing ground around it dearer, mirroring OpenFront's
  * defense posts that multiply attacker losses within a tile range. Capture cost

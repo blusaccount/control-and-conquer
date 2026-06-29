@@ -7,6 +7,7 @@ import {
 } from "./buildings.js";
 import {
   defenderLossPerTile,
+  defenderStrengthFactor,
   ELEVATION_COST_PER_LEVEL,
   ENEMY_CAPTURE_SURCHARGE,
   EXPANSION_SPEND_FRACTION,
@@ -294,11 +295,14 @@ export class RasterConflict {
   }
 
   /**
-   * Troop cost to capture a single tile across a land border, factoring terrain
-   * and ownership. Transport-ship landings price their beachhead separately via
-   * {@link beachheadCost}.
+   * Troop cost to capture a single tile across a land border, factoring terrain,
+   * ownership, fortifications and — via `strengthFactor` — how strongly the
+   * defender is garrisoned relative to the assault (see
+   * {@link defenderStrengthFactor}). Transport-ship landings price their
+   * beachhead separately via {@link beachheadCost}. `strengthFactor` defaults to
+   * 1 (no defender-strength effect), which neutral grabs always use.
    */
-  private captureCost(ref: TileRef, target: PlayerId): number {
+  private captureCost(ref: TileRef, target: PlayerId, strengthFactor = 1): number {
     const base = target === NEUTRAL_PLAYER
       ? NEUTRAL_CAPTURE_COST
       : NEUTRAL_CAPTURE_COST + ENEMY_CAPTURE_SURCHARGE;
@@ -309,6 +313,10 @@ export class RasterConflict {
     // A nearby defense post (e.g. a capital) fortifies the ground around it,
     // raising the cost to take any tile inside its aura.
     cost *= this.grid.defenseFactorAt(ref);
+    // A well-garrisoned defender makes every tile dearer to take (OpenFront's
+    // attacker-vs-defender troop ratio); neutral land has no garrison, so callers
+    // pass the default factor of 1 there.
+    cost *= strengthFactor;
     return Math.ceil(cost);
   }
 
@@ -380,9 +388,13 @@ export class RasterConflict {
    * opposed landing is dearer than walking the same tile over land. The
    * attacker's Sea God perk (seaSpeed) lowers that surcharge.
    */
-  private beachheadCost(ref: TileRef, attacker: PlayerId, target: PlayerId): number {
+  private beachheadCost(ref: TileRef, attacker: PlayerId, target: PlayerId, attackerForce: number): number {
     const surcharge = Math.ceil(SEA_CROSSING_SURCHARGE / this.grid.modifiersOf(attacker).seaSpeed);
-    return this.captureCost(ref, target) + surcharge;
+    // The garrison defends a beachhead just as it defends an inland tile.
+    const strength = target === NEUTRAL_PLAYER
+      ? 1
+      : defenderStrengthFactor(this.grid.troopsOf(target), attackerForce);
+    return this.captureCost(ref, target, strength) + surcharge;
   }
 
   /**
@@ -468,7 +480,7 @@ export class RasterConflict {
         continue;
       }
 
-      const cost = this.beachheadCost(dest, ship.attacker, owner);
+      const cost = this.beachheadCost(dest, ship.attacker, owner, ship.troops);
       if (ship.troops < cost) {
         // Too few troops to force a landing — the assault is repelled. Survivors
         // fall back into the pool, taxed by the retreat malus if they recoiled off
@@ -558,12 +570,19 @@ export class RasterConflict {
       // Snapshot the defender's per-tile bleed once for the tick: capturing many
       // tiles this advance shouldn't compound the density loss mid-front.
       const defenderLoss = attack.target !== NEUTRAL_PLAYER ? this.defenderLossFor(attack.target) : 0;
+      // Snapshot the defender-strength multiplier once for the tick too, from the
+      // garrison's pool against this front's committed force. A strongly-held
+      // nation makes every tile dearer, so an under-committed assault stalls —
+      // this is what lets a defender repel an attack by holding troops.
+      const strengthFactor = attack.target !== NEUTRAL_PLAYER
+        ? defenderStrengthFactor(this.grid.troopsOf(attack.target), attack.committed)
+        : 1;
 
       for (const ref of frontier) {
         // A tile may have been captured already if a player relinquished it; skip
         // anything no longer owned by the target.
         if (this.grid.ownerOf(ref) !== attack.target) continue;
-        const cost = this.captureCost(ref, attack.target);
+        const cost = this.captureCost(ref, attack.target, strengthFactor);
         if (attack.committed < cost) continue;
         // The first affordable tile (highest priority) is always taken so a front
         // never deadlocks on ground that costs more than one tick's budget; later

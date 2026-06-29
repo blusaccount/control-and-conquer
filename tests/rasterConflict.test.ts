@@ -4,7 +4,13 @@ import { GameMap } from "../src/Core/GameMap.js";
 import { NEUTRAL_PLAYER, TerritoryGrid } from "../src/Core/TerritoryGrid.js";
 import { RasterConflict, type AttackIntent } from "../src/Core/RasterConflict.js";
 import { encodeTile } from "../src/Core/terrainCodec.js";
-import { INCOME_PER_TILE_PER_TICK, defenderLossPerTile } from "../src/Core/rasterCombatConfig.js";
+import {
+  DEFENDER_STRENGTH_MAX,
+  DEFENDER_STRENGTH_MIN,
+  INCOME_PER_TILE_PER_TICK,
+  defenderLossPerTile,
+  defenderStrengthFactor,
+} from "../src/Core/rasterCombatConfig.js";
 
 const flatLand = (width: number, height: number): GameMap => {
   const terrain = new Uint8Array(width * height);
@@ -116,6 +122,44 @@ test("defenderLossPerTile spreads the pool over territory, floored at 1", () => 
   assert.equal(defenderLossPerTile(100, 4), 25); // dense: 100/4
   assert.equal(defenderLossPerTile(3, 10), 1); // sparse: 0.3 -> floored to 1
   assert.equal(defenderLossPerTile(50, 0), 1); // no tiles -> floor
+});
+
+test("defenderStrengthFactor clamps the troop ratio into its band", () => {
+  // At parity the factor is ~1; a far stronger defender saturates the max; a far
+  // stronger attacker bottoms out at the min; a spent-out assault yields the max.
+  assert.equal(defenderStrengthFactor(50, 50), 1);
+  assert.equal(defenderStrengthFactor(1000, 10), DEFENDER_STRENGTH_MAX);
+  assert.equal(defenderStrengthFactor(1, 1000), DEFENDER_STRENGTH_MIN);
+  assert.equal(defenderStrengthFactor(50, 0), DEFENDER_STRENGTH_MAX);
+});
+
+test("a strong garrison repels the very assault a weak one cannot", () => {
+  // 3x1 line: player 1 (tile 0) attacks player 2 (tiles 1-2) with the same small
+  // force in both runs. The only difference is how heavily player 2 is garrisoned
+  // — which is exactly what should decide whether the attack breaks through.
+  const build = (defenderTroops: number) => {
+    const grid = new TerritoryGrid(flatLand(3, 1));
+    grid.addPlayer(1, 6);
+    grid.addPlayer(2, defenderTroops);
+    grid.claim(0, 1);
+    grid.claim(1, 2);
+    grid.claim(2, 2);
+    return { grid, conflict: new RasterConflict(grid) };
+  };
+
+  // Weak garrison: 6 committed troops grind through both tiles over a few ticks.
+  const weak = build(5);
+  assert.equal(weak.conflict.launchAttack({ attacker: 1, target: 2, troops: 6 }), null);
+  runTicks(weak.conflict, 30);
+  assert.equal(weak.grid.tileCountOf(2), 0, "a thinly-held nation is overrun");
+
+  // Strong garrison: the identical 6-troop assault can't afford a single tile and
+  // is repelled outright — holding troops now provides real defensive value.
+  const strong = build(100);
+  assert.equal(strong.conflict.launchAttack({ attacker: 1, target: 2, troops: 6 }), null);
+  runTicks(strong.conflict, 30);
+  assert.equal(strong.grid.tileCountOf(2), 2, "a well-garrisoned nation holds its ground");
+  assert.equal(strong.conflict.activeAttackCount, 0, "the repelled assault ends");
 });
 
 test("frontier priority captures easy low ground before high ground", () => {

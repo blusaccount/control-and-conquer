@@ -1226,7 +1226,9 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       `<strong>Orders</strong><br/>` +
       `<strong>Ships at sea:</strong> ${runtime.myShips} / 3<br/>` +
       `<em>Click adjacent land to expand. Click any landmass across water to send a transport ship ` +
-      `to its nearest reachable shore (one per click, max 3 at sea). Drag to pan, scroll to zoom.</em>`;
+      `to its nearest reachable shore (one per click, max 3 at sea). Drag to pan, scroll to zoom.</em><br/>` +
+      `<em>Keep a healthy troop reserve: a well-garrisoned nation is far costlier to capture, so ` +
+      `banking troops — and forts on the border — is your defence.</em>`;
 
     ui.eventsPanel.innerHTML = runtime.recentEvents
       .map((ev) => `<div class="event">${escapeHtml(ev)}</div>`)
