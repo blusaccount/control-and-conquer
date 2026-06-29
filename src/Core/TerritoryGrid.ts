@@ -1,5 +1,10 @@
 import type { GameMap, TileRef } from "./GameMap.js";
-import { MAX_SEA_CROSSING_TILES, MAX_SEA_RANGE_MULTIPLIER } from "./rasterCombatConfig.js";
+import {
+  DEFENSE_POST_RADIUS,
+  DEFENSE_POST_STRENGTH,
+  MAX_SEA_CROSSING_TILES,
+  MAX_SEA_RANGE_MULTIPLIER,
+} from "./rasterCombatConfig.js";
 import { IDENTITY_MODIFIERS, type PlayerModifiers } from "./perks.js";
 import { SeaLinks } from "./seaLinks.js";
 
@@ -66,6 +71,14 @@ export class TerritoryGrid {
   private readonly componentCounts = new Map<PlayerId, Map<number, number>>();
 
   private readonly standings = new Map<PlayerId, PlayerStanding>();
+
+  /**
+   * Fortified locations (a tile → its aura radius and peak strength). A defense
+   * post raises the troop cost to capture ground around it; see
+   * {@link defenseFactorAt}. Sparse — only a handful exist (e.g. one per
+   * capital) — so queries scan the whole map cheaply.
+   */
+  private readonly defensePosts = new Map<TileRef, { radius: number; strength: number }>();
 
   // Lazily-allocated, generation-stamped scratch buffers reused by every
   // {@link findSeaPath} call so per-launch pathfinding stays allocation-free.
@@ -264,6 +277,59 @@ export class TerritoryGrid {
       this.bumpComponent(id, comp, 1);
     }
     this.owner[ref] = id;
+  }
+
+  /**
+   * Mark a tile as a defense post — a fortified location that makes capturing
+   * ground within `radius` tiles dearer (peaking at `strength`× cost on the post
+   * itself). Re-marking the same tile replaces its aura. Throws on non-capturable
+   * terrain or an out-of-range strength/radius.
+   */
+  addDefensePost(
+    ref: TileRef,
+    radius = DEFENSE_POST_RADIUS,
+    strength = DEFENSE_POST_STRENGTH,
+  ): void {
+    if (!this.isCapturable(ref)) throw new Error(`Tile ${ref} cannot hold a defense post.`);
+    if (radius < 0) throw new Error(`Defense-post radius must be >= 0, got ${radius}.`);
+    if (strength < 1) throw new Error(`Defense-post strength must be >= 1, got ${strength}.`);
+    this.defensePosts.set(ref, { radius, strength });
+  }
+
+  /** Remove the defense post on `ref`, if any. Returns whether one was removed. */
+  removeDefensePost(ref: TileRef): boolean {
+    return this.defensePosts.delete(ref);
+  }
+
+  /** True if `ref` currently holds a defense post. */
+  hasDefensePost(ref: TileRef): boolean {
+    return this.defensePosts.has(ref);
+  }
+
+  /** Number of active defense posts (for tests/snapshots). */
+  get defensePostCount(): number {
+    return this.defensePosts.size;
+  }
+
+  /**
+   * Capture-cost multiplier (>= 1) at `ref` from any overlapping defense posts.
+   * Each post contributes `1 + (strength - 1) * (1 - dist/radius)` for Chebyshev
+   * distances within its radius; the strongest covering post wins (auras don't
+   * stack, keeping the factor bounded). Returns 1 where no post reaches.
+   */
+  defenseFactorAt(ref: TileRef): number {
+    if (this.defensePosts.size === 0) return 1;
+    const x = this.map.x(ref);
+    const y = this.map.y(ref);
+    let factor = 1;
+    for (const [post, { radius, strength }] of this.defensePosts) {
+      const dist = Math.max(Math.abs(x - this.map.x(post)), Math.abs(y - this.map.y(post)));
+      if (dist > radius) continue;
+      const falloff = radius === 0 ? 1 : 1 - dist / radius;
+      const contribution = 1 + (strength - 1) * falloff;
+      if (contribution > factor) factor = contribution;
+    }
+    return factor;
   }
 
   /** True if any 4-connected land neighbour of `ref` is owned by `attacker`. */

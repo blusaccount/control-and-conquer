@@ -64,6 +64,17 @@ export const ENEMY_CAPTURE_SURCHARGE = 2;
 export const ELEVATION_COST_PER_LEVEL = 0.1;
 
 /**
+ * Defense-post aura. A defense post is a fortified location (e.g. a player's
+ * capital) that makes capturing ground around it dearer, mirroring OpenFront's
+ * defense posts that multiply attacker losses within a tile range. Capture cost
+ * inside the aura is scaled up to {@link DEFENSE_POST_STRENGTH}× at the post
+ * itself, falling off linearly to 1× at {@link DEFENSE_POST_RADIUS} tiles
+ * (Chebyshev distance). Beyond the radius a post has no effect.
+ */
+export const DEFENSE_POST_RADIUS = 6;
+export const DEFENSE_POST_STRENGTH = 3;
+
+/**
  * Floor on the troops a defender loses from their pool for each tile captured
  * from them. The actual bleed is *density-based* (see {@link defenderLossPerTile}):
  * a defender loses troops proportional to how thinly its pool is spread over its

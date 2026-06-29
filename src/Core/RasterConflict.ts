@@ -253,6 +253,9 @@ export class RasterConflict {
     let cost = base + elevationCost;
     // The defender's Fortress Wall raises the cost to capture their tiles.
     if (target !== NEUTRAL_PLAYER) cost *= this.grid.modifiersOf(target).defense;
+    // A nearby defense post (e.g. a capital) fortifies the ground around it,
+    // raising the cost to take any tile inside its aura.
+    cost *= this.grid.defenseFactorAt(ref);
     return Math.ceil(cost);
   }
 

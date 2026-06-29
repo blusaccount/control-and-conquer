@@ -179,6 +179,35 @@ test("a front blocked against neutral land refunds troops in full", () => {
   assert.equal(grid.troopsOf(1), 3, "all 3 troops return — neutral retreat is free");
 });
 
+test("a defense post fortifies the ground around it, slowing a conquest", () => {
+  // 6x1 flat line, player 1 on tile 0 with exactly enough troops (5) to walk the
+  // five neutral tiles at cost 1 each — and win — on open ground.
+  const build = () => {
+    const grid = new TerritoryGrid(flatLand(6, 1));
+    grid.addPlayer(1, 5);
+    grid.claim(0, 1);
+    return grid;
+  };
+
+  const open = build();
+  const openConflict = new RasterConflict(open);
+  assert.equal(openConflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 5 }), null);
+  runTicks(openConflict, 30);
+  assert.equal(open.tileCountOf(1), 6, "on open ground the whole line falls");
+  assert.equal(openConflict.winner, 1);
+
+  // Same troops, but tile 5 is a defense post (radius 2, strength 3): tiles 4 and
+  // 5 now cost more, so the five troops can't reach the far end.
+  const fortified = build();
+  fortified.addDefensePost(5, 2, 3);
+  const fortConflict = new RasterConflict(fortified);
+  assert.equal(fortConflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 5 }), null);
+  runTicks(fortConflict, 30);
+  assert.equal(fortified.ownerOf(5), NEUTRAL_PLAYER, "the fortified tile holds out");
+  assert.ok(fortified.tileCountOf(1) < 6, `the post stalls the conquest, owns ${fortified.tileCountOf(1)}`);
+  assert.equal(fortConflict.winner, null);
+});
+
 test("a finished match ignores further intents", () => {
   const grid = new TerritoryGrid(flatLand(2, 1));
   grid.addPlayer(1, 5);
