@@ -41,8 +41,12 @@ export interface MapChoice {
 /**
  * The maps a player can pick. Earth (downsampled from the committed topology
  * raster) is the headline option at three sizes so players can trade detail for
- * a lighter match; World is the small stylised classic, and Procedural rolls a
- * fresh random continent. Menu order = display order.
+ * a lighter match; World is the small stylised classic. Menu order = display
+ * order.
+ *
+ * Procedural generation still exists server-side as a fallback (see
+ * {@link RasterGameSessionOptions}), but it is intentionally not offered here —
+ * only fixed, hand-curated maps are selectable for now.
  */
 export const MAP_CHOICES: readonly MapChoice[] = [
   {
@@ -68,12 +72,6 @@ export const MAP_CHOICES: readonly MapChoice[] = [
     name: "World — Classic",
     description: "A stylised six-continent sketch. Small and fast.",
     options: { realMapId: "world" },
-  },
-  {
-    id: "procedural",
-    name: "Procedural",
-    description: "A freshly generated random continent.",
-    options: { width: 256, height: 160, seed: 1 },
   },
 ];
 
