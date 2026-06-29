@@ -93,6 +93,15 @@
   Session-Optionen auf.
 - **Sea-Links** (`seaLinks.ts`): vorberechnete amphibische Adjazenz für schmale
   Gewässer.
+- **Flüsse** (`rivers.ts`): Wie OpenFront gibt es **keinen** eigenen Fluss-Terraintyp
+  — Flüsse sind schmale Wasserkanäle. Da die Quell-PNG (`earth-topo.png`) reine
+  Topografie ohne Hydrografie ist, werden kuratierte Großflüsse (Amazonas, Nil,
+  Mississippi, Jangtse, Donau, Kongo) als `[lon,lat]`-Polylinien geführt und vor der
+  Finishing-Pipeline als Wasser in die Land/Elevation-Maske gestanzt (harter
+  Override des Land-Votes). Die Mündung wird bis ins vorbestehende Meerwasser
+  verlängert, sodass meererreichende Flüsse als **Ozean** klassifiziert (navigierbar,
+  Hafen-Reichweite) und Becken-Flüsse (Nil→Mittelmeer) als **See** — beides wirkt als
+  amphibische Grenze. Deterministisch, projektions-/größenunabhängig.
 
 ### UI / UX
 - Canvas 2D, 1 Pixel pro Tile (`rasterPaint.ts`/`rasterPalette.ts`); Pan/Zoom-
