@@ -5,6 +5,7 @@ import type {
   RasterClientMessage,
   RasterCrossing,
   RasterMatchEndedPayload,
+  RasterMatchPhase,
   RasterPlayerAssignedPayload,
   RasterPlayerInfo,
   RasterServerMessage,
@@ -125,8 +126,12 @@ interface RasterRuntime {
   nameAnchors: NameAnchor[];
   /** performance.now() of the last name-anchor recompute (throttled). */
   lastNameComputeMs: number;
-  /** Whether we've picked a start position yet (false during the spawn phase). */
+  /** Whether we've picked a start position yet (false until we found a nation). */
   spawned: boolean;
+  /** Current match phase, mirrored from the latest snapshot. */
+  phase: RasterMatchPhase;
+  /** Whole seconds left in the start phase (0 once the game phase is live). */
+  spawnRemainingSeconds: number;
 }
 
 /** A player capital ("Hauptstadt") drawn as a cross marker on the map. */
@@ -203,7 +208,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   hideMenu(ui);
   ui.attackPercentOutput.textContent = `${ui.attackPercentInput.value}%`;
   ui.selectionInfo.textContent =
-    "Choose your start: click anywhere on land to found your nation.";
+    "Start phase: click anywhere on land to choose where your nation begins.";
 
   const runtime: RasterRuntime = {
     map: null,
@@ -236,6 +241,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     nameAnchors: [],
     lastNameComputeMs: Number.NEGATIVE_INFINITY,
     spawned: false,
+    phase: "spawn",
+    spawnRemainingSeconds: 0,
   };
 
   const socketProtocol = window.location.protocol === "https:" ? "wss" : "ws";
@@ -300,7 +307,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
 
   /** Refresh each build button's cost, affordability and selected state. */
   const refreshBuildMenu = (): void => {
-    const canBuild = runtime.spawned && !runtime.matchEnded;
+    const canBuild = runtime.spawned && runtime.phase === "playing" && !runtime.matchEnded;
     for (const btn of ui.buildMenu.querySelectorAll<HTMLButtonElement>("[data-building]")) {
       const type = btn.getAttribute("data-building") as BuildingType;
       const cost = buildingCost(type, myBuildingCount(type));
@@ -475,6 +482,9 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.capturableTotal = snapshot.capturableCount;
     runtime.recentEvents = snapshot.recentEvents;
     runtime.players = snapshot.players;
+    runtime.phase = snapshot.phase;
+    runtime.spawnRemainingSeconds = snapshot.spawnRemainingSeconds;
+    updateStartBanner();
 
     const me = snapshot.players.find((p) => p.playerId === runtime.myPlayerId);
     runtime.pool = me?.troops ?? 0;
@@ -914,12 +924,13 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
 
   /** Update the gold readout, build menu and contextual build hint. */
   const renderEconomy = (): void => {
-    ui.goldInfo.innerHTML = runtime.spawned
+    const live = runtime.spawned && runtime.phase === "playing";
+    ui.goldInfo.innerHTML = live
       ? `<strong>Gold:</strong> ${formatCount(runtime.gold)} (+${formatRate(runtime.goldPerSecond)}/s) · ` +
         `🏛️ ${runtime.myCities} ⚓ ${runtime.myPorts} 🛡️ ${runtime.myForts}`
       : `Gold: —`;
     refreshBuildMenu();
-    if (!runtime.spawned) {
+    if (!live) {
       ui.buildHint.textContent = "";
     } else if (runtime.buildMode) {
       const def = BUILDING_DEFS[runtime.buildMode];
@@ -931,12 +942,39 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     }
   };
 
+  /**
+   * Show or hide the big start-phase countdown banner over the map. Visible only
+   * during the `spawn` phase; its copy changes once the player has founded their
+   * nation and is just waiting for the game to begin.
+   */
+  const updateStartBanner = (): void => {
+    if (runtime.phase !== "spawn") {
+      ui.startBanner.classList.add("hidden");
+      return;
+    }
+    const secs = runtime.spawnRemainingSeconds;
+    const title = runtime.spawned ? "Get ready — the battle begins" : "Start phase — choose your spawn";
+    const sub = runtime.spawned
+      ? "Your nation is founded. Territory opens when the timer hits zero."
+      : "Click anywhere on open land to found your nation.";
+    ui.startBanner.innerHTML =
+      `<span class="start-banner-title">${escapeHtml(title)}</span>` +
+      `<span class="start-banner-timer">${secs}s</span>` +
+      `<span class="start-banner-sub">${escapeHtml(sub)}</span>`;
+    ui.startBanner.classList.remove("hidden");
+  };
+
   const renderSidebar = (): void => {
     renderEconomy();
-    if (!runtime.spawned) {
-      ui.selectionInfo.innerHTML =
-        `<strong>Choose your start position.</strong><br/>` +
-        `<em>Click anywhere on open land to found your nation. Drag to pan, scroll to zoom.</em>`;
+    // Pre-game: either still choosing a spawn, or founded but waiting out the
+    // start-phase countdown. Either way territory can't be taken yet.
+    if (!runtime.spawned || runtime.phase === "spawn") {
+      const secs = runtime.spawnRemainingSeconds;
+      ui.selectionInfo.innerHTML = !runtime.spawned
+        ? `<strong>Choose your start position${runtime.phase === "spawn" ? ` — ${secs}s` : ""}.</strong><br/>` +
+          `<em>Click anywhere on open land to found your nation. Drag to pan, scroll to zoom.</em>`
+        : `<strong>Nation founded — the battle begins in ${secs}s.</strong><br/>` +
+          `<em>Hold tight: you can't take territory until the start phase ends. Drag to pan, scroll to zoom.</em>`;
       ui.eventsPanel.innerHTML = runtime.recentEvents
         .map((ev) => `<div class="event">${escapeHtml(ev)}</div>`)
         .join("");
@@ -1055,8 +1093,20 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const tileY = Math.floor(runtime.view.y + y / runtime.view.scale);
     if (tileX < 0 || tileY < 0 || tileX >= runtime.map.width || tileY >= runtime.map.height) return;
 
-    // Before we hold any land, the first click picks our start position;
-    // afterwards a stationary press is an expand command toward the clicked tile.
+    // During the start phase the only meaningful click is choosing a start
+    // position; once founded the player waits out the countdown before acting.
+    if (runtime.phase === "spawn") {
+      if (!runtime.spawned) {
+        sendSelectSpawn(tileX, tileY);
+        setStatus(ui, `Founding at (${tileX}, ${tileY})…`);
+      } else {
+        setStatus(ui, `The battle hasn't begun yet — ${runtime.spawnRemainingSeconds}s left in the start phase.`);
+      }
+      return;
+    }
+
+    // Game phase. We're normally seated already (auto-seated if we never picked),
+    // but in a session with no start phase the first click still founds us.
     if (!runtime.spawned) {
       sendSelectSpawn(tileX, tileY);
       setStatus(ui, `Founding at (${tileX}, ${tileY})…`);

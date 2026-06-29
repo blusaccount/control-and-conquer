@@ -20,6 +20,8 @@ export interface UiElements {
   leaderboard: HTMLDivElement;
   menuOverlay: HTMLDivElement;
   statsOverlay: HTMLDivElement;
+  /** Countdown banner shown over the map during the opening start phase. */
+  startBanner: HTMLDivElement;
 }
 
 export type StatusKind = "info" | "error" | "victory";
@@ -39,6 +41,7 @@ export const getUiElements = (): UiElements => {
   const leaderboard = document.querySelector<HTMLDivElement>("#leaderboard");
   const menuOverlay = document.querySelector<HTMLDivElement>("#menuOverlay");
   const statsOverlay = document.querySelector<HTMLDivElement>("#statsOverlay");
+  const startBanner = document.querySelector<HTMLDivElement>("#startBanner");
 
   if (
     !mapCanvas ||
@@ -54,7 +57,8 @@ export const getUiElements = (): UiElements => {
     !eventsPanel ||
     !leaderboard ||
     !menuOverlay ||
-    !statsOverlay
+    !statsOverlay ||
+    !startBanner
   ) {
     throw new Error("UI failed to initialize.");
   }
@@ -82,6 +86,7 @@ export const getUiElements = (): UiElements => {
     leaderboard,
     menuOverlay,
     statsOverlay,
+    startBanner,
   };
 };
 

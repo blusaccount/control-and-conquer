@@ -77,6 +77,50 @@
         padding: 16px;
         box-sizing: border-box;
         height: 100%;
+        position: relative;
+      }
+
+      #startBanner {
+        position: absolute;
+        top: 36px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+        padding: 14px 28px;
+        background: rgba(11, 18, 32, 0.82);
+        border: 1px solid #3b82f6;
+        border-radius: 14px;
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+        text-align: center;
+        pointer-events: none;
+        z-index: 5;
+      }
+
+      #startBanner.hidden {
+        display: none;
+      }
+
+      #startBanner .start-banner-title {
+        font-size: 15px;
+        font-weight: 600;
+        color: #e5e7eb;
+        letter-spacing: 0.02em;
+      }
+
+      #startBanner .start-banner-timer {
+        font-size: 38px;
+        font-weight: 700;
+        line-height: 1.05;
+        color: #60a5fa;
+        font-variant-numeric: tabular-nums;
+      }
+
+      #startBanner .start-banner-sub {
+        font-size: 12px;
+        color: #9ca3af;
       }
 
       #mapCanvas {
@@ -433,6 +477,7 @@
 
       <div class="layout">
         <canvas id="mapCanvas" width="760" height="460"></canvas>
+        <div id="startBanner" class="hidden"></div>
       </div>
     </main>
     <script type="module" src="/assets/Client/main.js"></script>

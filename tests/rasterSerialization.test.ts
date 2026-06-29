@@ -34,12 +34,12 @@ test("buildRasterSnapshot only includes terrainBase64 when requested", () => {
   const { terrainHash, terrainBase64 } = encodeTerrain(map);
 
   const withTerrain = buildRasterSnapshot({
-    tick: 0, mapName: "T", map, grid, playerMeta,
+    tick: 0, mapName: "T", phase: "playing", spawnRemainingSeconds: 0, map, grid, playerMeta,
     includeTerrain: true, terrainHash, terrainBase64,
     winnerPlayerId: null, recentEvents: [],
   });
   const withoutTerrain = buildRasterSnapshot({
-    tick: 1, mapName: "T", map, grid, playerMeta,
+    tick: 1, mapName: "T", phase: "playing", spawnRemainingSeconds: 0, map, grid, playerMeta,
     includeTerrain: false, terrainHash, terrainBase64,
     winnerPlayerId: null, recentEvents: [],
   });
@@ -75,7 +75,7 @@ test("buildRasterSnapshot reports troopsPerSecond proportional to tiles", () => 
   const playerMeta = new Map([[1, { name: "Blue", color: "#3b82f6" }]]);
   const { terrainHash, terrainBase64 } = encodeTerrain(map);
   const snap = buildRasterSnapshot({
-    tick: 0, mapName: "T", map, grid, playerMeta,
+    tick: 0, mapName: "T", phase: "playing", spawnRemainingSeconds: 0, map, grid, playerMeta,
     includeTerrain: false, terrainHash, terrainBase64,
     winnerPlayerId: null, recentEvents: [],
   });
