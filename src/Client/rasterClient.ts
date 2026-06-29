@@ -90,6 +90,8 @@ interface RasterRuntime {
   pool: number;
   myTiles: number;
   myShips: number;
+  /** Our troop-pool growth per second, for the top resource bar. */
+  troopsPerSecond: number;
   /** Our current gold pool and its per-second growth. */
   gold: number;
   goldPerSecond: number;
@@ -214,6 +216,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     pool: 0,
     myTiles: 0,
     myShips: 0,
+    troopsPerSecond: 0,
     gold: 0,
     goldPerSecond: 0,
     myCities: 0,
@@ -479,6 +482,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const me = snapshot.players.find((p) => p.playerId === runtime.myPlayerId);
     runtime.pool = me?.troops ?? 0;
     runtime.myTiles = me?.tiles ?? 0;
+    runtime.troopsPerSecond = me?.troopsPerSecond ?? 0;
     runtime.gold = me?.gold ?? 0;
     runtime.goldPerSecond = me?.goldPerSecond ?? 0;
     runtime.myCities = me?.cities ?? 0;
@@ -912,12 +916,29 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.landings = survivors;
   };
 
-  /** Update the gold readout, build menu and contextual build hint. */
+  /**
+   * Refresh the top resource bar (OpenFront-style), the build menu and the
+   * contextual build hint. The resource bar reads out troops, gold and held
+   * territory with their growth rates, plus the player's building tallies.
+   */
   const renderEconomy = (): void => {
-    ui.goldInfo.innerHTML = runtime.spawned
-      ? `<strong>Gold:</strong> ${formatCount(runtime.gold)} (+${formatRate(runtime.goldPerSecond)}/s) · ` +
-        `🏛️ ${runtime.myCities} ⚓ ${runtime.myPorts} 🛡️ ${runtime.myForts}`
-      : `Gold: —`;
+    if (!runtime.spawned) {
+      ui.goldInfo.innerHTML = `<span class="res res-muted">Pick a starting tile to begin</span>`;
+    } else {
+      const maxPool = runtime.myTiles * MAX_POOL_PER_TILE;
+      const pct = runtime.capturableTotal > 0 ? (runtime.myTiles / runtime.capturableTotal) * 100 : 0;
+      const pctStr = pct >= 10 ? String(Math.round(pct)) : pct.toFixed(1);
+      ui.goldInfo.innerHTML =
+        `<span class="res"><span class="res-ico">👥</span>` +
+        `<span class="res-val">${formatCount(runtime.pool)}/${formatCount(maxPool)}</span>` +
+        `<span class="res-rate">+${formatRate(runtime.troopsPerSecond)}/s</span></span>` +
+        `<span class="res"><span class="res-ico">🪙</span>` +
+        `<span class="res-val">${formatCount(runtime.gold)}</span>` +
+        `<span class="res-rate">+${formatRate(runtime.goldPerSecond)}/s</span></span>` +
+        `<span class="res"><span class="res-ico">🗺️</span>` +
+        `<span class="res-val">${pctStr}%</span></span>` +
+        `<span class="res res-builds">🏛️ ${runtime.myCities} ⚓ ${runtime.myPorts} 🛡️ ${runtime.myForts}</span>`;
+    }
     refreshBuildMenu();
     if (!runtime.spawned) {
       ui.buildHint.textContent = "";
@@ -944,13 +965,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       return;
     }
 
-    const pct = runtime.capturableTotal > 0
-      ? Math.round((runtime.myTiles / runtime.capturableTotal) * 100)
-      : 0;
-    const maxPool = runtime.myTiles * MAX_POOL_PER_TILE;
     ui.selectionInfo.innerHTML =
-      `<strong>Troops:</strong> ${formatCount(runtime.pool)} / ${formatCount(maxPool)}<br/>` +
-      `<strong>Territory:</strong> ${pct}% (${formatCount(runtime.myTiles)} tiles)<br/>` +
+      `<strong>Orders</strong><br/>` +
       `<strong>Ships at sea:</strong> ${runtime.myShips} / 3<br/>` +
       `<em>Click adjacent land to expand. Click any landmass across water to send a transport ship ` +
       `to its nearest reachable shore (one per click, max 3 at sea). Drag to pan, scroll to zoom.</em>`;
