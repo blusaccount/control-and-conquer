@@ -103,6 +103,27 @@
 | Persistenz für Match-Resultate / Progression | offen | P2 |
 | Lobby-/Menü-UI über „Play vs Bot" hinaus | offen | P3 |
 
+## 3b) Playtest-Funde (2026-06-29 — gespielte Runde via Chrome, Earth-Standard)
+
+Eine vollständige Runde als normaler Spieler durchgespielt (farbgeführte Grenz-
+Expansion + Boote). Beobachtete **Gameplay-/Feel-Lücken** gegenüber openfront.io,
+neu gegenüber Abschnitt 3:
+
+| # | Lücke (beobachtet) | Wirkung | Prio |
+|---|---|---|---|
+| A | **Eliminierung ohne Feedback:** Als meine Hauptstadt fiel (~40 s) hatte ich 0 Tiles/0 Pool und war aus dem Leaderboard, aber das Match lief weiter mit voller Expand-UI und „Playing as Blue Empire" — **kein Defeat-Screen, kein Spectate, kein Zurück-ins-Menü.** Das Stats-Overlay feuert nur beim Gesamt-Matchende, nicht beim Tod des Spielers. | Feel-Breaker: man „stirbt" lautlos und klickt ins Leere. | **P0** |
+| B | **Runaway-Ökonomie:** Im Spätspiel hielt Violet 379k+ Truppen (+7838/s) und verschiffte 154k-Truppen-Boote. Income/Truppen wachsen ~exponentiell mit Territorium; die Zahlen werden bedeutungslos. OpenFront bindet Max-Population an Territorium mit abnehmendem Ertrag. | Snowball ist absolut, kein Comeback; Zahlen unlesbar. | **P1** |
+| C | **Bot-Snowball / Pacing:** Bots expandieren explosiv; ein casual Human ist in ~40 s ausgelöscht, ohne geschützte Anfangsphase oder Schwierigkeitswahl. | Frust für neue Spieler, keine Lernkurve. | **P1** |
+| D | **Grenz-Kontrast zu schwach:** Grenzen werden gezeichnet (aufgehellte Outline), lesen sich bei Normalzoom aber eher als Küstenglühen denn als klare Trennlinie Nation-vs-Nation / Nation-vs-Neutral (vgl. OpenFronts knackige Borders). | Karte wirkt „flächig", Fronten schwer ablesbar. | P2 |
+| E | **Klick-Feedback nur als Fehlertext:** Einzige Rückmeldung war ein dauerhaftes rotes „Target tile is not capturable land." (Klicks aufs Meer). Kein positives Feedback bei erfolgreicher Expansion (Puls/Ripple/Sound); Wasser-Klicks Richtung Küste werden abgelehnt statt geroutet. | Eingaben fühlen sich unresponsiv an. | P2 |
+| F | **Zahlen/Leaderboard-Klarheit:** Zeilen wie „Violet Empire 19595 · 379771 (+7838/s)" — keine Spaltenköpfe, „·" kryptisch, rohe Riesenzahlen ohne k/M-Abkürzung. | Schwer auf einen Blick erfassbar. | P3 |
+| G | **Map-Letterboxing:** Auf breiten Earth-Karten große schwarze Balken oben/unten (fit-to-canvas). | Verschenkter Raum, weniger immersiv. | P3 |
+| H | **Spawn-Onboarding:** Beim Start ist die eigene (1-Tile-)Hauptstadt kaum auffindbar; Kamera zentriert nicht darauf, kein Hinweis „hier bist du". | Holpriger Einstieg. | P3 |
+
+**Positiv (bereits nah an OpenFront):** reale Küstenlinien + Terrain-Shading,
+Wasser-Schimmer, und die neuen mittig in der Masse gehaltenen Nationsnamen wirken
+stimmig (siehe Screenshots der Sessions).
+
 ## 4) Architektur (Ist)
 
 ```
