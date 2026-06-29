@@ -1,0 +1,33 @@
+/**
+ * Per-player gameplay modifiers.
+ *
+ * Multiplicative tweaks the engine applies when resolving income, expansion,
+ * defence and sea crossings. All default to 1 (no effect): the engine multiplies
+ * the relevant base value by the matching field.
+ *
+ * Every player currently runs on {@link IDENTITY_MODIFIERS} — classes and perks
+ * that once varied these were removed in favour of a barebones, symmetric base
+ * game. The plumbing is kept so the feature can be reintroduced without touching
+ * the combat/economy math.
+ */
+export interface PlayerModifiers {
+  /** Scales the troops an attack spends per tick (attack speed). */
+  expansionSpeed: number;
+  /** Scales the troop cost to capture this player's tiles (defence). */
+  defense: number;
+  /** Scales amphibious crossing range. */
+  seaRange: number;
+  /** Scales boat speed (lower sea-crossing surcharge + faster animation). */
+  seaSpeed: number;
+  /** Scales troop income. */
+  income: number;
+}
+
+/** A modifiers bundle with no effect — every player's baseline. */
+export const IDENTITY_MODIFIERS: PlayerModifiers = Object.freeze({
+  expansionSpeed: 1,
+  defense: 1,
+  seaRange: 1,
+  seaSpeed: 1,
+  income: 1,
+});

@@ -14,13 +14,9 @@ import { hideMenu, setStatus, type UiElements } from "./dom.js";
 import { paintRaster, paintTileInto } from "./rasterPaint.js";
 import { playerColor } from "./rasterPalette.js";
 import { loadRunHistory, recordRun, type RunRecord, type StorageLike } from "./runHistory.js";
-import { PERK_DEFINITIONS, type PerkId } from "../Core/perks.js";
-import type { PlayerClassId } from "../Core/playerClasses.js";
-import type { PerkOfferPayload } from "../Core/messages.js";
 
-/** Options for starting a raster match: the chosen class and map. */
+/** Options for starting a raster match: the chosen map. */
 export interface RasterClientOptions {
-  playerClass: PlayerClassId;
   /** Selected map-choice id (see `mapCatalog`). */
   mapId: string;
 }
@@ -186,16 +182,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     socket.send(JSON.stringify(message));
   };
 
-  const sendPerkChoice = (perkId: PerkId): void => {
-    const message: RasterClientMessage = { type: "CLIENT_PERK_CHOSEN", payload: { perkId } };
-    socket.send(JSON.stringify(message));
-  };
-
-  // Seat ourselves with the chosen class as soon as the socket is open.
+  // Seat ourselves on the chosen map as soon as the socket is open.
   socket.addEventListener("open", () => {
     const join: RasterClientMessage = {
       type: "CLIENT_RASTER_JOIN",
-      payload: { playerClass: options.playerClass, mapId: options.mapId },
+      payload: { mapId: options.mapId },
     };
     socket.send(JSON.stringify(join));
   });
@@ -214,46 +205,14 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       onSnapshot(message.payload);
     } else if (message.type === "SERVER_RASTER_ACTION_REJECTED") {
       setStatus(ui, message.payload.message, "error");
-    } else if (message.type === "SERVER_PERK_OFFER") {
-      showPerkOffer(message.payload);
     } else if (message.type === "SERVER_RASTER_MATCH_ENDED") {
       onMatchEnded(message.payload);
-    }
-  };
-
-  /** Present the perk choices as a blur-overlay of cards; one click commits. */
-  const showPerkOffer = (offer: PerkOfferPayload): void => {
-    if (runtime.matchEnded) return;
-    ui.perkOverlay.innerHTML =
-      `<h1>Choose a Perk</h1>` +
-      `<p class="hint">Perk round ${offer.offerNumber}</p>` +
-      `<div class="perk-cards">` +
-      offer.options
-        .map((id) => {
-          const def = PERK_DEFINITIONS[id];
-          return (
-            `<button class="perk-card" type="button" data-perk="${escapeHtml(id)}">` +
-            `<h3>${escapeHtml(def.name)}</h3><p>${escapeHtml(def.description)}</p>` +
-            `</button>`
-          );
-        })
-        .join("") +
-      `</div>`;
-    ui.perkOverlay.classList.remove("hidden");
-
-    for (const card of ui.perkOverlay.querySelectorAll<HTMLButtonElement>(".perk-card")) {
-      card.addEventListener("click", () => {
-        const perk = card.getAttribute("data-perk");
-        if (perk) sendPerkChoice(perk as PerkId);
-        ui.perkOverlay.classList.add("hidden");
-      });
     }
   };
 
   const onMatchEnded = (payload: RasterMatchEndedPayload): void => {
     runtime.matchEnded = true;
     runtime.winnerPlayerId = payload.winnerPlayerId;
-    ui.perkOverlay.classList.add("hidden");
     setStatus(ui, payload.stats.won ? "You won the run!" : "Run over.", "victory");
 
     const storage = safeStorage();

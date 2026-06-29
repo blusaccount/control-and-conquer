@@ -5,7 +5,7 @@ import {
   MAX_SEA_CROSSING_TILES,
   MAX_SEA_RANGE_MULTIPLIER,
 } from "./rasterCombatConfig.js";
-import { IDENTITY_MODIFIERS, type PlayerModifiers } from "./perks.js";
+import { IDENTITY_MODIFIERS, type PlayerModifiers } from "./playerModifiers.js";
 import { SeaLinks } from "./seaLinks.js";
 
 /**
@@ -29,7 +29,7 @@ interface PlayerStanding {
    * the whole ownership raster.
    */
   tiles: Set<TileRef>;
-  /** Accumulated perk/class modifiers; defaults to no effect. */
+  /** Per-player gameplay modifiers; defaults to no effect. */
   modifiers: PlayerModifiers;
 }
 
@@ -180,12 +180,12 @@ export class TerritoryGrid {
     this.standings.set(id, { troops, tiles: new Set(), modifiers: { ...IDENTITY_MODIFIERS } });
   }
 
-  /** This player's accumulated perk/class modifiers. */
+  /** This player's gameplay modifiers. */
   modifiersOf(id: PlayerId): PlayerModifiers {
     return this.standing(id).modifiers;
   }
 
-  /** Replace this player's modifiers (e.g. after a perk choice). */
+  /** Replace this player's modifiers. */
   setModifiers(id: PlayerId, modifiers: PlayerModifiers): void {
     this.standing(id).modifiers = modifiers;
   }

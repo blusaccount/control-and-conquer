@@ -17,7 +17,6 @@ export interface UiElements {
   leaderboard: HTMLDivElement;
   menuOverlay: HTMLDivElement;
   statsOverlay: HTMLDivElement;
-  perkOverlay: HTMLDivElement;
 }
 
 export type StatusKind = "info" | "error" | "victory";
@@ -34,7 +33,6 @@ export const getUiElements = (): UiElements => {
   const leaderboard = document.querySelector<HTMLDivElement>("#leaderboard");
   const menuOverlay = document.querySelector<HTMLDivElement>("#menuOverlay");
   const statsOverlay = document.querySelector<HTMLDivElement>("#statsOverlay");
-  const perkOverlay = document.querySelector<HTMLDivElement>("#perkOverlay");
 
   if (
     !mapCanvas ||
@@ -47,8 +45,7 @@ export const getUiElements = (): UiElements => {
     !eventsPanel ||
     !leaderboard ||
     !menuOverlay ||
-    !statsOverlay ||
-    !perkOverlay
+    !statsOverlay
   ) {
     throw new Error("UI failed to initialize.");
   }
@@ -73,7 +70,6 @@ export const getUiElements = (): UiElements => {
     leaderboard,
     menuOverlay,
     statsOverlay,
-    perkOverlay,
   };
 };
 

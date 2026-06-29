@@ -14,20 +14,7 @@ import type {
   RasterServerMessage,
   RasterShip,
 } from "../Core/types.js";
-import { PERK_OFFER_INTERVAL_SECONDS, RASTER_MATCH_DURATION_SECONDS } from "../Core/rasterCombatConfig.js";
-import {
-  IDENTITY_MODIFIERS,
-  modifiersForPerks,
-  offerPerks,
-  PERK_DEFINITIONS,
-  type PerkId,
-  type PlayerModifiers,
-} from "../Core/perks.js";
-import {
-  classBonusStartingTiles,
-  classModifiers,
-  type PlayerClassId,
-} from "../Core/playerClasses.js";
+import { RASTER_MATCH_DURATION_SECONDS } from "../Core/rasterCombatConfig.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import { buildRasterSnapshot, encodeOwnerDelta, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
 import { MAX_TRANSPORT_SHIPS_PER_PLAYER } from "../Core/rasterCombatConfig.js";
@@ -98,12 +85,6 @@ export interface RasterGameSessionOptions {
    * Exposed mainly so tests can run short matches.
    */
   maxDurationTicks?: number;
-  /**
-   * Ticks between perk-offer rounds. Defaults to
-   * {@link PERK_OFFER_INTERVAL_SECONDS} at the server tick rate. Exposed so tests
-   * can trigger offers quickly.
-   */
-  perkIntervalTicks?: number;
 }
 
 const DEFAULT_OPTIONS: Required<RasterGameSessionOptions> = {
@@ -115,7 +96,6 @@ const DEFAULT_OPTIONS: Required<RasterGameSessionOptions> = {
   realMapId: "",
   mapSize: 0,
   maxDurationTicks: RASTER_MATCH_DURATION_SECONDS * SIMULATION_TICK_RATE,
-  perkIntervalTicks: PERK_OFFER_INTERVAL_SECONDS * SIMULATION_TICK_RATE,
 };
 
 /**
@@ -165,16 +145,6 @@ export class RasterGameSession {
   private readonly kills = new Map<PlayerId, number>();
   /** Tick at which a player was eliminated, for their survival-time stat. */
   private readonly eliminationTick = new Map<PlayerId, number>();
-  /** Ticks between perk-offer rounds. */
-  private readonly perkIntervalTicks: number;
-  /** Perks each player has chosen so far, in pick order. */
-  private readonly chosenPerks = new Map<PlayerId, PerkId[]>();
-  /** The outstanding perk offer per player (the set they may legally pick from). */
-  private readonly pendingOffer = new Map<PlayerId, PerkId[]>();
-  /** Each player's class base modifiers; perks fold on top of these. */
-  private readonly baseModifiers = new Map<PlayerId, PlayerModifiers>();
-  /** Number of perk rounds offered so far (drives the deterministic offer set). */
-  private perkRound = 0;
 
   public constructor(options: RasterGameSessionOptions = {}) {
     const opts = { ...DEFAULT_OPTIONS, ...options };
@@ -185,7 +155,6 @@ export class RasterGameSession {
       options.mapName ?? (heightmapDef ? heightmapDef.name : realMap ? realMap.name : opts.mapName);
     this.startingTroops = opts.startingTroops;
     this.maxDurationTicks = Math.max(1, Math.floor(opts.maxDurationTicks));
-    this.perkIntervalTicks = Math.max(1, Math.floor(opts.perkIntervalTicks));
 
     let map;
     if (heightmapDef) {
@@ -278,7 +247,6 @@ export class RasterGameSession {
   public subscribe(
     clientId: string,
     send: RasterMessageHandler,
-    playerClass: PlayerClassId | null = null,
   ): () => void {
     if (this.nextPlayerId > PLAYER_PALETTE.length) {
       throw new Error(`Raster session is full (max ${PLAYER_PALETTE.length} players).`);
@@ -299,17 +267,8 @@ export class RasterGameSession {
     // it (an OpenFront-style defense post), so a heartland is harder to overrun.
     this.grid.addDefensePost(spawn);
 
-    // Apply the chosen class: base modifiers (perks fold on top later) and any
-    // bonus starting tiles claimed outward from the spawn (the capital stays the
-    // spawn tile).
-    const base = classModifiers(playerClass);
-    this.baseModifiers.set(playerId, base);
-    this.grid.setModifiers(playerId, base);
-    this.grantStartingTiles(playerId, spawn, classBonusStartingTiles(playerClass));
-
     this.peakTiles.set(playerId, this.grid.tileCountOf(playerId));
     this.kills.set(playerId, 0);
-    this.chosenPerks.set(playerId, []);
 
     const subscriber: RasterSubscriber = {
       clientId,
@@ -457,74 +416,10 @@ export class RasterGameSession {
       }
       return;
     }
-
-    // Periodic perk offer (skipped on the tick a match ends, handled above).
-    if (this.conflict.tick > 0 && this.conflict.tick % this.perkIntervalTicks === 0) {
-      this.broadcastPerkOffer();
-    }
-  }
-
-  /** Offer every player the next deterministic set of perks to choose from. */
-  private broadcastPerkOffer(): void {
-    const options = offerPerks(this.perkRound);
-    const offerNumber = this.perkRound + 1;
-    this.perkRound += 1;
-    for (const subscriber of this.subscribers.values()) {
-      this.pendingOffer.set(subscriber.playerId, options);
-      subscriber.send({ type: "SERVER_PERK_OFFER", payload: { options: [...options], offerNumber } });
-    }
-  }
-
-  /**
-   * Apply a player's perk choice. Ignored unless it matches that player's
-   * outstanding offer, so a client can't grant itself arbitrary perks. Recomputes
-   * the player's modifiers from their full pick history and clears the offer.
-   */
-  public choosePerk(clientId: string, perkId: PerkId): void {
-    const subscriber = this.subscribers.get(clientId);
-    if (!subscriber) return;
-    const pending = this.pendingOffer.get(subscriber.playerId);
-    if (!pending || !pending.includes(perkId)) return;
-    this.pendingOffer.delete(subscriber.playerId);
-
-    const chosen = this.chosenPerks.get(subscriber.playerId) ?? [];
-    chosen.push(perkId);
-    this.chosenPerks.set(subscriber.playerId, chosen);
-    const base = this.baseModifiers.get(subscriber.playerId) ?? IDENTITY_MODIFIERS;
-    this.grid.setModifiers(subscriber.playerId, modifiersForPerks(chosen, base));
-
-    this.recentEvents = [
-      `${this.nameOf(subscriber.playerId)} gained ${PERK_DEFINITIONS[perkId].name}.`,
-      ...this.recentEvents,
-    ].slice(0, MAX_EVENTS);
   }
 
   private nameOf(id: PlayerId): string {
     return this.playerMeta.get(id)?.name ?? `Player ${id}`;
-  }
-
-  /**
-   * Claim up to `count` neutral capturable tiles outward from `spawn` for a
-   * player (the Imperialist's head start). A BFS over land takes the nearest
-   * tiles deterministically; the spawn/capital tile is left as-is.
-   */
-  private grantStartingTiles(playerId: PlayerId, spawn: TileRef, count: number): void {
-    if (count <= 0) return;
-    const visited = new Set<TileRef>([spawn]);
-    const queue: TileRef[] = [spawn];
-    let granted = 0;
-    for (let head = 0; head < queue.length && granted < count; head += 1) {
-      for (const n of this.map.neighbors(queue[head])) {
-        if (visited.has(n) || !this.grid.isCapturable(n)) continue;
-        visited.add(n);
-        if (this.grid.ownerOf(n) === NEUTRAL_PLAYER) {
-          this.grid.claim(n, playerId);
-          granted += 1;
-        }
-        queue.push(n);
-        if (granted >= count) break;
-      }
-    }
   }
 
   /** The player holding the most tiles, ties broken by lowest id; null if none. */

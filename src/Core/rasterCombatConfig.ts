@@ -152,9 +152,6 @@ export const SEA_CROSSING_SURCHARGE = 8;
  */
 export const MAX_SEA_RANGE_MULTIPLIER = 2;
 
-/** Seconds between perk-offer rounds in a roguelite run. */
-export const PERK_OFFER_INTERVAL_SECONDS = 120;
-
 /**
  * How many transport ships a single player may have at sea simultaneously.
  * Mirrors OpenFront's cap of three boats in flight — water assaults are

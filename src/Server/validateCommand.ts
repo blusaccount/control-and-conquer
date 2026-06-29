@@ -1,7 +1,5 @@
 import { RasterClientMessage, RasterExpandIntent } from "../Core/types.js";
-import { PerkChosenPayload, RasterJoinPayload } from "../Core/messages.js";
-import { isPerkId } from "../Core/perks.js";
-import { isPlayerClassId } from "../Core/playerClasses.js";
+import { RasterJoinPayload } from "../Core/messages.js";
 import { isMapChoiceId } from "../Core/mapCatalog.js";
 
 const parseRasterExpand = (payload: unknown): RasterExpandIntent => {
@@ -25,25 +23,11 @@ const parseRasterJoin = (payload: unknown): RasterJoinPayload => {
   if (typeof payload !== "object" || payload === null) {
     throw new Error("CLIENT_RASTER_JOIN.payload must be an object.");
   }
-  const { playerClass, mapId } = payload as Record<string, unknown>;
-  if (!isPlayerClassId(playerClass)) {
-    throw new Error("playerClass must be a known class id.");
-  }
+  const { mapId } = payload as Record<string, unknown>;
   if (mapId !== undefined && !isMapChoiceId(mapId)) {
     throw new Error("mapId must be a known map id.");
   }
-  return mapId === undefined ? { playerClass } : { playerClass, mapId };
-};
-
-const parsePerkChosen = (payload: unknown): PerkChosenPayload => {
-  if (typeof payload !== "object" || payload === null) {
-    throw new Error("CLIENT_PERK_CHOSEN.payload must be an object.");
-  }
-  const { perkId } = payload as Record<string, unknown>;
-  if (!isPerkId(perkId)) {
-    throw new Error("perkId must be a known perk id.");
-  }
-  return { perkId };
+  return mapId === undefined ? {} : { mapId };
 };
 
 export const validateCommand = (raw: unknown): RasterClientMessage => {
@@ -58,9 +42,6 @@ export const validateCommand = (raw: unknown): RasterClientMessage => {
   }
   if (message.type === "CLIENT_RASTER_EXPAND") {
     return { type: "CLIENT_RASTER_EXPAND", payload: parseRasterExpand(message.payload) };
-  }
-  if (message.type === "CLIENT_PERK_CHOSEN") {
-    return { type: "CLIENT_PERK_CHOSEN", payload: parsePerkChosen(message.payload) };
   }
   throw new Error(`Unknown message type: ${String(message.type)}.`);
 };

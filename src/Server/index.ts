@@ -122,7 +122,7 @@ wss.on("connection", (socket) => {
     socket.send(JSON.stringify(message));
   };
 
-  // The player is seated only once they send CLIENT_RASTER_JOIN with a class.
+  // The player is seated only once they send CLIENT_RASTER_JOIN.
   let unsubscribe: (() => void) | null = null;
 
   socket.on("message", (data) => {
@@ -139,13 +139,10 @@ wss.on("connection", (socket) => {
             send,
             { ...choice.options },
             botCount,
-            message.payload.playerClass,
           );
         }
       } else if (message.type === "CLIENT_RASTER_EXPAND") {
         registry.queueRasterExpand(clientId, message.payload);
-      } else if (message.type === "CLIENT_PERK_CHOSEN") {
-        registry.choosePerk(clientId, message.payload.perkId);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown command error.";
