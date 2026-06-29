@@ -2,375 +2,373 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Control & Conquer</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Control &amp; Conquer</title>
     <style>
       :root {
         color-scheme: dark;
         font-family: Inter, system-ui, sans-serif;
+
+        /* OpenFront-style HUD palette: dark translucent glass panels floating
+           over a full-bleed map, with a single blue accent. */
+        --accent: #3b82f6;
+        --accent-strong: #2563eb;
+        --gold: #fbbf24;
+        --text: #e8edf5;
+        --text-dim: #97a3b6;
+        --text-faint: #6b7689;
+        --panel-bg: rgba(15, 20, 30, 0.82);
+        --panel-bg-solid: #11161f;
+        --panel-border: rgba(255, 255, 255, 0.09);
+        --panel-radius: 12px;
+        --panel-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
       }
 
+      * { box-sizing: border-box; }
+
+      html,
       body {
         margin: 0;
-        background: #0f1117;
-        color: #f3f4f6;
-      }
-
-      main {
-        display: grid;
-        grid-template-columns: 320px 1fr;
-        height: 100vh;
-      }
-
-      aside {
-        background: #161a22;
-        border-right: 1px solid #2a3341;
-        padding: 16px;
-        overflow-y: auto;
-      }
-
-      h1,
-      h2,
-      p {
-        margin: 0 0 8px;
-      }
-
-      section {
-        margin-bottom: 16px;
-      }
-
-      label,
-      input,
-      button {
-        display: block;
-        width: 100%;
-      }
-
-      input,
-      button {
-        margin-top: 6px;
-      }
-
-      input[type="range"] {
-        accent-color: #2563eb;
-      }
-
-      input[type="number"],
-      input:not([type]) {
-        padding: 8px;
-        border-radius: 6px;
-        border: 1px solid #374151;
-        background: #0f172a;
-        color: #f3f4f6;
-      }
-
-      button {
-        padding: 10px;
-        border: 0;
-        border-radius: 8px;
-        background: #2563eb;
-        color: white;
-        cursor: pointer;
-      }
-
-      .layout {
-        padding: 16px;
-        box-sizing: border-box;
         height: 100%;
-        position: relative;
+        overflow: hidden;
+        background: #070a10;
+        color: var(--text);
+        overscroll-behavior: none;
       }
 
+      /* ---- Start-phase countdown banner ---------------------------------- */
+      /* A floating glass banner over the top-center of the map during the
+         opening start phase, sitting just below the resource readout. */
       #startBanner {
-        position: absolute;
-        top: 36px;
+        position: fixed;
+        top: 64px;
         left: 50%;
         transform: translateX(-50%);
+        z-index: 20;
         display: flex;
         flex-direction: column;
         align-items: center;
         gap: 2px;
-        padding: 14px 28px;
-        background: rgba(11, 18, 32, 0.82);
-        border: 1px solid #3b82f6;
-        border-radius: 14px;
-        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+        padding: 14px 30px;
         text-align: center;
         pointer-events: none;
-        z-index: 5;
+        background: var(--panel-bg);
+        border: 1px solid var(--accent);
+        border-radius: var(--panel-radius);
+        box-shadow: var(--panel-shadow);
+        backdrop-filter: blur(10px) saturate(1.1);
+        -webkit-backdrop-filter: blur(10px) saturate(1.1);
       }
-
-      #startBanner.hidden {
-        display: none;
-      }
-
+      #startBanner.hidden { display: none; }
       #startBanner .start-banner-title {
-        font-size: 15px;
-        font-weight: 600;
-        color: #e5e7eb;
-        letter-spacing: 0.02em;
+        font-size: 14px;
+        font-weight: 700;
+        letter-spacing: 0.03em;
+        color: var(--text);
       }
-
       #startBanner .start-banner-timer {
         font-size: 38px;
-        font-weight: 700;
+        font-weight: 800;
         line-height: 1.05;
-        color: #60a5fa;
+        color: #9ec5ff;
         font-variant-numeric: tabular-nums;
       }
-
       #startBanner .start-banner-sub {
         font-size: 12px;
-        color: #9ca3af;
+        color: var(--text-dim);
       }
+
+      h1, h2, h3, p { margin: 0; }
+
+      /* ---- Full-bleed map ------------------------------------------------ */
 
       #mapCanvas {
-        width: 100%;
-        height: 100%;
-        box-sizing: border-box;
-        background: #0b1220;
-        border: 1px solid #293447;
-        border-radius: 12px;
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
         display: block;
+        background: #0a1422;
+        touch-action: none;
+        z-index: 0;
       }
 
-      .hint {
-        color: #9ca3af;
-        font-size: 13px;
+      /* ---- HUD overlay layer --------------------------------------------- */
+      /* The HUD spans the viewport but is click-through; only the panels
+         themselves capture pointer events, so the map stays draggable in the
+         gaps between panels. */
+      #hud {
+        position: fixed;
+        inset: 0;
+        z-index: 10;
+        pointer-events: none;
       }
+      #hud > * { pointer-events: auto; }
+
+      .panel {
+        position: absolute;
+        background: var(--panel-bg);
+        border: 1px solid var(--panel-border);
+        border-radius: var(--panel-radius);
+        box-shadow: var(--panel-shadow);
+        backdrop-filter: blur(10px) saturate(1.1);
+        -webkit-backdrop-filter: blur(10px) saturate(1.1);
+      }
+
+      .panel-head {
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--text-dim);
+        margin-bottom: 8px;
+      }
+
+      .hint { color: var(--text-dim); font-size: 12px; line-height: 1.45; }
+
+      /* ---- Top-left: brand + identity ------------------------------------ */
+      .hud-brand {
+        top: 12px;
+        left: 12px;
+        padding: 10px 14px;
+        max-width: 240px;
+      }
+      .brand-title {
+        font-size: 15px;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+        background: linear-gradient(90deg, #fff, #9ec5ff);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      .brand-sub {
+        margin-top: 2px;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text-dim);
+      }
+
+      /* ---- Top-center: resource readout ---------------------------------- */
+      .hud-resources {
+        top: 12px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        padding: 8px 18px;
+        font-size: 14px;
+        white-space: nowrap;
+      }
+      .hud-resources .res {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 6px;
+      }
+      .hud-resources .res-ico { font-size: 15px; }
+      .hud-resources .res-val {
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+      }
+      .hud-resources .res-rate {
+        font-size: 11px;
+        color: var(--text-faint);
+        font-variant-numeric: tabular-nums;
+      }
+      .hud-resources .res-builds {
+        color: var(--text-dim);
+        font-size: 13px;
+        border-left: 1px solid var(--panel-border);
+        padding-left: 16px;
+      }
+      .hud-resources .res-muted { color: var(--text-dim); font-weight: 600; }
+
+      /* ---- Top-right: leaderboard ---------------------------------------- */
+      .hud-leaderboard {
+        top: 12px;
+        right: 12px;
+        width: 280px;
+        max-height: 42vh;
+        display: flex;
+        flex-direction: column;
+        padding: 12px 12px 8px;
+      }
+      .hud-leaderboard #leaderboard {
+        overflow-y: auto;
+        margin: 0 -4px;
+        padding: 0 4px;
+      }
+
+      /* ---- Left: status / orders / build --------------------------------- */
+      .hud-info {
+        top: 50%;
+        left: 12px;
+        transform: translateY(-50%);
+        width: 250px;
+        max-height: 70vh;
+        overflow-y: auto;
+        padding: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .hud-info .info-body { font-size: 13px; line-height: 1.5; }
+      .hud-info .info-body strong { color: #fff; }
+      .hud-info .info-body em { color: var(--text-faint); font-style: normal; }
 
       .status {
-        min-height: 22px;
-        font-size: 14px;
+        min-height: 18px;
+        font-size: 12.5px;
+        color: var(--text-dim);
+      }
+      .status.error { color: #fca5a5; }
+      .status.victory { color: var(--gold); font-weight: 700; }
+
+      .panel-divider {
+        height: 1px;
+        background: var(--panel-border);
+        margin: 2px -14px;
       }
 
-      .status.error {
-        color: #fca5a5;
+      /* ---- Bottom-center: attack ratio ----------------------------------- */
+      .hud-attack {
+        bottom: 16px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: min(440px, 70vw);
+        padding: 10px 16px 12px;
       }
-
-      .status.victory {
-        color: #fde68a;
-        font-weight: 600;
+      .attack-label {
+        display: block;
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--text-dim);
       }
-
       .slider-row {
         display: flex;
         align-items: center;
-        gap: 8px;
-        margin-top: 6px;
+        gap: 12px;
+        margin-top: 8px;
       }
-
       .slider-row input[type="range"] {
         flex: 1;
-        margin-top: 0;
+        accent-color: var(--accent);
+        height: 6px;
       }
-
       .slider-row output {
-        min-width: 52px;
+        min-width: 48px;
         text-align: right;
         font-variant-numeric: tabular-nums;
-        color: #d1d5db;
-        font-size: 13px;
+        font-weight: 800;
+        font-size: 18px;
+        color: var(--accent);
       }
 
-      ul {
-        margin: 8px 0 0;
-        padding-left: 20px;
-      }
-
-      .menu-overlay {
-        position: fixed;
-        inset: 0;
-        z-index: 100;
+      /* ---- Bottom-right: events + minimap -------------------------------- */
+      .hud-corner {
+        position: absolute;
+        right: 12px;
+        bottom: 16px;
+        width: 220px;
         display: flex;
         flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        gap: 16px;
-        background: rgba(15, 17, 23, 0.94);
-        backdrop-filter: blur(4px);
+        gap: 10px;
+        align-items: stretch;
+        pointer-events: none;
       }
-      .menu-overlay h1 {
-        font-size: 36px;
-        margin: 0 0 8px;
-        letter-spacing: 1px;
+      .hud-corner > .panel { position: static; pointer-events: auto; }
+
+      .hud-events { padding: 10px 12px; }
+      #events { max-height: 22vh; overflow-y: auto; }
+      #events .event {
+        font-size: 12px;
+        padding: 4px 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        color: var(--text-dim);
+        line-height: 1.35;
       }
-      .menu-overlay p.hint {
-        max-width: 400px;
-        text-align: center;
-        margin: 0 0 16px;
+      #events .event:last-child { border-bottom: 0; }
+      #events:empty::before {
+        content: "No events yet.";
+        font-size: 12px;
+        color: var(--text-faint);
       }
-      .menu-button {
-        width: 320px;
-        padding: 14px 24px;
-        border: 0;
-        border-radius: 10px;
-        font-size: 16px;
-        font-weight: 600;
-        cursor: pointer;
-        color: white;
-      }
-      .menu-button.primary { background: #2563eb; }
-      .menu-button.primary:hover { background: #1d4ed8; }
-      .menu-button.secondary { background: #374151; }
-      .menu-button.secondary:hover { background: #4b5563; }
-      .menu-button .sub {
+
+      .hud-minimap { padding: 6px; }
+      #minimapCanvas {
+        width: 100%;
+        height: auto;
+        background: #0a1422;
+        border-radius: 7px;
         display: block;
-        font-size: 12px;
-        font-weight: 400;
-        opacity: 0.8;
-        margin-top: 4px;
-      }
-      .menu-overlay.hidden { display: none; }
-
-      .stats-card {
-        background: #161a22;
-        border: 1px solid #2a3341;
-        border-radius: 12px;
-        padding: 20px 24px;
-        width: 360px;
-        max-width: 90vw;
-      }
-      .stats-card .verdict {
-        font-size: 22px;
-        font-weight: 700;
-        margin: 0 0 4px;
-      }
-      .stats-card .verdict.win { color: #4ade80; }
-      .stats-card .verdict.loss { color: #fca5a5; }
-      .stats-card .run-label {
-        color: #9ca3af;
-        font-size: 13px;
-        margin: 0 0 16px;
-      }
-      .stats-grid {
-        display: grid;
-        grid-template-columns: 1fr auto;
-        gap: 8px 12px;
-        font-size: 14px;
-      }
-      .stats-grid .k { color: #9ca3af; }
-      .stats-grid .v { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
-      .stats-history {
-        margin-top: 16px;
-        border-top: 1px solid #2a3341;
-        padding-top: 12px;
-      }
-      .stats-history h3 { font-size: 13px; margin: 0 0 8px; color: #cbd5e1; }
-      .stats-history .row {
-        display: flex;
-        justify-content: space-between;
-        font-size: 12px;
-        color: #9ca3af;
-        padding: 2px 0;
-        font-variant-numeric: tabular-nums;
+        cursor: crosshair;
+        image-rendering: pixelated;
       }
 
-      .perk-cards {
-        display: flex;
-        gap: 16px;
-        flex-wrap: wrap;
-        justify-content: center;
-        max-width: 720px;
-      }
-      .perk-card {
-        width: 200px;
-        background: #161a22;
-        border: 1px solid #2a3341;
-        border-radius: 12px;
-        padding: 18px;
-        cursor: pointer;
-        text-align: left;
-        color: #f3f4f6;
-        transition: border-color 0.12s, transform 0.12s;
-      }
-      .perk-card:hover,
-      .perk-card:focus-visible {
-        border-color: #2563eb;
-        transform: translateY(-2px);
-        outline: none;
-      }
-      .perk-card h3 { margin: 0 0 8px; font-size: 16px; }
-      .perk-card p { margin: 0; font-size: 13px; color: #9ca3af; }
-
-      /* Map-picker cards: slightly more compact than class/perk cards, and a
-         persistent highlight marks the currently selected map. */
-      .map-card { width: 168px; padding: 14px; }
-      .map-card.selected {
-        border-color: #2563eb;
-        box-shadow: inset 0 0 0 1px #2563eb;
-        background: #1b2433;
-      }
-      .menu-section {
-        font-size: 13px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        color: #9ca3af;
-        margin: 8px 0 0;
-      }
+      /* ---- Build menu ---------------------------------------------------- */
       .build-menu {
         display: flex;
         flex-direction: column;
         gap: 6px;
-        margin: 8px 0;
       }
       .build-btn {
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 9px;
         width: 100%;
-        margin: 0;
         padding: 8px 10px;
-        border: 1px solid #2a3341;
-        border-radius: 8px;
-        background: #131822;
-        color: #e5e7eb;
+        border: 1px solid var(--panel-border);
+        border-radius: 9px;
+        background: rgba(255, 255, 255, 0.03);
+        color: var(--text);
         cursor: pointer;
         text-align: left;
         font-size: 13px;
+        transition: border-color 0.12s, background 0.12s;
       }
-      .build-btn:hover:not(:disabled) { border-color: #2563eb; }
+      .build-btn:hover:not(:disabled) {
+        border-color: var(--accent);
+        background: rgba(59, 130, 246, 0.1);
+      }
       .build-btn.selected {
-        border-color: #2563eb;
-        box-shadow: inset 0 0 0 1px #2563eb;
-        background: #1b2433;
+        border-color: var(--accent);
+        box-shadow: inset 0 0 0 1px var(--accent);
+        background: rgba(59, 130, 246, 0.16);
       }
-      .build-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+      .build-btn:disabled { opacity: 0.45; cursor: not-allowed; }
       .build-btn .icon { font-size: 18px; flex: 0 0 auto; }
-      .build-btn .label { flex: 1; }
-      .build-btn .label .sub { display: block; font-size: 11px; color: #9ca3af; }
+      .build-btn .label { flex: 1; font-weight: 600; }
+      .build-btn .label .sub {
+        display: block;
+        font-size: 11px;
+        font-weight: 400;
+        color: var(--text-dim);
+      }
       .build-btn .cost {
         flex: 0 0 auto;
         font-variant-numeric: tabular-nums;
-        color: #fbbf24;
-        font-weight: 600;
+        color: var(--gold);
+        font-weight: 700;
       }
-      .build-btn .cost.unaffordable { color: #6b7280; }
+      .build-btn .cost.unaffordable { color: var(--text-faint); }
 
-      #events .event {
-        font-size: 12px;
-        padding: 4px 0;
-        border-bottom: 1px solid #1f2937;
-        color: #cbd5e1;
-      }
-
+      /* ---- Leaderboard rows ---------------------------------------------- */
       #leaderboard .lb-row {
         display: flex;
         align-items: center;
         gap: 8px;
-        padding: 4px 6px;
-        border-radius: 6px;
+        padding: 5px 7px;
+        border-radius: 7px;
         font-size: 13px;
         line-height: 1.3;
       }
-      #leaderboard .lb-row.me {
-        background: #1f2937;
-        font-weight: 600;
-      }
-      /* "You are winning": your row, while you hold the lead, glows green. */
+      #leaderboard .lb-row.me { background: rgba(255, 255, 255, 0.07); font-weight: 600; }
       #leaderboard .lb-row.me.leader {
         background: rgba(34, 197, 94, 0.18);
-        box-shadow: inset 0 0 0 1px rgba(34, 197, 94, 0.55);
+        box-shadow: inset 0 0 0 1px rgba(34, 197, 94, 0.5);
         color: #bbf7d0;
       }
       #leaderboard .lb-dot {
@@ -389,97 +387,216 @@
       #leaderboard .lb-stats {
         flex: 0 0 auto;
         text-align: right;
-        color: #9ca3af;
+        color: var(--text-dim);
         font-variant-numeric: tabular-nums;
-        font-size: 12px;
+        font-size: 11px;
       }
-      #leaderboard .lb-row.me .lb-stats {
-        color: inherit;
+      #leaderboard .lb-row.me .lb-stats { color: inherit; }
+      #leaderboard .lb-empty { font-size: 12px; color: var(--text-faint); padding: 4px; }
+
+      /* ---- Menu + stats overlays ----------------------------------------- */
+      .menu-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        padding: 24px;
+        overflow-y: auto;
+        background:
+          radial-gradient(1200px 600px at 50% -10%, rgba(37, 99, 235, 0.18), transparent 60%),
+          rgba(7, 10, 16, 0.96);
+        backdrop-filter: blur(6px);
       }
-      #leaderboard .lb-empty {
+      .menu-overlay h1 {
+        font-size: 42px;
+        font-weight: 900;
+        letter-spacing: 0.5px;
+        text-align: center;
+        background: linear-gradient(90deg, #fff, #93c5fd);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      .menu-overlay p.hint {
+        max-width: 460px;
+        text-align: center;
+        margin-bottom: 8px;
+        font-size: 14px;
+      }
+      .menu-section {
         font-size: 12px;
-        color: #6b7280;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--text-dim);
+        margin-top: 8px;
+      }
+      .menu-button {
+        margin-top: 8px;
+        padding: 14px 24px;
+        min-width: 280px;
+        border: 0;
+        border-radius: 12px;
+        font-size: 16px;
+        font-weight: 700;
+        cursor: pointer;
+        color: white;
+        transition: transform 0.1s, background 0.12s, box-shadow 0.12s;
+      }
+      .menu-button.primary {
+        background: linear-gradient(180deg, var(--accent), var(--accent-strong));
+        box-shadow: 0 6px 20px rgba(37, 99, 235, 0.4);
+      }
+      .menu-button.primary:hover { transform: translateY(-1px); box-shadow: 0 8px 26px rgba(37, 99, 235, 0.5); }
+      .menu-button.secondary { background: #2b3340; }
+      .menu-button.secondary:hover { background: #38414f; }
+      .menu-overlay.hidden { display: none; }
+
+      .perk-cards {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        justify-content: center;
+        max-width: 760px;
+      }
+      .perk-card {
+        width: 200px;
+        background: var(--panel-bg-solid);
+        border: 1px solid var(--panel-border);
+        border-radius: 12px;
+        padding: 16px;
+        cursor: pointer;
+        text-align: left;
+        color: var(--text);
+        transition: border-color 0.12s, transform 0.12s, background 0.12s;
+      }
+      .perk-card:hover,
+      .perk-card:focus-visible {
+        border-color: var(--accent);
+        transform: translateY(-2px);
+        outline: none;
+      }
+      .perk-card h3 { margin-bottom: 6px; font-size: 15px; }
+      .perk-card p { font-size: 12.5px; color: var(--text-dim); line-height: 1.4; }
+
+      .map-card { width: 176px; padding: 14px; }
+      .map-card.selected {
+        border-color: var(--accent);
+        box-shadow: inset 0 0 0 1px var(--accent);
+        background: #16203099;
       }
 
-      #minimapCanvas {
-        width: 100%;
-        height: auto;
-        background: #0b1220;
-        border: 1px solid #293447;
-        border-radius: 8px;
-        display: block;
-        cursor: pointer;
-        image-rendering: pixelated;
+      /* ---- Post-match stats card ----------------------------------------- */
+      .stats-card {
+        background: var(--panel-bg-solid);
+        border: 1px solid var(--panel-border);
+        border-radius: 16px;
+        padding: 24px 28px;
+        width: 380px;
+        max-width: 92vw;
+        box-shadow: var(--panel-shadow);
+      }
+      .stats-card .verdict { font-size: 26px; font-weight: 800; margin-bottom: 4px; }
+      .stats-card .verdict.win { color: #4ade80; }
+      .stats-card .verdict.loss { color: #fca5a5; }
+      .stats-card .run-label { color: var(--text-dim); font-size: 13px; margin-bottom: 18px; }
+      .stats-grid {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 9px 12px;
+        font-size: 14px;
+      }
+      .stats-grid .k { color: var(--text-dim); }
+      .stats-grid .v { text-align: right; font-variant-numeric: tabular-nums; font-weight: 700; }
+      .stats-history {
+        margin-top: 18px;
+        border-top: 1px solid var(--panel-border);
+        padding-top: 14px;
+      }
+      .stats-history h3 { font-size: 12px; margin-bottom: 8px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em; }
+      .stats-history .row {
+        display: flex;
+        justify-content: space-between;
+        font-size: 12px;
+        color: var(--text-dim);
+        padding: 3px 0;
+        font-variant-numeric: tabular-nums;
+      }
+
+      /* ---- Small screens: collapse side panels to corners ---------------- */
+      @media (max-width: 720px) {
+        .hud-info { top: auto; bottom: 90px; transform: none; width: 200px; max-height: 40vh; }
+        .hud-leaderboard { width: 210px; max-height: 32vh; }
+        .hud-corner { display: none; }
+        .hud-resources { gap: 12px; padding: 7px 12px; font-size: 13px; }
+        .hud-resources .res-builds { display: none; }
       }
     </style>
   </head>
   <body>
+    <canvas id="mapCanvas" width="760" height="460"></canvas>
+
+    <div id="hud">
+      <div class="panel hud-brand">
+        <div class="brand-title">Control &amp; Conquer</div>
+        <div id="teamInfo" class="brand-sub">Connecting…</div>
+      </div>
+
+      <div class="panel hud-resources" id="goldInfo">
+        <span class="res res-muted">Connecting…</span>
+      </div>
+
+      <div class="panel hud-leaderboard">
+        <div class="panel-head">Leaderboard</div>
+        <div id="leaderboard"><div class="lb-empty">Waiting for the match…</div></div>
+      </div>
+
+      <div class="panel hud-info">
+        <div id="selectionInfo" class="info-body">Connecting…</div>
+        <div id="statusMessage" class="status" aria-live="polite"></div>
+        <div class="panel-divider"></div>
+        <div class="panel-head">Build</div>
+        <div id="buildMenu" class="build-menu"></div>
+        <div id="buildHint" class="hint"></div>
+      </div>
+
+      <div class="panel hud-attack">
+        <label class="attack-label">
+          Attack ratio
+          <div class="slider-row">
+            <input id="attackPercentInput" type="range" min="10" max="90" step="5" value="50" />
+            <output id="attackPercentOutput">50%</output>
+          </div>
+        </label>
+      </div>
+
+      <div class="hud-corner">
+        <div class="panel hud-events">
+          <div class="panel-head">Events</div>
+          <div id="events"></div>
+        </div>
+        <div class="panel hud-minimap">
+          <canvas id="minimapCanvas" width="120" height="80" title="Click to jump the camera"></canvas>
+        </div>
+      </div>
+    </div>
 
     <div id="statsOverlay" class="menu-overlay hidden"></div>
     <div id="menuOverlay" class="menu-overlay">
       <h1>Control &amp; Conquer</h1>
-      <p class="hint">OpenFront-style territorial conquest on real-world maps. Choose a map to begin a run.</p>
+      <p class="hint">OpenFront-style territorial conquest on real-world maps. Pick a map and a difficulty, then claim a starting tile and expand your borders across the world.</p>
       <h2 class="menu-section">Choose your map</h2>
       <div id="mapCards" class="perk-cards"></div>
       <h2 class="menu-section">Choose difficulty</h2>
       <div id="difficultyCards" class="perk-cards"></div>
       <button id="startButton" class="menu-button primary" type="button">Start Run</button>
     </div>
-    <main>
-      <aside>
-        <section>
-          <h1>Control &amp; Conquer</h1>
-          <p class="hint">OpenFront-inspired territory combat MVP.</p>
-        </section>
 
-        <section>
-          <h2>Your Team</h2>
-          <div id="teamInfo">Connecting...</div>
-        </section>
-
-        <section>
-          <h2>Leaderboard</h2>
-          <div id="leaderboard"><div class="lb-empty">Waiting for the match…</div></div>
-        </section>
-
-        <section>
-          <h2>Expand</h2>
-          <p class="hint">Click anywhere on the map to push your border toward that tile. Coastal tiles can launch boats across narrow seas and rivers.</p>
-          <label>
-            Troops to commit (% of pool)
-            <div class="slider-row">
-              <input id="attackPercentInput" type="range" min="10" max="90" step="5" value="50" />
-              <output id="attackPercentOutput">50%</output>
-            </div>
-          </label>
-          <div id="selectionInfo" class="hint">Connecting…</div>
-          <div id="statusMessage" class="status" aria-live="polite"></div>
-        </section>
-
-        <section>
-          <h2>Economy &amp; Build</h2>
-          <div id="goldInfo" class="hint">Gold: —</div>
-          <p class="hint">Gold accrues from the land you hold. Spend it on structures: pick one, then click a tile you own.</p>
-          <div id="buildMenu" class="build-menu"></div>
-          <div id="buildHint" class="hint"></div>
-        </section>
-
-        <section>
-          <h2>Recent Events</h2>
-          <div id="events"></div>
-        </section>
-
-        <section>
-          <h2>Minimap</h2>
-          <canvas id="minimapCanvas" width="120" height="80" title="Click to jump the camera"></canvas>
-        </section>
-      </aside>
-
-      <div class="layout">
-        <canvas id="mapCanvas" width="760" height="460"></canvas>
-        <div id="startBanner" class="hidden"></div>
-      </div>
-    </main>
+    <div id="startBanner" class="hidden"></div>
     <script type="module" src="/assets/Client/main.js"></script>
   </body>
 </html>
