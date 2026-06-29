@@ -11,95 +11,18 @@
  *
  * Rivers are stored as ordered [lon, lat] waypoints (degrees) so they are
  * independent of grid size and projection crop; `carveRivers` rasterises them
- * for whatever target grid a heightmap map resolves to. Each river is traced
- * from its headwaters down to a river mouth a little offshore, so the carved
- * water overlaps real ocean tiles and the finishing flood-fill marks the whole
- * channel as open ocean — navigable, and a natural amphibious border. The carve
+ * for whatever target grid a heightmap map resolves to. The actual river
+ * geometry is real-world data (Natural Earth centerlines) loaded from a
+ * committed asset — see `riverData.ts` and `scripts/buildRivers.ts`. The carve
  * is a hard override (it ignores the land-fraction vote that would otherwise
  * round a sub-cell river back to land) and is fully deterministic.
  */
 
 /** A river as an ordered list of `[lon, lat]` waypoints in degrees. */
 export interface River {
-  name: string;
+  name?: string;
   points: ReadonlyArray<readonly [number, number]>;
 }
-
-/**
- * A curated set of major world rivers, each traced source → mouth (the final
- * point sits a touch offshore so the channel connects to open ocean). Coarse by
- * design: a handful of waypoints is enough once rasterised to game-grid scale.
- */
-export const WORLD_RIVERS: readonly River[] = [
-  {
-    name: "Amazon",
-    points: [
-      [-73, -11],
-      [-70, -12],
-      [-65, -9],
-      [-60, -5],
-      [-55, -2],
-      [-50, -0.5],
-      [-48, 0],
-    ],
-  },
-  {
-    name: "Nile",
-    points: [
-      [31.5, 2],
-      [32, 5],
-      [32.5, 15],
-      [32.5, 24],
-      [31.2, 30],
-      [31, 31.5],
-      [31, 33],
-    ],
-  },
-  {
-    name: "Mississippi",
-    points: [
-      [-95, 47.5],
-      [-91, 43],
-      [-90, 38],
-      [-91, 32],
-      [-89.2, 29.1],
-      [-89, 28],
-    ],
-  },
-  {
-    name: "Yangtze",
-    points: [
-      [91, 33],
-      [100, 30],
-      [107, 30],
-      [114, 30],
-      [121.8, 31.4],
-      [123, 31.5],
-    ],
-  },
-  {
-    name: "Danube",
-    points: [
-      [8.2, 48],
-      [16, 48],
-      [19, 47],
-      [24, 44],
-      [29.6, 45.2],
-      [31, 45.2],
-    ],
-  },
-  {
-    name: "Congo",
-    points: [
-      [27, -11],
-      [23, -6],
-      [19, -3],
-      [15, -4],
-      [12.4, -6],
-      [11, -6],
-    ],
-  },
-];
 
 export interface CarveRiversOptions {
   width: number;
@@ -119,6 +42,14 @@ export interface CarveRiversOptions {
    * size without flooding small maps.
    */
   halfWidth: number;
+  /**
+   * When true, each polyline's final point is pushed in its flow direction until
+   * it overlaps pre-existing sea, guaranteeing the channel connects to open
+   * water. Only sensible for source→mouth traces; leave off for real-world
+   * centerline data, whose segments are tributary/junction pieces whose
+   * endpoints are not river mouths. @default false
+   */
+  extendMouths?: boolean;
 }
 
 /**
@@ -132,6 +63,7 @@ export interface CarveRiversOptions {
  */
 export const carveRivers = (opts: CarveRiversOptions): void => {
   const { width, height, land, elevation, latMax, latMin, rivers, halfWidth } = opts;
+  const extendMouths = opts.extendMouths ?? false;
   const latSpan = latMax - latMin || 1;
 
   const lonToTx = (lon: number): number => ((lon + 180) / 360) * width;
@@ -139,8 +71,8 @@ export const carveRivers = (opts: CarveRiversOptions): void => {
 
   // Snapshot which tiles were already water (sea/lake from the heightmap) before
   // we carve anything, so the mouth-extension below can detect when it has
-  // reached the pre-existing coastline.
-  const wasWater = land.slice();
+  // reached the pre-existing coastline. Only needed when extending mouths.
+  const wasWater = extendMouths ? land.slice() : null;
 
   const stamp = (cx: number, cy: number): void => {
     const cxi = Math.round(cx);
@@ -184,7 +116,7 @@ export const carveRivers = (opts: CarveRiversOptions): void => {
     // pre-existing water, so the channel always connects to the open sea (and
     // the finishing flood-fill classifies the whole river as ocean). If the
     // mouth already sits on water this stops immediately.
-    if (pts.length >= 2) {
+    if (extendMouths && pts.length >= 2) {
       const px = lonToTx(pts[pts.length - 2][0]);
       const py = latToTy(pts[pts.length - 2][1]);
       const mx = lonToTx(pts[pts.length - 1][0]);
@@ -198,7 +130,7 @@ export const carveRivers = (opts: CarveRiversOptions): void => {
         const xi = Math.round(cx);
         const yi = Math.round(cy);
         const reachedSea =
-          xi >= 0 && yi >= 0 && xi < width && yi < height && wasWater[yi * width + xi] === 0;
+          xi >= 0 && yi >= 0 && xi < width && yi < height && wasWater![yi * width + xi] === 0;
         stamp(cx, cy);
         if (reachedSea) break;
       }

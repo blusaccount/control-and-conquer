@@ -4,7 +4,8 @@ import { buildTerrainFromMask } from "../Core/terrainBuilder.js";
 import { IMPASSABLE_MAGNITUDE } from "../Core/terrainCodec.js";
 import type { GameMap } from "../Core/GameMap.js";
 import { decodePngToGray, type DecodedGray } from "./pngDecode.js";
-import { carveRivers, riverHalfWidthFor, WORLD_RIVERS } from "./rivers.js";
+import { carveRivers, riverHalfWidthFor } from "./rivers.js";
+import { loadEarthRivers } from "./riverData.js";
 
 /**
  * Large, real-world maps derived from a grayscale heightmap.
@@ -39,9 +40,9 @@ export interface HeightmapMapDef {
   /** Average land elevation (0..255) at/above which a tile is impassable rock. */
   mountainGray: number;
   /**
-   * Carve the curated major world rivers into this map as water. The source
-   * topography PNG has no hydrography, so rivers are overlaid as their own data
-   * layer (see `rivers.ts`). @default false
+   * Carve real-world rivers (Natural Earth centerlines) into this map as water.
+   * The source topography PNG has no hydrography, so rivers are overlaid as their
+   * own committed data layer (see `riverData.ts` / `rivers.ts`). @default false
    */
   rivers?: boolean;
 }
@@ -166,7 +167,7 @@ export const buildHeightmapGameMap = (def: HeightmapMapDef, requestedWidth?: num
       elevation,
       latMax: def.latMax,
       latMin: def.latMin,
-      rivers: WORLD_RIVERS,
+      rivers: loadEarthRivers(),
       halfWidth: riverHalfWidthFor(width),
     });
   }
