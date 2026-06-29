@@ -9,14 +9,17 @@ import type { RasterDifficulty } from "../Core/messages.js";
 import { SIMULATION_TICK_RATE, SPAWN_PHASE_SECONDS } from "./simulationConfig.js";
 
 /**
- * Most opponents a solo match can seat (the session caps total nations at 32, so
- * up to 31 bots alongside the human). Difficulty picks how many actually spawn.
+ * Most opponents a solo match can seat (the session caps total nations at 48, so
+ * up to 47 bots alongside the human). Difficulty picks how many actually spawn.
+ * The cap is high so the larger Earth maps fill with an OpenFront-style crowd
+ * rather than topping out early.
  */
-export const MAX_RASTER_BOTS = 31;
+export const MAX_RASTER_BOTS = 47;
 
 /**
- * Smallest field seated per difficulty — the floor used on tiny maps like the
- * Classic world sketch. Bigger maps grow well past this (see {@link scaleBotCount}).
+ * Smallest field seated per difficulty — the floor used on the smallest maps and
+ * the procedural fallback. Bigger maps grow well past this (see
+ * {@link scaleBotCount}).
  */
 export const DIFFICULTY_BOT_COUNT: Record<RasterDifficulty, number> = {
   easy: 4,
@@ -38,8 +41,8 @@ const DIFFICULTY_FIELD_DIVISOR: Record<RasterDifficulty, number> = {
 
 /**
  * Number of rival nations to seat for a map of `capturableTiles` land, scaled to
- * the map so small maps (the Classic sketch) stay a readable handful while the
- * large real-world Earth maps fill up with many more nations. The count climbs
+ * the map so the smaller Earth maps stay a readable handful while the largest
+ * real-world Earth maps fill up with many more nations. The count climbs
  * with the square root of the land available, is floored per difficulty so even
  * tiny maps field some opponents, and is capped at the session's seat limit.
  */

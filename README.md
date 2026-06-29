@@ -28,15 +28,17 @@ so the menu and the server never drift on the available options:
 
 | Choice | Source | Approx. tiles |
 |--------|--------|---------------|
-| **Earth — Standard** | `earth` heightmap @ 512 | ~100k |
-| **Earth — Large** (default) | `earth` heightmap @ 1024 | ~400k |
-| **Earth — Huge** | `earth` heightmap @ 2048 | ~1.6M |
-| **World — Classic** | `world` ASCII map | ~2.6k |
+| **Earth — Standard** | `earth` heightmap @ 640 | ~155k |
+| **Earth — Large** (default) | `earth` heightmap @ 1280 | ~620k |
+| **Earth — Huge** | `earth` heightmap @ 2560 | ~2.5M |
 | **Procedural** | seeded terrain generator | ~40k |
 
 The Earth maps are downsampled from a committed equirectangular topology raster;
-the same source scales from a quick game up to an OpenFront-scale world. World is
-a small stylised six-continent sketch, and Procedural rolls a fresh continent.
+the same source scales from a quick game up to an OpenFront-scale world. Each
+tier's edge is 1.25× the previous (≈1.56× the area, so "about 50% bigger"), big
+enough to host a crowded multi-nation FFA. Procedural rolls a fresh continent.
+The old small "World — Classic" sketch was retired — it was too cramped for a
+readable field of rivals.
 
 `RASTER_MAP` optionally overrides the **default** choice used when a client sends
 none — it must name a catalogue id, e.g. `RASTER_MAP=earth-huge npm run dev`.
@@ -48,11 +50,11 @@ heightmap source with the build tool:
 tsx scripts/buildMap.ts --in <source-heightmap.png> --out earth-topo.png --max-width 2048
 ```
 
-The size of the AI field **scales with the map**: the tiny World — Classic
-sketch stays a readable handful, while the large Earth maps fill up with many
-more rival nations (up to 31), so bigger worlds feel crowded rather than empty.
+The size of the AI field **scales with the map**: the Standard map stays a
+readable handful, while the larger Earth maps fill up with many more rival
+nations (up to 47), so bigger worlds feel crowded rather than empty.
 Difficulty shifts the whole curve — harder games pack a denser, more aggressive
-field onto the same land. Set a fixed count instead with `RASTER_BOTS` (max 31),
+field onto the same land. Set a fixed count instead with `RASTER_BOTS` (max 47),
 e.g. `RASTER_BOTS=12 npm run dev`, which overrides the per-map scaling.
 
 Each bot is seated with a distinct personality (land-grabber, warmonger,

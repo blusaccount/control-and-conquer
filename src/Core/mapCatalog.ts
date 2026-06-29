@@ -40,9 +40,13 @@ export interface MapChoice {
 
 /**
  * The maps a player can pick. Earth (downsampled from the committed topology
- * raster) is the headline option at three sizes so players can trade detail for
- * a lighter match; World is the small stylised classic. Menu order = display
- * order.
+ * raster) is offered at three sizes so players can trade detail for a lighter
+ * match. Menu order = display order.
+ *
+ * Each tier's edge is 1.25× the previous design (≈1.56× the area, so "about 50%
+ * bigger") — large enough to seat an OpenFront-style crowded field of nations
+ * (see {@link scaleBotCount}). The old stylised "World — Classic" sketch was
+ * dropped: it was too small to host a readable multi-nation FFA.
  *
  * Procedural generation still exists server-side as a fallback (see
  * {@link RasterGameSessionOptions}), but it is intentionally not offered here —
@@ -52,26 +56,20 @@ export const MAP_CHOICES: readonly MapChoice[] = [
   {
     id: "earth-standard",
     name: "Earth — Standard",
-    description: "A lighter Earth for quicker runs. ~100k tiles.",
-    options: { realMapId: "earth", mapSize: 512 },
+    description: "A lighter Earth for quicker runs. ~155k tiles.",
+    options: { realMapId: "earth", mapSize: 640 },
   },
   {
     id: "earth-large",
     name: "Earth — Large",
-    description: "Real-world continents and coastlines. ~400k tiles.",
-    options: { realMapId: "earth", mapSize: 1024 },
+    description: "Real-world continents and coastlines. ~620k tiles.",
+    options: { realMapId: "earth", mapSize: 1280 },
   },
   {
     id: "earth-huge",
     name: "Earth — Huge",
-    description: "The whole planet at high detail. ~1.6M tiles.",
-    options: { realMapId: "earth", mapSize: 2048 },
-  },
-  {
-    id: "world",
-    name: "World — Classic",
-    description: "A stylised six-continent sketch. Small and fast.",
-    options: { realMapId: "world" },
+    description: "The whole planet at high detail. ~2.5M tiles.",
+    options: { realMapId: "earth", mapSize: 2560 },
   },
 ];
 
