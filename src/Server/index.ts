@@ -103,34 +103,18 @@ const server = createServer(async (request, response) => {
 
 const wss = new WebSocketServer({ server });
 
-wss.on("connection", (socket, request) => {
+wss.on("connection", (socket) => {
   clientSequence += 1;
   const clientId = `client-${clientSequence}`;
 
-<<<<<<< HEAD
-  // Mode is selected by the client via the WebSocket URL query string:
-  //   ws://host/?mode=solo  -> immediate match vs server-side bot
-  //   ws://host/?mode=multi -> 1v1 lobby pairing (default)
-  const requestUrl = new URL(request.url ?? "/", `ws://${request.headers.host ?? "localhost"}`);
-  const requestedMode = requestUrl.searchParams.get("mode");
-  const mode: "solo" | "multi" = requestedMode === "solo" ? "solo" : "multi";
-
-=======
->>>>>>> origin/main
   const send = (message: unknown): void => {
     socket.send(JSON.stringify(message));
   };
 
-<<<<<<< HEAD
-  const unsubscribe = mode === "solo"
-    ? registry.joinSolo(clientId, (m) => send(m))
-    : registry.join(clientId, (m) => send(m));
-=======
   const unsubscribe = registry.joinRasterSolo(clientId, send, {
     realMapId: activeMapId,
     mapSize: rasterMapSize,
   }, botCount);
->>>>>>> origin/main
 
   socket.on("message", (data) => {
     let parsed: unknown;

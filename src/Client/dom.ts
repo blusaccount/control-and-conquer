@@ -13,12 +13,7 @@ export interface UiElements {
   statusMessage: HTMLDivElement;
   eventsPanel: HTMLDivElement;
   menuOverlay: HTMLDivElement;
-<<<<<<< HEAD
-  playSoloButton: HTMLButtonElement;
-  playMultiButton: HTMLButtonElement;
-=======
   playButton: HTMLButtonElement;
->>>>>>> origin/main
 }
 
 export type StatusKind = "info" | "error" | "victory";
@@ -32,12 +27,7 @@ export const getUiElements = (): UiElements => {
   const statusMessage = document.querySelector<HTMLDivElement>("#statusMessage");
   const eventsPanel = document.querySelector<HTMLDivElement>("#events");
   const menuOverlay = document.querySelector<HTMLDivElement>("#menuOverlay");
-<<<<<<< HEAD
-  const playSoloButton = document.querySelector<HTMLButtonElement>("#playSoloButton");
-  const playMultiButton = document.querySelector<HTMLButtonElement>("#playMultiButton");
-=======
   const playButton = document.querySelector<HTMLButtonElement>("#playButton");
->>>>>>> origin/main
 
   if (
     !mapCanvas ||
@@ -48,12 +38,7 @@ export const getUiElements = (): UiElements => {
     !statusMessage ||
     !eventsPanel ||
     !menuOverlay ||
-<<<<<<< HEAD
-    !playSoloButton ||
-    !playMultiButton
-=======
     !playButton
->>>>>>> origin/main
   ) {
     throw new Error("UI failed to initialize.");
   }
@@ -73,12 +58,7 @@ export const getUiElements = (): UiElements => {
     statusMessage,
     eventsPanel,
     menuOverlay,
-<<<<<<< HEAD
-    playSoloButton,
-    playMultiButton,
-=======
     playButton,
->>>>>>> origin/main
   };
 };
 
