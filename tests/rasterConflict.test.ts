@@ -4,7 +4,7 @@ import { GameMap } from "../src/Core/GameMap.js";
 import { NEUTRAL_PLAYER, TerritoryGrid } from "../src/Core/TerritoryGrid.js";
 import { RasterConflict, type AttackIntent } from "../src/Core/RasterConflict.js";
 import { encodeTile } from "../src/Core/terrainCodec.js";
-import { INCOME_PER_TILE_PER_TICK } from "../src/Core/rasterCombatConfig.js";
+import { INCOME_PER_TILE_PER_TICK, defenderLossPerTile } from "../src/Core/rasterCombatConfig.js";
 
 const flatLand = (width: number, height: number): GameMap => {
   const terrain = new Uint8Array(width * height);
@@ -91,6 +91,31 @@ test("enemy capture costs more, drains the defender, and transfers tiles", () =>
   // Defender lost 1 troop per captured tile (2 tiles) from its starting pool of 5.
   assert.ok(grid.troopsOf(2) <= 3, `defender pool should drop, got ${grid.troopsOf(2)}`);
   assert.equal(conflict.winner, 1);
+});
+
+test("defender bleed is density-based: a dense defender loses more per tile", () => {
+  // 5x1 land: player 1 holds tile 0; player 2 holds tiles 1-4 (4 tiles) with a
+  // dense pool (40 troops -> density 10/tile), far above the 1-troop floor.
+  const grid = new TerritoryGrid(flatLand(5, 1));
+  grid.addPlayer(1, 100);
+  grid.addPlayer(2, 40);
+  grid.claim(0, 1);
+  for (let ref = 1; ref < 5; ref += 1) grid.claim(ref, 2);
+  const conflict = new RasterConflict(grid);
+
+  assert.equal(conflict.launchAttack({ attacker: 1, target: 2, troops: 100 }), null);
+  const before = grid.troopsOf(2);
+  conflict.processTick(); // captures the single frontier tile (tile 1)
+
+  assert.equal(grid.ownerOf(1), 1, "the bordering enemy tile is taken");
+  // One tile captured should bleed ~density (10), not the flat 1-troop floor.
+  assert.ok(before - grid.troopsOf(2) >= 5, `dense defender should bleed hard, lost ${before - grid.troopsOf(2)}`);
+});
+
+test("defenderLossPerTile spreads the pool over territory, floored at 1", () => {
+  assert.equal(defenderLossPerTile(100, 4), 25); // dense: 100/4
+  assert.equal(defenderLossPerTile(3, 10), 1); // sparse: 0.3 -> floored to 1
+  assert.equal(defenderLossPerTile(50, 0), 1); // no tiles -> floor
 });
 
 test("a finished match ignores further intents", () => {

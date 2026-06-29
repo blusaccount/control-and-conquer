@@ -1,7 +1,7 @@
 import type { TileRef } from "./GameMap.js";
 import { NEUTRAL_PLAYER, type PlayerId, type TerritoryGrid } from "./TerritoryGrid.js";
 import {
-  DEFENDER_LOSS_PER_TILE,
+  defenderLossPerTile,
   ELEVATION_COST_PER_LEVEL,
   ENEMY_CAPTURE_SURCHARGE,
   EXPANSION_SPEND_FRACTION,
@@ -252,6 +252,17 @@ export class RasterConflict {
   }
 
   /**
+   * Troops a `target` player loses when one of their tiles is captured: a
+   * density-based bleed (pool ÷ territory) blunted by their Fortress Wall
+   * defence. Snapshotted by callers once per tick so capturing many tiles in
+   * one advance doesn't compound the bleed mid-tick.
+   */
+  private defenderLossFor(target: PlayerId): number {
+    const density = defenderLossPerTile(this.grid.troopsOf(target), this.grid.tileCountOf(target));
+    return density / this.grid.modifiersOf(target).defense;
+  }
+
+  /**
    * Troops a transport ship spends to seize its landing tile — the normal
    * capture cost plus the amphibious {@link SEA_CROSSING_SURCHARGE}, so an
    * opposed landing is dearer than walking the same tile over land. The
@@ -328,7 +339,7 @@ export class RasterConflict {
         continue;
       }
 
-      if (owner !== NEUTRAL_PLAYER) this.grid.addTroops(owner, -DEFENDER_LOSS_PER_TILE);
+      if (owner !== NEUTRAL_PLAYER) this.grid.addTroops(owner, -this.defenderLossFor(owner));
       this.grid.claim(dest, ship.attacker);
       const remaining = ship.troops - cost;
       if (remaining >= NEUTRAL_CAPTURE_COST) {
@@ -372,6 +383,9 @@ export class RasterConflict {
       const expansionSpeed = this.grid.modifiersOf(attack.attacker).expansionSpeed;
       const budget = Math.max(NEUTRAL_CAPTURE_COST, attack.committed * EXPANSION_SPEND_FRACTION * expansionSpeed);
       let spent = 0;
+      // Snapshot the defender's per-tile bleed once for the tick: capturing many
+      // tiles this advance shouldn't compound the density loss mid-front.
+      const defenderLoss = attack.target !== NEUTRAL_PLAYER ? this.defenderLossFor(attack.target) : 0;
 
       for (const ref of frontier) {
         // A tile may have been captured already if a player relinquished it; skip
@@ -381,8 +395,7 @@ export class RasterConflict {
         if (attack.committed < cost || spent + cost > budget) continue;
 
         if (attack.target !== NEUTRAL_PLAYER) {
-          // Fortress Wall also blunts the defender's troop bleed per tile lost.
-          this.grid.addTroops(attack.target, -DEFENDER_LOSS_PER_TILE / this.grid.modifiersOf(attack.target).defense);
+          this.grid.addTroops(attack.target, -defenderLoss);
         }
         this.grid.claim(ref, attack.attacker);
         attack.committed -= cost;

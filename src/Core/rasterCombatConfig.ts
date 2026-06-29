@@ -53,8 +53,28 @@ export const ENEMY_CAPTURE_SURCHARGE = 2;
 /** Additional troop cost per unit of land elevation (higher ground is harder). */
 export const ELEVATION_COST_PER_LEVEL = 0.1;
 
-/** Troops the defender loses from their pool for each tile captured from them. */
+/**
+ * Floor on the troops a defender loses from their pool for each tile captured
+ * from them. The actual bleed is *density-based* (see {@link defenderLossPerTile}):
+ * a defender loses troops proportional to how thinly its pool is spread over its
+ * territory, mirroring OpenFront's `defender.troops() / defender.numTilesOwned()`.
+ * This floor guarantees a captured tile always costs the defender at least this
+ * much, so a troop-starved blob still bleeds as it is dismantled.
+ */
 export const DEFENDER_LOSS_PER_TILE = 1;
+
+/**
+ * Density-based troops a defender loses when one of its tiles is captured: its
+ * current pool spread over the tiles it holds, floored at {@link DEFENDER_LOSS_PER_TILE}.
+ * A dense defender (many troops, little land) bleeds hard per tile lost; a vast,
+ * thinly-garrisoned empire barely notices each tile — the OpenFront feel where
+ * over-extension is punished. `troops`/`tiles` are the defender's *current* pool
+ * and tile count, so the bleed naturally eases as the empire shrinks.
+ */
+export const defenderLossPerTile = (troops: number, tiles: number): number => {
+  if (tiles <= 0) return DEFENDER_LOSS_PER_TILE;
+  return Math.max(DEFENDER_LOSS_PER_TILE, troops / tiles);
+};
 
 /**
  * Fraction of an attack's remaining committed troops that may be spent in a
