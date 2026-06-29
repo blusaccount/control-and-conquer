@@ -19,3 +19,17 @@ export interface RasterJoinPayload {
 }
 
 export type RasterJoinClientMessage = { type: "CLIENT_RASTER_JOIN"; payload: RasterJoinPayload };
+
+/**
+ * Client → server: the tile a player picked as their start position during the
+ * spawn phase. Sent on the first map click of a run, before they hold any land.
+ */
+export interface RasterSpawnPayload {
+  x: number;
+  y: number;
+}
+
+export type RasterSpawnClientMessage = {
+  type: "CLIENT_RASTER_SELECT_SPAWN";
+  payload: RasterSpawnPayload;
+};

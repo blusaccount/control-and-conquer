@@ -254,6 +254,7 @@ export class RasterGameSession {
   public subscribe(
     clientId: string,
     send: RasterMessageHandler,
+    autoSpawn = true,
   ): () => void {
     if (this.nextPlayerId > PLAYER_PALETTE.length) {
       throw new Error(`Raster session is full (max ${PLAYER_PALETTE.length} players).`);
@@ -263,20 +264,6 @@ export class RasterGameSession {
     const meta = PLAYER_PALETTE[playerId - 1];
     this.playerMeta.set(playerId, meta);
 
-    // Register the player, give them a starting pool + their spawn tile. The
-    // spawn is the player's founding (and, at this instant, only) tile, so it
-    // becomes their capital — losing it later eliminates them.
-    this.grid.addPlayer(playerId, this.startingTroops);
-    const spawn = this.spawnTiles[playerId - 1];
-    this.grid.claim(spawn, playerId);
-    this.capitals.set(playerId, spawn);
-    // The capital is a fortified seat: it raises the cost to capture ground around
-    // it (an OpenFront-style defense post), so a heartland is harder to overrun.
-    this.grid.addDefensePost(spawn);
-
-    this.peakTiles.set(playerId, this.grid.tileCountOf(playerId));
-    this.kills.set(playerId, 0);
-
     const subscriber: RasterSubscriber = {
       clientId,
       playerId,
@@ -285,6 +272,11 @@ export class RasterGameSession {
       lastOwner: null,
     };
     this.subscribers.set(clientId, subscriber);
+
+    // Bots (and any auto-spawn caller) take their precomputed spawn immediately;
+    // a human is left *unspawned* until they pick a start position via
+    // {@link selectSpawn}, so the player chooses where their empire begins.
+    if (autoSpawn) this.seatPlayer(playerId, this.spawnTiles[playerId - 1]);
 
     send({
       type: "SERVER_RASTER_PLAYER_ASSIGNED",
@@ -296,6 +288,55 @@ export class RasterGameSession {
     return () => {
       this.subscribers.delete(clientId);
     };
+  }
+
+  /**
+   * Place a player on the map at `spawnRef`: their founding (and, at this
+   * instant, only) tile becomes their capital — a fortified defense post whose
+   * loss later eliminates them.
+   */
+  private seatPlayer(playerId: PlayerId, spawnRef: TileRef): void {
+    this.grid.addPlayer(playerId, this.startingTroops);
+    this.grid.claim(spawnRef, playerId);
+    this.capitals.set(playerId, spawnRef);
+    this.grid.addDefensePost(spawnRef);
+    this.peakTiles.set(playerId, this.grid.tileCountOf(playerId));
+    this.kills.set(playerId, 0);
+  }
+
+  /**
+   * Seat an as-yet-unspawned player at the tile they clicked, if it is open land.
+   * The first map click of a human's run is a spawn pick (OpenFront's "choose a
+   * start position"); ignored once they already hold territory.
+   */
+  public selectSpawn(clientId: string, x: number, y: number): void {
+    const subscriber = this.subscribers.get(clientId);
+    if (!subscriber || this.matchEndedBroadcast) return;
+    if (this.grid.hasPlayer(subscriber.playerId)) return; // already spawned
+
+    const reject = (message: string): void =>
+      subscriber.send({
+        type: "SERVER_RASTER_ACTION_REJECTED",
+        payload: {
+          reason: "INVALID_TILE",
+          message,
+          intent: { targetX: Math.max(0, x | 0), targetY: Math.max(0, y | 0), percent: 50 },
+        },
+      });
+
+    if (!Number.isInteger(x) || !Number.isInteger(y) || !this.map.inBounds(x, y)) {
+      reject("Pick a tile on the map to start on.");
+      return;
+    }
+    const ref = this.map.ref(x, y);
+    if (!this.grid.isCapturable(ref) || this.grid.ownerOf(ref) !== NEUTRAL_PLAYER) {
+      reject("Choose open, unclaimed land for your start position.");
+      return;
+    }
+    this.seatPlayer(subscriber.playerId, ref);
+    // Push the seated state straight away so the client can zoom to the spawn
+    // without waiting for the next tick.
+    this.sendSnapshotTo(subscriber);
   }
 
   public queueExpand(clientId: string, intent: RasterExpandIntent): void {
@@ -558,6 +599,9 @@ export class RasterGameSession {
     | { kind: "rejected"; reason: RasterRejectReason; message: string } {
     if (this.conflict.winner !== null) {
       return { kind: "rejected", reason: "MATCH_ENDED", message: "The match has already ended." };
+    }
+    if (!this.grid.hasPlayer(attacker)) {
+      return { kind: "rejected", reason: "INVALID_TILE", message: "Choose a starting position first." };
     }
     if (!Number.isInteger(intent.targetX) || !Number.isInteger(intent.targetY) ||
         !this.map.inBounds(intent.targetX, intent.targetY)) {

@@ -104,6 +104,8 @@ interface RasterRuntime {
   nameAnchors: NameAnchor[];
   /** performance.now() of the last name-anchor recompute (throttled). */
   lastNameComputeMs: number;
+  /** Whether we've picked a start position yet (false during the spawn phase). */
+  spawned: boolean;
 }
 
 /** A player capital ("Hauptstadt") drawn as a cross marker on the map. */
@@ -131,6 +133,9 @@ const NAME_RECOMPUTE_MS = 500;
 
 /** Below this on-screen font size (px) a nation name is too small to draw. */
 const MIN_NAME_FONT_PX = 9;
+
+/** Roughly how many tiles span the view after auto-zooming to a fresh spawn. */
+const SPAWN_ZOOM_TILES = 70;
 
 const clamp = (value: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, value));
 
@@ -162,7 +167,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   hideMenu(ui);
   ui.attackPercentOutput.textContent = `${ui.attackPercentInput.value}%`;
   ui.selectionInfo.textContent =
-    "Click to expand toward a tile. Drag to pan, scroll to zoom.";
+    "Choose your start: click anywhere on land to found your nation.";
 
   const runtime: RasterRuntime = {
     map: null,
@@ -187,6 +192,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     capitals: [],
     nameAnchors: [],
     lastNameComputeMs: Number.NEGATIVE_INFINITY,
+    spawned: false,
   };
 
   const socketProtocol = window.location.protocol === "https:" ? "wss" : "ws";
@@ -197,6 +203,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       type: "CLIENT_RASTER_EXPAND",
       payload: { targetX, targetY, percent },
     };
+    socket.send(JSON.stringify(message));
+  };
+
+  const sendSelectSpawn = (x: number, y: number): void => {
+    const message: RasterClientMessage = { type: "CLIENT_RASTER_SELECT_SPAWN", payload: { x, y } };
     socket.send(JSON.stringify(message));
   };
 
@@ -365,6 +376,14 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.pool = me?.troops ?? 0;
     runtime.myTiles = me?.tiles ?? 0;
 
+    // The first snapshot in which we hold land marks the end of the spawn phase:
+    // zoom the camera in on our new capital so the run starts focused on home.
+    if (!runtime.spawned && me && me.tiles > 0 && me.capitalX >= 0) {
+      runtime.spawned = true;
+      centerOnTile(me.capitalX, me.capitalY, SPAWN_ZOOM_TILES);
+      setStatus(ui, `Founded at (${me.capitalX}, ${me.capitalY}).`);
+    }
+
     // Capital markers: living players only, with a known capital tile.
     runtime.capitals = snapshot.players
       .filter((p) => !p.eliminated && p.capitalX >= 0 && p.capitalY >= 0)
@@ -475,6 +494,24 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const viewH = ch / runtime.view.scale;
     runtime.view.x = map.width <= viewW ? (map.width - viewW) / 2 : clamp(runtime.view.x, 0, map.width - viewW);
     runtime.view.y = map.height <= viewH ? (map.height - viewH) / 2 : clamp(runtime.view.y, 0, map.height - viewH);
+  };
+
+  /**
+   * Zoom in on a tile so roughly `tilesAcross` tiles span the smaller canvas
+   * dimension, and centre the camera on it. Used to focus the view on a freshly
+   * picked spawn. Zoom is clamped to the camera's legal range.
+   */
+  const centerOnTile = (tileX: number, tileY: number, tilesAcross: number): void => {
+    const map = runtime.map;
+    if (!map) return;
+    const cw = ui.mapCanvas.width;
+    const ch = ui.mapCanvas.height;
+    runtime.view.scale = Math.min(cw, ch) / Math.max(8, tilesAcross);
+    const viewW = cw / runtime.view.scale;
+    const viewH = ch / runtime.view.scale;
+    runtime.view.x = tileX + 0.5 - viewW / 2;
+    runtime.view.y = tileY + 0.5 - viewH / 2;
+    clampView();
   };
 
   /** Map a tile coordinate to a canvas-pixel position under the current camera. */
@@ -722,6 +759,17 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   const renderSidebar = (): void => {
+    if (!runtime.spawned) {
+      ui.selectionInfo.innerHTML =
+        `<strong>Choose your start position.</strong><br/>` +
+        `<em>Click anywhere on open land to found your nation. Drag to pan, scroll to zoom.</em>`;
+      ui.eventsPanel.innerHTML = runtime.recentEvents
+        .map((ev) => `<div class="event">${escapeHtml(ev)}</div>`)
+        .join("");
+      renderLeaderboard();
+      return;
+    }
+
     const pct = runtime.capturableTotal > 0
       ? Math.round((runtime.myTiles / runtime.capturableTotal) * 100)
       : 0;
@@ -827,11 +875,18 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     dragging = false;
     if (moved || !runtime.map || runtime.matchEnded) return;
 
-    // A stationary press is an expand command toward the clicked tile.
     const { x, y } = toCanvasPixels(event);
     const tileX = Math.floor(runtime.view.x + x / runtime.view.scale);
     const tileY = Math.floor(runtime.view.y + y / runtime.view.scale);
     if (tileX < 0 || tileY < 0 || tileX >= runtime.map.width || tileY >= runtime.map.height) return;
+
+    // Before we hold any land, the first click picks our start position;
+    // afterwards a stationary press is an expand command toward the clicked tile.
+    if (!runtime.spawned) {
+      sendSelectSpawn(tileX, tileY);
+      setStatus(ui, `Founding at (${tileX}, ${tileY})…`);
+      return;
+    }
 
     const percent = Number(ui.attackPercentInput.value);
     sendExpand(tileX, tileY, percent);

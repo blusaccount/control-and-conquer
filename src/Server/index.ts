@@ -141,6 +141,8 @@ wss.on("connection", (socket) => {
             botCount,
           );
         }
+      } else if (message.type === "CLIENT_RASTER_SELECT_SPAWN") {
+        registry.selectRasterSpawn(clientId, message.payload.x, message.payload.y);
       } else if (message.type === "CLIENT_RASTER_EXPAND") {
         registry.queueRasterExpand(clientId, message.payload);
       }

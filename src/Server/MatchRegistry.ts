@@ -39,7 +39,8 @@ export class MatchRegistry {
     const session = new RasterGameSession(options);
     this.activeMatches.set(matchId, session);
 
-    const unsubHuman = session.subscribe(clientId, send);
+    // The human is seated only once they pick a start position (autoSpawn=false).
+    const unsubHuman = session.subscribe(clientId, send, false);
     this.clientToSession.set(clientId, session);
 
     const seats = Math.max(0, Math.min(Math.floor(botCount) || 0, MAX_RASTER_BOTS));
@@ -60,6 +61,10 @@ export class MatchRegistry {
 
   public queueRasterExpand(clientId: string, intent: RasterExpandIntent): void {
     this.clientToSession.get(clientId)?.queueExpand(clientId, intent);
+  }
+
+  public selectRasterSpawn(clientId: string, x: number, y: number): void {
+    this.clientToSession.get(clientId)?.selectSpawn(clientId, x, y);
   }
 
   public tickAll(): void {
