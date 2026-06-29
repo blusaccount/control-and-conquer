@@ -118,6 +118,29 @@ test("defenderLossPerTile spreads the pool over territory, floored at 1", () => 
   assert.equal(defenderLossPerTile(50, 0), 1); // no tiles -> floor
 });
 
+test("frontier priority captures easy low ground before high ground", () => {
+  // 3x1 line: tile 0 is high ground (mag 10), the attacker sits on tile 1, tile 2
+  // is flat. By raw tile order the elevated tile 0 comes first; priority ordering
+  // must instead grab the flat tile 2 first. Budget is tuned to one tile per tick.
+  const terrain = new Uint8Array(3);
+  terrain[0] = encodeTile({ land: true, shoreline: false, ocean: false, magnitude: 10 });
+  terrain[1] = encodeTile({ land: true, shoreline: false, ocean: false, magnitude: 0 });
+  terrain[2] = encodeTile({ land: true, shoreline: false, ocean: false, magnitude: 0 });
+  const grid = new TerritoryGrid(new GameMap(3, 1, terrain));
+  grid.addPlayer(1, 8);
+  grid.claim(1, 1);
+  const conflict = new RasterConflict(grid);
+
+  assert.equal(conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 8 }), null);
+  conflict.processTick();
+
+  assert.equal(grid.ownerOf(2), 1, "flat low ground is taken first");
+  assert.equal(grid.ownerOf(0), NEUTRAL_PLAYER, "high ground waits its turn");
+
+  runTicks(conflict, 5);
+  assert.equal(grid.ownerOf(0), 1, "the high ground is eventually captured too");
+});
+
 test("a finished match ignores further intents", () => {
   const grid = new TerritoryGrid(flatLand(2, 1));
   grid.addPlayer(1, 5);

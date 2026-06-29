@@ -77,6 +77,27 @@ export const defenderLossPerTile = (troops: number, tiles: number): number => {
 };
 
 /**
+ * Frontier ordering weights. A land attack captures the tiles of its frontier
+ * in *priority* order rather than raw tile order, so fronts grow organically —
+ * eating the easy, enclosed ground first the way OpenFront's conquest queue
+ * does. Each frontier tile gets a priority (lower = captured sooner):
+ *
+ *   priority = max(FRONTIER_PRIORITY_FLOOR,
+ *                  1 + magnitude * FRONTIER_MAGNITUDE_WEIGHT
+ *                    - ownedNeighbours * FRONTIER_SURROUND_WEIGHT) * jitter
+ *
+ * High ground (`magnitude`) is pushed later; a tile hugged by many of the
+ * attacker's own tiles (a pocket/bay) is pulled earlier so borders smooth out
+ * instead of leaving ragged islands. `jitter` is a deterministic per-tile/-tick
+ * wobble (no RNG, so replays stay stable) that only breaks ties between
+ * otherwise-equal tiles — its span is kept small so terrain dominates order.
+ */
+export const FRONTIER_MAGNITUDE_WEIGHT = 0.5;
+export const FRONTIER_SURROUND_WEIGHT = 0.25;
+export const FRONTIER_PRIORITY_FLOOR = 0.05;
+export const FRONTIER_JITTER_SPAN = 0.5;
+
+/**
  * Fraction of an attack's remaining committed troops that may be spent in a
  * single tick. Spreading the spend over multiple ticks is what makes the front
  * advance gradually (ring by ring) instead of teleporting across the map.

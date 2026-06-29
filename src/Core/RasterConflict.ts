@@ -5,6 +5,10 @@ import {
   ELEVATION_COST_PER_LEVEL,
   ENEMY_CAPTURE_SURCHARGE,
   EXPANSION_SPEND_FRACTION,
+  FRONTIER_JITTER_SPAN,
+  FRONTIER_MAGNITUDE_WEIGHT,
+  FRONTIER_PRIORITY_FLOOR,
+  FRONTIER_SURROUND_WEIGHT,
   INCOME_PER_TILE_PER_TICK,
   MAX_POOL_PER_TILE,
   MAX_TRANSPORT_SHIPS_PER_PLAYER,
@@ -252,6 +256,41 @@ export class RasterConflict {
   }
 
   /**
+   * Capture priority of a single frontier tile (lower = taken sooner). Easy, low
+   * ground enclosed by the attacker's own territory is grabbed first so fronts
+   * advance as smooth bulges rather than ragged spikes — the organic feel of
+   * OpenFront's conquest queue. The `jitter` is a deterministic hash of tile and
+   * tick (no RNG, so replays stay identical), used only to break ties.
+   */
+  private tilePriority(attacker: PlayerId, ref: TileRef): number {
+    let ownedNeighbours = 0;
+    for (const n of this.grid.map.neighbors(ref)) {
+      if (this.grid.ownerOf(n) === attacker) ownedNeighbours += 1;
+    }
+    const base = Math.max(
+      FRONTIER_PRIORITY_FLOOR,
+      1 + this.grid.map.magnitude(ref) * FRONTIER_MAGNITUDE_WEIGHT - ownedNeighbours * FRONTIER_SURROUND_WEIGHT,
+    );
+    // Deterministic [0,1) wobble from a cheap integer hash of (ref, tick).
+    const hash = ((ref * 2654435761 + this.tickCount * 40503) >>> 0) / 0x100000000;
+    return base * (1 + hash * FRONTIER_JITTER_SPAN);
+  }
+
+  /**
+   * The attacker's land frontier against `target`, ordered by capture priority
+   * for this tick. A fresh array (the grid's frontier is not mutated).
+   */
+  private orderedFrontier(attacker: PlayerId, target: PlayerId): TileRef[] {
+    // Score each tile once, then sort — priority is fixed for the tick, so we
+    // avoid recomputing it on every comparison.
+    const scored = this.grid
+      .landFrontierOf(attacker, target)
+      .map((ref) => ({ ref, p: this.tilePriority(attacker, ref) }));
+    scored.sort((a, b) => a.p - b.p || a.ref - b.ref);
+    return scored.map((s) => s.ref);
+  }
+
+  /**
    * Troops a `target` player loses when one of their tiles is captured: a
    * density-based bleed (pool ÷ territory) blunted by their Fortress Wall
    * defence. Snapshotted by callers once per tick so capturing many tiles in
@@ -369,7 +408,7 @@ export class RasterConflict {
     const survivors: RasterAttack[] = [];
 
     for (const attack of this.attacks) {
-      const frontier = this.grid.landFrontierOf(attack.attacker, attack.target);
+      const frontier = this.orderedFrontier(attack.attacker, attack.target);
 
       // No reachable target tiles: the front is blocked or the target is gone.
       if (frontier.length === 0) {
@@ -392,7 +431,11 @@ export class RasterConflict {
         // anything no longer owned by the target.
         if (this.grid.ownerOf(ref) !== attack.target) continue;
         const cost = this.captureCost(ref, attack.target);
-        if (attack.committed < cost || spent + cost > budget) continue;
+        if (attack.committed < cost) continue;
+        // The first affordable tile (highest priority) is always taken so a front
+        // never deadlocks on ground that costs more than one tick's budget; later
+        // tiles this tick must fit the remaining budget, keeping advance gradual.
+        if (spent > 0 && spent + cost > budget) continue;
 
         if (attack.target !== NEUTRAL_PLAYER) {
           this.grid.addTroops(attack.target, -defenderLoss);
