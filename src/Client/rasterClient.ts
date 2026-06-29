@@ -3,7 +3,9 @@ import type { PlayerId } from "../Core/TerritoryGrid.js";
 import type {
   RasterClientMessage,
   RasterCrossing,
+  RasterMatchEndedPayload,
   RasterPlayerAssignedPayload,
+  RasterPlayerInfo,
   RasterServerMessage,
   RasterShip,
   RasterSnapshot,
@@ -11,6 +13,15 @@ import type {
 import { hideMenu, setStatus, type UiElements } from "./dom.js";
 import { paintRaster, paintTileInto } from "./rasterPaint.js";
 import { playerColor } from "./rasterPalette.js";
+import { loadRunHistory, recordRun, type RunRecord, type StorageLike } from "./runHistory.js";
+import { PERK_DEFINITIONS, type PerkId } from "../Core/perks.js";
+import type { PlayerClassId } from "../Core/playerClasses.js";
+import type { PerkOfferPayload } from "../Core/messages.js";
+
+/** Options for starting a raster match — currently just the chosen class. */
+export interface RasterClientOptions {
+  playerClass: PlayerClassId;
+}
 
 /**
  * Self-contained raster-mode client.
@@ -70,6 +81,8 @@ interface RasterRuntime {
   myTiles: number;
   myShips: number;
   capturableTotal: number;
+  /** Full player standings from the latest snapshot, for the leaderboard. */
+  players: RasterPlayerInfo[];
   recentEvents: string[];
   matchEnded: boolean;
   winnerPlayerId: number | null;
@@ -85,6 +98,15 @@ interface RasterRuntime {
   shipGeneration: number;
   /** In-flight landing flashes. */
   landings: Landing[];
+  /** Living players' capitals, drawn as a marker over the base map. */
+  capitals: Capital[];
+}
+
+/** A player capital ("Hauptstadt") drawn as a cross marker on the map. */
+interface Capital {
+  tileX: number;
+  tileY: number;
+  color: string;
 }
 
 /** How long a landing flash lasts, in milliseconds. */
@@ -122,7 +144,7 @@ const decodeOwnerArray = (b64: string, expectedLength: number): Uint16Array => {
 const rgbaToCss = (c: { r: number; g: number; b: number }): string => `rgb(${c.r}, ${c.g}, ${c.b})`;
 
 /** Connect to the raster server, paint each snapshot, and wire click-to-expand. */
-export const startRasterClient = (ui: UiElements): void => {
+export const startRasterClient = (ui: UiElements, options: RasterClientOptions): void => {
   hideMenu(ui);
   ui.attackPercentOutput.textContent = `${ui.attackPercentInput.value}%`;
   ui.selectionInfo.textContent =
@@ -138,6 +160,7 @@ export const startRasterClient = (ui: UiElements): void => {
     myTiles: 0,
     myShips: 0,
     capturableTotal: 0,
+    players: [],
     recentEvents: [],
     matchEnded: false,
     winnerPlayerId: null,
@@ -147,6 +170,7 @@ export const startRasterClient = (ui: UiElements): void => {
     ships: new Map(),
     shipGeneration: 0,
     landings: [],
+    capitals: [],
   };
 
   const socketProtocol = window.location.protocol === "https:" ? "wss" : "ws";
@@ -160,6 +184,19 @@ export const startRasterClient = (ui: UiElements): void => {
     socket.send(JSON.stringify(message));
   };
 
+  const sendPerkChoice = (perkId: PerkId): void => {
+    const message: RasterClientMessage = { type: "CLIENT_PERK_CHOSEN", payload: { perkId } };
+    socket.send(JSON.stringify(message));
+  };
+
+  // Seat ourselves with the chosen class as soon as the socket is open.
+  socket.addEventListener("open", () => {
+    const join: RasterClientMessage = {
+      type: "CLIENT_RASTER_JOIN",
+      payload: { playerClass: options.playerClass },
+    };
+    socket.send(JSON.stringify(join));
+  });
   socket.addEventListener("message", (event) => {
     const message = JSON.parse(String(event.data)) as RasterServerMessage;
     handleMessage(message);
@@ -175,12 +212,97 @@ export const startRasterClient = (ui: UiElements): void => {
       onSnapshot(message.payload);
     } else if (message.type === "SERVER_RASTER_ACTION_REJECTED") {
       setStatus(ui, message.payload.message, "error");
+    } else if (message.type === "SERVER_PERK_OFFER") {
+      showPerkOffer(message.payload);
     } else if (message.type === "SERVER_RASTER_MATCH_ENDED") {
-      runtime.matchEnded = true;
-      runtime.winnerPlayerId = message.payload.winnerPlayerId;
-      const youWon = runtime.myPlayerId === message.payload.winnerPlayerId;
-      setStatus(ui, youWon ? "You conquered the map!" : "The map has been conquered.", "victory");
+      onMatchEnded(message.payload);
     }
+  };
+
+  /** Present the perk choices as a blur-overlay of cards; one click commits. */
+  const showPerkOffer = (offer: PerkOfferPayload): void => {
+    if (runtime.matchEnded) return;
+    ui.perkOverlay.innerHTML =
+      `<h1>Choose a Perk</h1>` +
+      `<p class="hint">Perk round ${offer.offerNumber}</p>` +
+      `<div class="perk-cards">` +
+      offer.options
+        .map((id) => {
+          const def = PERK_DEFINITIONS[id];
+          return (
+            `<button class="perk-card" type="button" data-perk="${escapeHtml(id)}">` +
+            `<h3>${escapeHtml(def.name)}</h3><p>${escapeHtml(def.description)}</p>` +
+            `</button>`
+          );
+        })
+        .join("") +
+      `</div>`;
+    ui.perkOverlay.classList.remove("hidden");
+
+    for (const card of ui.perkOverlay.querySelectorAll<HTMLButtonElement>(".perk-card")) {
+      card.addEventListener("click", () => {
+        const perk = card.getAttribute("data-perk");
+        if (perk) sendPerkChoice(perk as PerkId);
+        ui.perkOverlay.classList.add("hidden");
+      });
+    }
+  };
+
+  const onMatchEnded = (payload: RasterMatchEndedPayload): void => {
+    runtime.matchEnded = true;
+    runtime.winnerPlayerId = payload.winnerPlayerId;
+    ui.perkOverlay.classList.add("hidden");
+    setStatus(ui, payload.stats.won ? "You won the run!" : "Run over.", "victory");
+
+    const storage = safeStorage();
+    const record = recordRun(storage, payload, Date.now());
+    showStatsScreen(payload, record, loadRunHistory(storage));
+  };
+
+  /**
+   * Render the post-match stats screen: this run's verdict and key figures, a
+   * Play-Again button, and a short tail of previous runs from local history.
+   */
+  const showStatsScreen = (
+    payload: RasterMatchEndedPayload,
+    record: RunRecord,
+    history: RunRecord[],
+  ): void => {
+    const { stats, reason, durationTicks, tickRate } = payload;
+    const verdictClass = stats.won ? "win" : "loss";
+    const verdictText = stats.won ? "Victory!" : stats.eliminated ? "Eliminated" : "Defeated";
+    const reasonText = reason === "conquest" ? "by conquest" : "on the clock";
+    const matchSeconds = tickRate > 0 ? Math.round(durationTicks / tickRate) : 0;
+
+    const recent = history
+      .slice(-6)
+      .reverse()
+      .map((r) => {
+        const result = r.won ? "Win" : "Loss";
+        return (
+          `<div class="row"><span>Run #${r.run} · ${result}</span>` +
+          `<span>${r.peakTiles} tiles · ${r.kills} kills</span></div>`
+        );
+      })
+      .join("");
+
+    ui.statsOverlay.innerHTML =
+      `<div class="stats-card">` +
+      `<p class="verdict ${verdictClass}">${verdictText}</p>` +
+      `<p class="run-label">Run #${record.run} · ${escapeHtml(reasonText)} · match ${formatDuration(matchSeconds)}</p>` +
+      `<div class="stats-grid">` +
+      `<span class="k">Peak territory</span><span class="v">${stats.peakTiles} tiles</span>` +
+      `<span class="k">Final territory</span><span class="v">${stats.finalTiles} tiles</span>` +
+      `<span class="k">Eliminations</span><span class="v">${stats.kills}</span>` +
+      `<span class="k">Survival time</span><span class="v">${formatDuration(record.survivedSeconds)}</span>` +
+      `</div>` +
+      `<button id="statsPlayAgain" class="menu-button primary" type="button" style="width:100%;margin-top:16px;">Play Again</button>` +
+      (recent ? `<div class="stats-history"><h3>Recent runs</h3>${recent}</div>` : "") +
+      `</div>`;
+    ui.statsOverlay.classList.remove("hidden");
+
+    const again = ui.statsOverlay.querySelector<HTMLButtonElement>("#statsPlayAgain");
+    again?.addEventListener("click", () => window.location.reload());
   };
 
   const onAssigned = (payload: RasterPlayerAssignedPayload): void => {
@@ -258,10 +380,16 @@ export const startRasterClient = (ui: UiElements): void => {
 
     runtime.capturableTotal = snapshot.capturableCount;
     runtime.recentEvents = snapshot.recentEvents;
+    runtime.players = snapshot.players;
 
     const me = snapshot.players.find((p) => p.playerId === runtime.myPlayerId);
     runtime.pool = me?.troops ?? 0;
     runtime.myTiles = me?.tiles ?? 0;
+
+    // Capital markers: living players only, with a known capital tile.
+    runtime.capitals = snapshot.players
+      .filter((p) => !p.eliminated && p.capitalX >= 0 && p.capitalY >= 0)
+      .map((p) => ({ tileX: p.capitalX, tileY: p.capitalY, color: p.color }));
 
     const ships = snapshot.ships ?? [];
     runtime.myShips = ships.reduce((n, s) => (s.playerId === runtime.myPlayerId ? n + 1 : n), 0);
@@ -367,10 +495,96 @@ export const startRasterClient = (ui: UiElements): void => {
       ctx.setTransform(scale, 0, 0, scale, -x * scale, -y * scale);
       ctx.drawImage(base, 0, 0);
       ctx.setTransform(1, 0, 0, 1, 0, 0);
+      drawCapitals(ctx, scale);
       drawShips(ctx, scale);
       drawLandings(now, ctx, scale);
     }
+    drawMinimap();
     requestAnimationFrame(renderFrame);
+  };
+
+  /**
+   * The transform that fits the whole map into the minimap canvas while keeping
+   * its aspect ratio (letterboxed). Shared by the minimap renderer and its
+   * click-to-jump handler so both agree on where each tile lands. `null` until a
+   * map exists.
+   */
+  const minimapTransform = (): { scale: number; offX: number; offY: number } | null => {
+    const map = runtime.map;
+    if (!map) return null;
+    const mw = ui.minimapCanvas.width;
+    const mh = ui.minimapCanvas.height;
+    const scale = Math.min(mw / map.width, mh / map.height);
+    return { scale, offX: (mw - map.width * scale) / 2, offY: (mh - map.height * scale) / 2 };
+  };
+
+  /**
+   * Draw the whole map into the minimap by downscaling the offscreen base raster
+   * (so it carries the identical terrain + ownership palette), then overlay a
+   * green rectangle marking the main view's current viewport.
+   */
+  const drawMinimap = (): void => {
+    const ctx = ui.minimapContext;
+    const mw = ui.minimapCanvas.width;
+    const mh = ui.minimapCanvas.height;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, mw, mh);
+
+    const map = runtime.map;
+    const base = runtime.base;
+    const t = minimapTransform();
+    if (!map || !base || !t) return;
+
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(base, 0, 0, map.width, map.height, t.offX, t.offY, map.width * t.scale, map.height * t.scale);
+
+    // Viewport rectangle: the tile span currently shown on the main canvas.
+    const viewW = ui.mapCanvas.width / runtime.view.scale;
+    const viewH = ui.mapCanvas.height / runtime.view.scale;
+    const rx = t.offX + runtime.view.x * t.scale;
+    const ry = t.offY + runtime.view.y * t.scale;
+    ctx.strokeStyle = "rgba(34, 197, 94, 0.95)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(rx + 0.5, ry + 0.5, Math.max(1, viewW * t.scale - 1), Math.max(1, viewH * t.scale - 1));
+  };
+
+  /**
+   * Draw each living player's capital as a cross in their colour with a white
+   * outline, in screen space so the marker stays legible at any zoom. The cross
+   * scales gently with zoom but is clamped so it never vanishes when zoomed out
+   * nor swamps the tile when zoomed in.
+   */
+  const drawCapitals = (ctx: CanvasRenderingContext2D, scale: number): void => {
+    if (runtime.capitals.length === 0) return;
+    const cw = ui.mapCanvas.width;
+    const ch = ui.mapCanvas.height;
+    // Half-length of each arm and stroke widths, in screen pixels.
+    const arm = clamp(scale * 0.9, 4, 9);
+    const outlineWidth = clamp(scale * 0.5, 3, 6);
+    const colorWidth = clamp(scale * 0.28, 1.5, 3.5);
+
+    for (const capital of runtime.capitals) {
+      const { x: cx, y: cy } = worldToScreen(capital.tileX + 0.5, capital.tileY + 0.5);
+      // Skip markers fully outside the viewport (cheap cull).
+      if (cx < -arm || cy < -arm || cx > cw + arm || cy > ch + arm) continue;
+
+      const stroke = (width: number, style: string): void => {
+        ctx.lineWidth = width;
+        ctx.strokeStyle = style;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(cx - arm, cy);
+        ctx.lineTo(cx + arm, cy);
+        ctx.moveTo(cx, cy - arm);
+        ctx.lineTo(cx, cy + arm);
+        ctx.stroke();
+      };
+
+      ctx.save();
+      stroke(outlineWidth, "rgba(255, 255, 255, 0.95)"); // white outline underneath
+      stroke(colorWidth, capital.color); // player-colour cross on top
+      ctx.restore();
+    }
   };
 
   // Ease each ship's drawn position toward its latest server position, then draw
@@ -432,6 +646,45 @@ export const startRasterClient = (ui: UiElements): void => {
 
     ui.eventsPanel.innerHTML = runtime.recentEvents
       .map((ev) => `<div class="event">${escapeHtml(ev)}</div>`)
+      .join("");
+
+    renderLeaderboard();
+  };
+
+  /**
+   * Live standings: every active (non-eliminated) player, sorted by tiles held
+   * descending. Each row shows a colour dot, name, tile count and pool with its
+   * growth rate. Your own row is highlighted, and turns green while you hold the
+   * lead ("du gewinnst").
+   */
+  const renderLeaderboard = (): void => {
+    const active = runtime.players
+      .filter((p) => !p.eliminated)
+      .sort((a, b) => b.tiles - a.tiles || a.playerId - b.playerId);
+
+    if (active.length === 0) {
+      ui.leaderboard.innerHTML = `<div class="lb-empty">No active players.</div>`;
+      return;
+    }
+
+    const leaderId = active[0].playerId;
+    ui.leaderboard.innerHTML = active
+      .map((p) => {
+        const isMe = p.playerId === runtime.myPlayerId;
+        const isLeader = p.playerId === leaderId;
+        const rowClass = ["lb-row", isMe ? "me" : "", isLeader ? "leader" : ""]
+          .filter(Boolean)
+          .join(" ");
+        const name = escapeHtml(p.name) + (isMe ? " (you)" : "");
+        const stats = `${p.tiles} · ${p.troops} (+${formatRate(p.troopsPerSecond)}/s)`;
+        return (
+          `<div class="${rowClass}">` +
+          `<span class="lb-dot" style="background:${escapeHtml(p.color)}"></span>` +
+          `<span class="lb-name">${name}</span>` +
+          `<span class="lb-stats">${stats}</span>` +
+          `</div>`
+        );
+      })
       .join("");
   };
 
@@ -515,11 +768,76 @@ export const startRasterClient = (ui: UiElements): void => {
     { passive: false },
   );
 
+  // Click (or drag) the minimap to jump the main camera so the clicked point
+  // becomes the centre of the viewport.
+  const jumpToMinimap = (event: { clientX: number; clientY: number }): void => {
+    const map = runtime.map;
+    const t = minimapTransform();
+    if (!map || !t) return;
+    const bounds = ui.minimapCanvas.getBoundingClientRect();
+    const px = ((event.clientX - bounds.left) * ui.minimapCanvas.width) / bounds.width;
+    const py = ((event.clientY - bounds.top) * ui.minimapCanvas.height) / bounds.height;
+    const tileX = (px - t.offX) / t.scale;
+    const tileY = (py - t.offY) / t.scale;
+    const viewW = ui.mapCanvas.width / runtime.view.scale;
+    const viewH = ui.mapCanvas.height / runtime.view.scale;
+    runtime.view.x = tileX - viewW / 2;
+    runtime.view.y = tileY - viewH / 2;
+    clampView();
+  };
+
+  let minimapDragging = false;
+  ui.minimapCanvas.addEventListener("pointerdown", (event) => {
+    minimapDragging = true;
+    ui.minimapCanvas.setPointerCapture(event.pointerId);
+    jumpToMinimap(event);
+  });
+  ui.minimapCanvas.addEventListener("pointermove", (event) => {
+    if (minimapDragging) jumpToMinimap(event);
+  });
+  const endMinimapDrag = (): void => {
+    minimapDragging = false;
+  };
+  ui.minimapCanvas.addEventListener("pointerup", endMinimapDrag);
+  ui.minimapCanvas.addEventListener("pointercancel", endMinimapDrag);
+
   ui.attackPercentInput.addEventListener("input", () => {
     ui.attackPercentOutput.textContent = `${ui.attackPercentInput.value}%`;
   });
 
   requestAnimationFrame(renderFrame);
+};
+
+/**
+ * Format a troops-per-second rate compactly: whole numbers once it's large
+ * enough, otherwise one decimal so small early-game rates don't read as "+0/s".
+ */
+const formatRate = (rate: number): string => (rate >= 10 ? String(Math.round(rate)) : rate.toFixed(1));
+
+/** Format whole seconds as m:ss for the stats screen. */
+const formatDuration = (seconds: number): string => {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+};
+
+/**
+ * The browser's `localStorage`, or an in-memory stand-in when it is unavailable
+ * (private mode, disabled storage). Keeps run-history writes from throwing.
+ */
+const safeStorage = (): StorageLike => {
+  try {
+    if (typeof localStorage !== "undefined") return localStorage;
+  } catch {
+    // Access can throw in locked-down browsers; fall through to the stub.
+  }
+  const mem = new Map<string, string>();
+  return {
+    getItem: (key) => mem.get(key) ?? null,
+    setItem: (key, value) => {
+      mem.set(key, value);
+    },
+  };
 };
 
 const escapeHtml = (input: string): string =>

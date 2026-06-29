@@ -8,10 +8,27 @@ import type {
   RasterActionRejectedEvent,
   RasterCrossing,
   RasterExpandIntent,
+  RasterMatchEndReason,
   RasterRejectReason,
+  RasterRunStats,
   RasterServerMessage,
   RasterShip,
 } from "../Core/types.js";
+import { PERK_OFFER_INTERVAL_SECONDS, RASTER_MATCH_DURATION_SECONDS } from "../Core/rasterCombatConfig.js";
+import {
+  IDENTITY_MODIFIERS,
+  modifiersForPerks,
+  offerPerks,
+  PERK_DEFINITIONS,
+  type PerkId,
+  type PlayerModifiers,
+} from "../Core/perks.js";
+import {
+  classBonusStartingTiles,
+  classModifiers,
+  type PlayerClassId,
+} from "../Core/playerClasses.js";
+import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import { buildRasterSnapshot, encodeOwnerDelta, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
 import { MAX_TRANSPORT_SHIPS_PER_PLAYER } from "../Core/rasterCombatConfig.js";
 
@@ -74,6 +91,19 @@ export interface RasterGameSessionOptions {
    * the map's default size.
    */
   mapSize?: number;
+  /**
+   * Hard match length in ticks. When reached, the match ends on the time limit
+   * and the territory leader wins. Defaults to
+   * {@link RASTER_MATCH_DURATION_SECONDS} converted at the server tick rate.
+   * Exposed mainly so tests can run short matches.
+   */
+  maxDurationTicks?: number;
+  /**
+   * Ticks between perk-offer rounds. Defaults to
+   * {@link PERK_OFFER_INTERVAL_SECONDS} at the server tick rate. Exposed so tests
+   * can trigger offers quickly.
+   */
+  perkIntervalTicks?: number;
 }
 
 const DEFAULT_OPTIONS: Required<RasterGameSessionOptions> = {
@@ -84,6 +114,8 @@ const DEFAULT_OPTIONS: Required<RasterGameSessionOptions> = {
   startingTroops: 50,
   realMapId: "",
   mapSize: 0,
+  maxDurationTicks: RASTER_MATCH_DURATION_SECONDS * SIMULATION_TICK_RATE,
+  perkIntervalTicks: PERK_OFFER_INTERVAL_SECONDS * SIMULATION_TICK_RATE,
 };
 
 /**
@@ -118,6 +150,31 @@ export class RasterGameSession {
   private matchEndedBroadcast = false;
   /** Cached spawn tiles per player, chosen deterministically from the terrain. */
   private readonly spawnTiles: TileRef[] = [];
+  /**
+   * Each player's capital ("Hauptstadt") tile — its founding tile. Capturing it
+   * eliminates the player. Set when the player joins (capital = spawn tile).
+   */
+  private readonly capitals = new Map<PlayerId, TileRef>();
+  /** Players whose capital has fallen; their territory was turned neutral. */
+  private readonly eliminated = new Set<PlayerId>();
+  /** Hard tick budget for the run; the match ends on the time limit when hit. */
+  private readonly maxDurationTicks: number;
+  /** Most tiles each player has held at any point — a run-stat. */
+  private readonly peakTiles = new Map<PlayerId, number>();
+  /** Capitals each player has captured (eliminations they caused) — a run-stat. */
+  private readonly kills = new Map<PlayerId, number>();
+  /** Tick at which a player was eliminated, for their survival-time stat. */
+  private readonly eliminationTick = new Map<PlayerId, number>();
+  /** Ticks between perk-offer rounds. */
+  private readonly perkIntervalTicks: number;
+  /** Perks each player has chosen so far, in pick order. */
+  private readonly chosenPerks = new Map<PlayerId, PerkId[]>();
+  /** The outstanding perk offer per player (the set they may legally pick from). */
+  private readonly pendingOffer = new Map<PlayerId, PerkId[]>();
+  /** Each player's class base modifiers; perks fold on top of these. */
+  private readonly baseModifiers = new Map<PlayerId, PlayerModifiers>();
+  /** Number of perk rounds offered so far (drives the deterministic offer set). */
+  private perkRound = 0;
 
   public constructor(options: RasterGameSessionOptions = {}) {
     const opts = { ...DEFAULT_OPTIONS, ...options };
@@ -127,6 +184,8 @@ export class RasterGameSession {
     this.mapName =
       options.mapName ?? (heightmapDef ? heightmapDef.name : realMap ? realMap.name : opts.mapName);
     this.startingTroops = opts.startingTroops;
+    this.maxDurationTicks = Math.max(1, Math.floor(opts.maxDurationTicks));
+    this.perkIntervalTicks = Math.max(1, Math.floor(opts.perkIntervalTicks));
 
     let map;
     if (heightmapDef) {
@@ -216,7 +275,11 @@ export class RasterGameSession {
     return chosen;
   }
 
-  public subscribe(clientId: string, send: RasterMessageHandler): () => void {
+  public subscribe(
+    clientId: string,
+    send: RasterMessageHandler,
+    playerClass: PlayerClassId | null = null,
+  ): () => void {
     if (this.nextPlayerId > PLAYER_PALETTE.length) {
       throw new Error(`Raster session is full (max ${PLAYER_PALETTE.length} players).`);
     }
@@ -225,10 +288,25 @@ export class RasterGameSession {
     const meta = PLAYER_PALETTE[playerId - 1];
     this.playerMeta.set(playerId, meta);
 
-    // Register the player, give them a starting pool + their spawn tile.
+    // Register the player, give them a starting pool + their spawn tile. The
+    // spawn is the player's founding (and, at this instant, only) tile, so it
+    // becomes their capital — losing it later eliminates them.
     this.grid.addPlayer(playerId, this.startingTroops);
     const spawn = this.spawnTiles[playerId - 1];
     this.grid.claim(spawn, playerId);
+    this.capitals.set(playerId, spawn);
+
+    // Apply the chosen class: base modifiers (perks fold on top later) and any
+    // bonus starting tiles claimed outward from the spawn (the capital stays the
+    // spawn tile).
+    const base = classModifiers(playerClass);
+    this.baseModifiers.set(playerId, base);
+    this.grid.setModifiers(playerId, base);
+    this.grantStartingTiles(playerId, spawn, classBonusStartingTiles(playerClass));
+
+    this.peakTiles.set(playerId, this.grid.tileCountOf(playerId));
+    this.kills.set(playerId, 0);
+    this.chosenPerks.set(playerId, []);
 
     const subscriber: RasterSubscriber = {
       clientId,
@@ -261,6 +339,10 @@ export class RasterGameSession {
    * `AttackIntent`s, advance the conflict engine, then broadcast snapshots.
    */
   public tick(): void {
+    // Once the match has ended (conquest or time limit) the simulation freezes:
+    // no further state changes or broadcasts.
+    if (this.matchEndedBroadcast) return;
+
     const intents: AttackIntent[] = [];
     const eventLines: string[] = [];
     const rejections: Array<{ clientId: string; rejection: RasterActionRejectedEvent }> = [];
@@ -295,6 +377,12 @@ export class RasterGameSession {
 
     const tickResult = this.conflict.processTick(intents);
 
+    // Track each player's peak territory before any elimination neutralises it.
+    for (const id of this.grid.players()) {
+      const tiles = this.grid.tileCountOf(id);
+      if (tiles > (this.peakTiles.get(id) ?? 0)) this.peakTiles.set(id, tiles);
+    }
+
     // Convert this tick's transport-ship landings to wire coordinates for the
     // landing flash, and snapshot every ship still in flight for animation.
     this.lastCrossings = tickResult.crossings.map((c) => ({
@@ -317,6 +405,13 @@ export class RasterGameSession {
       this.recentEvents = [...eventLines.reverse(), ...this.recentEvents].slice(0, MAX_EVENTS);
     }
 
+    // A capital captured this tick eliminates its owner: the rest of their
+    // empire collapses to neutral and an elimination event is broadcast.
+    const eliminationLines = this.resolveCapitalCaptures();
+    if (eliminationLines.length > 0) {
+      this.recentEvents = [...eliminationLines, ...this.recentEvents].slice(0, MAX_EVENTS);
+    }
+
     for (const { clientId, rejection } of rejections) {
       this.subscribers.get(clientId)?.send({
         type: "SERVER_RASTER_ACTION_REJECTED",
@@ -328,17 +423,132 @@ export class RasterGameSession {
       this.sendSnapshotTo(subscriber);
     }
 
-    if (tickResult.winner !== null && !this.matchEndedBroadcast) {
+    // End the match on conquest (a player owns everything) or when the clock
+    // runs out (the territory leader is crowned). Either way, broadcast a
+    // per-player run summary for the post-match stats screen.
+    const timeUp = this.conflict.tick >= this.maxDurationTicks;
+    if (tickResult.winner !== null || timeUp) {
       this.matchEndedBroadcast = true;
-      const winnerName = this.playerMeta.get(tickResult.winner)?.name ?? `Player ${tickResult.winner}`;
-      this.recentEvents = [`${winnerName} has conquered the map.`, ...this.recentEvents].slice(0, MAX_EVENTS);
+      const reason: RasterMatchEndReason = tickResult.winner !== null ? "conquest" : "timeLimit";
+      const winnerId = tickResult.winner !== null ? tickResult.winner : this.leaderByTiles();
+      const endTick = this.conflict.tick;
+
+      const endLine = winnerId === null
+        ? "The match ended with no survivors."
+        : reason === "conquest"
+          ? `${this.nameOf(winnerId)} has conquered the map.`
+          : `Time's up — ${this.nameOf(winnerId)} leads with the most territory.`;
+      this.recentEvents = [endLine, ...this.recentEvents].slice(0, MAX_EVENTS);
+
       for (const subscriber of this.subscribers.values()) {
         subscriber.send({
           type: "SERVER_RASTER_MATCH_ENDED",
-          payload: { winnerPlayerId: tickResult.winner },
+          payload: {
+            winnerPlayerId: winnerId,
+            reason,
+            durationTicks: endTick,
+            tickRate: SIMULATION_TICK_RATE,
+            stats: this.buildRunStats(subscriber.playerId, endTick, winnerId),
+          },
         });
       }
+      return;
     }
+
+    // Periodic perk offer (skipped on the tick a match ends, handled above).
+    if (this.conflict.tick > 0 && this.conflict.tick % this.perkIntervalTicks === 0) {
+      this.broadcastPerkOffer();
+    }
+  }
+
+  /** Offer every player the next deterministic set of perks to choose from. */
+  private broadcastPerkOffer(): void {
+    const options = offerPerks(this.perkRound);
+    const offerNumber = this.perkRound + 1;
+    this.perkRound += 1;
+    for (const subscriber of this.subscribers.values()) {
+      this.pendingOffer.set(subscriber.playerId, options);
+      subscriber.send({ type: "SERVER_PERK_OFFER", payload: { options: [...options], offerNumber } });
+    }
+  }
+
+  /**
+   * Apply a player's perk choice. Ignored unless it matches that player's
+   * outstanding offer, so a client can't grant itself arbitrary perks. Recomputes
+   * the player's modifiers from their full pick history and clears the offer.
+   */
+  public choosePerk(clientId: string, perkId: PerkId): void {
+    const subscriber = this.subscribers.get(clientId);
+    if (!subscriber) return;
+    const pending = this.pendingOffer.get(subscriber.playerId);
+    if (!pending || !pending.includes(perkId)) return;
+    this.pendingOffer.delete(subscriber.playerId);
+
+    const chosen = this.chosenPerks.get(subscriber.playerId) ?? [];
+    chosen.push(perkId);
+    this.chosenPerks.set(subscriber.playerId, chosen);
+    const base = this.baseModifiers.get(subscriber.playerId) ?? IDENTITY_MODIFIERS;
+    this.grid.setModifiers(subscriber.playerId, modifiersForPerks(chosen, base));
+
+    this.recentEvents = [
+      `${this.nameOf(subscriber.playerId)} gained ${PERK_DEFINITIONS[perkId].name}.`,
+      ...this.recentEvents,
+    ].slice(0, MAX_EVENTS);
+  }
+
+  private nameOf(id: PlayerId): string {
+    return this.playerMeta.get(id)?.name ?? `Player ${id}`;
+  }
+
+  /**
+   * Claim up to `count` neutral capturable tiles outward from `spawn` for a
+   * player (the Imperialist's head start). A BFS over land takes the nearest
+   * tiles deterministically; the spawn/capital tile is left as-is.
+   */
+  private grantStartingTiles(playerId: PlayerId, spawn: TileRef, count: number): void {
+    if (count <= 0) return;
+    const visited = new Set<TileRef>([spawn]);
+    const queue: TileRef[] = [spawn];
+    let granted = 0;
+    for (let head = 0; head < queue.length && granted < count; head += 1) {
+      for (const n of this.map.neighbors(queue[head])) {
+        if (visited.has(n) || !this.grid.isCapturable(n)) continue;
+        visited.add(n);
+        if (this.grid.ownerOf(n) === NEUTRAL_PLAYER) {
+          this.grid.claim(n, playerId);
+          granted += 1;
+        }
+        queue.push(n);
+        if (granted >= count) break;
+      }
+    }
+  }
+
+  /** The player holding the most tiles, ties broken by lowest id; null if none. */
+  private leaderByTiles(): PlayerId | null {
+    let leader: PlayerId | null = null;
+    let best = 0;
+    for (const id of this.grid.players()) {
+      const tiles = this.grid.tileCountOf(id);
+      if (tiles > best) {
+        best = tiles;
+        leader = id;
+      }
+    }
+    return leader;
+  }
+
+  /** Assemble a player's end-of-run statistics for the post-match screen. */
+  private buildRunStats(playerId: PlayerId, endTick: number, winnerId: PlayerId | null): RasterRunStats {
+    return {
+      playerId,
+      peakTiles: this.peakTiles.get(playerId) ?? 0,
+      finalTiles: this.grid.hasPlayer(playerId) ? this.grid.tileCountOf(playerId) : 0,
+      kills: this.kills.get(playerId) ?? 0,
+      survivedTicks: this.eliminationTick.get(playerId) ?? endTick,
+      eliminated: this.eliminated.has(playerId),
+      won: winnerId === playerId,
+    };
   }
 
   public getSubscriberCount(): number {
@@ -356,6 +566,43 @@ export class RasterGameSession {
 
   public peekMap(): GameMap {
     return this.map;
+  }
+
+  /**
+   * Detect capitals captured during the tick just processed and eliminate their
+   * owners. A capital "falls" the instant its tile is owned by anyone other than
+   * the player it belongs to. On elimination every remaining tile that player
+   * holds is turned neutral (the conqueror keeps only the capital tile they
+   * actually took), so the map reopens as contestable land rather than handing a
+   * whole empire to one attacker. Returns the elimination event lines (newest
+   * first) for the event feed. Pure bookkeeping otherwise — no broadcast here.
+   */
+  private resolveCapitalCaptures(): string[] {
+    const lines: string[] = [];
+    for (const [playerId, capitalRef] of this.capitals) {
+      if (this.eliminated.has(playerId)) continue;
+      const conqueror = this.grid.ownerOf(capitalRef);
+      if (conqueror === playerId) continue; // Capital still held.
+
+      this.eliminated.add(playerId);
+      this.eliminationTick.set(playerId, this.conflict.tick);
+      // Credit the conqueror with a kill (capital captured) for their run stats.
+      if (conqueror !== NEUTRAL_PLAYER) {
+        this.kills.set(conqueror, (this.kills.get(conqueror) ?? 0) + 1);
+      }
+      // Neutralise the fallen player's remaining territory (the capital tile is
+      // already owned by the conqueror, so it is excluded by ownership).
+      for (const ref of this.grid.tilesOf(playerId)) {
+        this.grid.claim(ref, NEUTRAL_PLAYER);
+      }
+
+      const fallenName = this.playerMeta.get(playerId)?.name ?? `Player ${playerId}`;
+      const conquerorName = conqueror === NEUTRAL_PLAYER
+        ? "Neutral forces"
+        : this.playerMeta.get(conqueror)?.name ?? `Player ${conqueror}`;
+      lines.unshift(`${conquerorName} captured ${fallenName}'s capital — ${fallenName} is eliminated!`);
+    }
+    return lines;
   }
 
   /**
@@ -416,7 +663,7 @@ export class RasterGameSession {
           : "Your border doesn't touch that opponent yet.",
       };
     }
-    if (this.grid.findSeaPath(attacker, ref)) {
+    if (this.grid.findSeaPath(attacker, ref, this.grid.seaRangeOf(attacker))) {
       return { kind: "sea", intent: { attacker, dest: ref, troops } };
     }
     return {
@@ -492,6 +739,8 @@ export class RasterGameSession {
       crossings: this.lastCrossings,
       ships: this.lastShips,
       ownerDeltaBase64,
+      capitals: this.capitals,
+      eliminated: this.eliminated,
     });
     subscriber.send({ type: "SERVER_RASTER_SNAPSHOT", payload: snapshot });
     if (includeTerrain) {

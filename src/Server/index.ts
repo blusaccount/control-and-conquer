@@ -111,10 +111,8 @@ wss.on("connection", (socket) => {
     socket.send(JSON.stringify(message));
   };
 
-  const unsubscribe = registry.joinRasterSolo(clientId, send, {
-    realMapId: activeMapId,
-    mapSize: rasterMapSize,
-  }, botCount);
+  // The player is seated only once they send CLIENT_RASTER_JOIN with a class.
+  let unsubscribe: (() => void) | null = null;
 
   socket.on("message", (data) => {
     let parsed: unknown;
@@ -122,8 +120,20 @@ wss.on("connection", (socket) => {
     try {
       parsed = JSON.parse(String(data));
       const message = validateCommand(parsed);
-      if (message.type === "CLIENT_RASTER_EXPAND") {
+      if (message.type === "CLIENT_RASTER_JOIN") {
+        if (!unsubscribe) {
+          unsubscribe = registry.joinRasterSolo(
+            clientId,
+            send,
+            { realMapId: activeMapId, mapSize: rasterMapSize },
+            botCount,
+            message.payload.playerClass,
+          );
+        }
+      } else if (message.type === "CLIENT_RASTER_EXPAND") {
         registry.queueRasterExpand(clientId, message.payload);
+      } else if (message.type === "CLIENT_PERK_CHOSEN") {
+        registry.choosePerk(clientId, message.payload.perkId);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown command error.";
@@ -138,7 +148,9 @@ wss.on("connection", (socket) => {
     }
   });
 
-  socket.on("close", unsubscribe);
+  socket.on("close", () => {
+    unsubscribe?.();
+  });
 });
 
 server.listen(port, () => {

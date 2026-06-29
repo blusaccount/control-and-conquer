@@ -6,59 +6,74 @@
 export interface UiElements {
   mapCanvas: HTMLCanvasElement;
   mapContext: CanvasRenderingContext2D;
+  minimapCanvas: HTMLCanvasElement;
+  minimapContext: CanvasRenderingContext2D;
   teamInfo: HTMLDivElement;
   attackPercentInput: HTMLInputElement;
   attackPercentOutput: HTMLOutputElement;
   selectionInfo: HTMLDivElement;
   statusMessage: HTMLDivElement;
   eventsPanel: HTMLDivElement;
+  leaderboard: HTMLDivElement;
   menuOverlay: HTMLDivElement;
-  playButton: HTMLButtonElement;
+  statsOverlay: HTMLDivElement;
+  perkOverlay: HTMLDivElement;
 }
 
 export type StatusKind = "info" | "error" | "victory";
 
 export const getUiElements = (): UiElements => {
   const mapCanvas = document.querySelector<HTMLCanvasElement>("#mapCanvas");
+  const minimapCanvas = document.querySelector<HTMLCanvasElement>("#minimapCanvas");
   const teamInfo = document.querySelector<HTMLDivElement>("#teamInfo");
   const attackPercentInput = document.querySelector<HTMLInputElement>("#attackPercentInput");
   const attackPercentOutput = document.querySelector<HTMLOutputElement>("#attackPercentOutput");
   const selectionInfo = document.querySelector<HTMLDivElement>("#selectionInfo");
   const statusMessage = document.querySelector<HTMLDivElement>("#statusMessage");
   const eventsPanel = document.querySelector<HTMLDivElement>("#events");
+  const leaderboard = document.querySelector<HTMLDivElement>("#leaderboard");
   const menuOverlay = document.querySelector<HTMLDivElement>("#menuOverlay");
-  const playButton = document.querySelector<HTMLButtonElement>("#playButton");
+  const statsOverlay = document.querySelector<HTMLDivElement>("#statsOverlay");
+  const perkOverlay = document.querySelector<HTMLDivElement>("#perkOverlay");
 
   if (
     !mapCanvas ||
+    !minimapCanvas ||
     !teamInfo ||
     !attackPercentInput ||
     !attackPercentOutput ||
     !selectionInfo ||
     !statusMessage ||
     !eventsPanel ||
+    !leaderboard ||
     !menuOverlay ||
-    !playButton
+    !statsOverlay ||
+    !perkOverlay
   ) {
     throw new Error("UI failed to initialize.");
   }
 
   const mapContext = mapCanvas.getContext("2d");
-  if (!mapContext) {
+  const minimapContext = minimapCanvas.getContext("2d");
+  if (!mapContext || !minimapContext) {
     throw new Error("Canvas context unavailable.");
   }
 
   return {
     mapCanvas,
     mapContext,
+    minimapCanvas,
+    minimapContext,
     teamInfo,
     attackPercentInput,
     attackPercentOutput,
     selectionInfo,
     statusMessage,
     eventsPanel,
+    leaderboard,
     menuOverlay,
-    playButton,
+    statsOverlay,
+    perkOverlay,
   };
 };
 

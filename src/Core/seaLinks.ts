@@ -14,34 +14,59 @@ import type { GameMap, TileRef } from "./GameMap.js";
  * built a single time. The relation is symmetric: if A can land on B, B can
  * land on A.
  */
-export class SeaLinks {
-  /** source TileRef -> sorted list of coastal TileRefs reachable across water. */
-  private readonly links: Map<TileRef, TileRef[]>;
+/** A single amphibious link: the reachable coastal tile and the water distance. */
+export interface SeaLink {
+  ref: TileRef;
+  /** Water tiles crossed to reach `ref` (1 = tiles share a one-tile strait). */
+  dist: number;
+}
 
-  private constructor(links: Map<TileRef, TileRef[]>) {
+export class SeaLinks {
+  /** source TileRef -> links sorted by ascending target TileRef. */
+  private readonly links: Map<TileRef, SeaLink[]>;
+  /** The `maxCrossing` the graph was built with — the widest link it can hold. */
+  readonly maxCrossing: number;
+
+  private constructor(links: Map<TileRef, SeaLink[]>, maxCrossing: number) {
     this.links = links;
+    this.maxCrossing = maxCrossing;
   }
 
-  /** Coastal tiles reachable from `ref` by an amphibious crossing (may be empty). */
+  /** Every coastal tile reachable from `ref` by a crossing (up to the built max). */
   neighborsOf(ref: TileRef): readonly TileRef[] {
-    return this.links.get(ref) ?? EMPTY;
+    const list = this.links.get(ref);
+    return list ? list.map((l) => l.ref) : EMPTY;
+  }
+
+  /**
+   * Coastal tiles reachable from `ref` within `maxDist` water tiles — the
+   * range-aware lookup the frontier scan uses so a player's sea reach can be
+   * scaled by perks (e.g. Sea God). `maxDist` is clamped to the built maximum.
+   */
+  neighborsWithin(ref: TileRef, maxDist: number): readonly TileRef[] {
+    const list = this.links.get(ref);
+    if (!list) return EMPTY;
+    if (maxDist >= this.maxCrossing) return list.map((l) => l.ref);
+    const out: TileRef[] = [];
+    for (const link of list) if (link.dist <= maxDist) out.push(link.ref);
+    return out;
   }
 
   /** True if `a` and `b` are connected by a sea crossing. */
   areLinked(a: TileRef, b: TileRef): boolean {
-    return (this.links.get(a)?.includes(b)) ?? false;
+    return (this.links.get(a)?.some((l) => l.ref === b)) ?? false;
   }
 
   /**
    * Build the crossing graph for a map. A tile qualifies as a coast endpoint
    * when it is passable land bordering water. From each such tile we BFS through
    * water tiles up to `maxCrossing` steps; every passable coastal land tile we
-   * reach becomes a link. `maxCrossing <= 0` yields an empty graph (crossing
-   * disabled).
+   * reach becomes a link recording the water distance. `maxCrossing <= 0` yields
+   * an empty graph (crossing disabled).
    */
   static build(map: GameMap, maxCrossing: number): SeaLinks {
-    const links = new Map<TileRef, TileRef[]>();
-    if (maxCrossing <= 0) return new SeaLinks(links);
+    const links = new Map<TileRef, SeaLink[]>();
+    if (maxCrossing <= 0) return new SeaLinks(links, 0);
 
     const isCoast = (ref: TileRef): boolean =>
       map.isLand(ref) && !map.isImpassable(ref) && map.isShore(ref);
@@ -58,7 +83,8 @@ export class SeaLinks {
 
       generation += 1;
       queue.length = 0;
-      const reached = new Set<TileRef>();
+      // Target coastal tile -> minimum water distance at which it was reached.
+      const reached = new Map<TileRef, number>();
 
       // Seed the BFS with the water tiles directly bordering the source.
       for (const n of map.neighbors(source)) {
@@ -80,18 +106,22 @@ export class SeaLinks {
               queue.push(n);
             }
           } else if (isCoast(n) && n !== source) {
-            // Landing on the far bank: record the link once per target.
-            reached.add(n);
+            // Landing on the far bank: keep the shortest crossing to this target.
+            const existing = reached.get(n);
+            if (existing === undefined || d < existing) reached.set(n, d);
           }
         }
       }
 
       if (reached.size > 0) {
-        links.set(source, [...reached].sort((a, b) => a - b));
+        const list = [...reached.entries()]
+          .map(([ref, dist]) => ({ ref, dist }))
+          .sort((a, b) => a.ref - b.ref);
+        links.set(source, list);
       }
     }
 
-    return new SeaLinks(links);
+    return new SeaLinks(links, maxCrossing);
   }
 }
 

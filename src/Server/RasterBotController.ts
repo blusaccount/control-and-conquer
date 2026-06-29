@@ -3,6 +3,8 @@ import type { GameMap, TileRef } from "../Core/GameMap.js";
 import { NEUTRAL_PLAYER, type PlayerId, type TerritoryGrid } from "../Core/TerritoryGrid.js";
 import { MAX_POOL_PER_TILE } from "../Core/rasterCombatConfig.js";
 import type { RasterServerMessage, RasterSnapshot } from "../Core/types.js";
+import type { PerkId } from "../Core/perks.js";
+import type { PerkOfferPayload } from "../Core/messages.js";
 
 /**
  * Behavioural knobs for a raster bot. A {@link RasterBotController}'s whole
@@ -140,7 +142,29 @@ export class RasterBotController {
     }
     if (message.type === "SERVER_RASTER_SNAPSHOT") {
       this.handleSnapshot(message.payload);
+      return;
     }
+    if (message.type === "SERVER_PERK_OFFER") {
+      this.handlePerkOffer(message.payload);
+    }
+  }
+
+  /**
+   * Pick a perk that fits the bot's personality (deterministic, no RNG): the
+   * aggressive archetypes favour attack speed, the turtle its defence, the
+   * land-grabbers their growth; anything unavailable falls back to the first
+   * offered perk so a choice is always made.
+   */
+  private handlePerkOffer(offer: PerkOfferPayload): void {
+    if (!this.session || offer.options.length === 0) return;
+    const preference: PerkId =
+      this.config.personality.aggression >= 0.7
+        ? "swift-attacker"
+        : this.config.personality.reserveFraction >= 0.4
+          ? "fortress-wall"
+          : "growth-driver";
+    const choice = offer.options.includes(preference) ? preference : offer.options[0];
+    this.session.choosePerk(this.config.botId, choice);
   }
 
   private handleSnapshot(snapshot: RasterSnapshot): void {

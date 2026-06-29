@@ -197,7 +197,7 @@ export class RasterConflict {
     if (troops > this.grid.troopsOf(attacker)) return "INSUFFICIENT_TROOPS";
     if (this.shipCountOf(attacker) >= MAX_TRANSPORT_SHIPS_PER_PLAYER) return "TOO_MANY_SHIPS";
 
-    const path = this.grid.findSeaPath(attacker, dest);
+    const path = this.grid.findSeaPath(attacker, dest, this.grid.seaRangeOf(attacker));
     if (!path) return "NO_FRONTIER";
 
     this.grid.addTroops(attacker, -troops);
@@ -245,16 +245,21 @@ export class RasterConflict {
       ? NEUTRAL_CAPTURE_COST
       : NEUTRAL_CAPTURE_COST + ENEMY_CAPTURE_SURCHARGE;
     const elevationCost = this.grid.map.magnitude(ref) * ELEVATION_COST_PER_LEVEL;
-    return Math.ceil(base + elevationCost);
+    let cost = base + elevationCost;
+    // The defender's Fortress Wall raises the cost to capture their tiles.
+    if (target !== NEUTRAL_PLAYER) cost *= this.grid.modifiersOf(target).defense;
+    return Math.ceil(cost);
   }
 
   /**
    * Troops a transport ship spends to seize its landing tile — the normal
    * capture cost plus the amphibious {@link SEA_CROSSING_SURCHARGE}, so an
-   * opposed landing is dearer than walking the same tile over land.
+   * opposed landing is dearer than walking the same tile over land. The
+   * attacker's Sea God perk (seaSpeed) lowers that surcharge.
    */
-  private beachheadCost(ref: TileRef, target: PlayerId): number {
-    return this.captureCost(ref, target) + SEA_CROSSING_SURCHARGE;
+  private beachheadCost(ref: TileRef, attacker: PlayerId, target: PlayerId): number {
+    const surcharge = Math.ceil(SEA_CROSSING_SURCHARGE / this.grid.modifiersOf(attacker).seaSpeed);
+    return this.captureCost(ref, target) + surcharge;
   }
 
   /**
@@ -270,7 +275,8 @@ export class RasterConflict {
         this.incomeAccumulator.set(id, 0);
         continue;
       }
-      const accumulated = (this.incomeAccumulator.get(id) ?? 0) + tiles * INCOME_PER_TILE_PER_TICK;
+      const incomeRate = tiles * INCOME_PER_TILE_PER_TICK * this.grid.modifiersOf(id).income;
+      const accumulated = (this.incomeAccumulator.get(id) ?? 0) + incomeRate;
       const whole = Math.floor(accumulated);
       if (whole > 0) {
         const next = Math.min(cap, this.grid.troopsOf(id) + whole);
@@ -292,7 +298,9 @@ export class RasterConflict {
 
     for (const ship of this.ships) {
       const lastIndex = ship.path.length - 1;
-      ship.progress = Math.min(lastIndex, ship.progress + SHIP_TILES_PER_TICK);
+      // Sea God (seaSpeed) makes ships glide faster along their route.
+      const step = Math.max(1, Math.round(SHIP_TILES_PER_TICK * this.grid.modifiersOf(ship.attacker).seaSpeed));
+      ship.progress = Math.min(lastIndex, ship.progress + step);
       if (ship.progress < lastIndex) {
         survivors.push(ship);
         continue;
@@ -312,7 +320,7 @@ export class RasterConflict {
         continue;
       }
 
-      const cost = this.beachheadCost(dest, owner);
+      const cost = this.beachheadCost(dest, ship.attacker, owner);
       if (ship.troops < cost) {
         // Too few troops to force a landing — the assault is repelled and the
         // survivors fall back into the pool rather than vanishing.
@@ -360,7 +368,9 @@ export class RasterConflict {
 
       // Spend at most this slice of the remaining troops this tick, but always
       // enough to attempt the cheapest possible capture so progress is steady.
-      const budget = Math.max(NEUTRAL_CAPTURE_COST, attack.committed * EXPANSION_SPEND_FRACTION);
+      // Swift Attacker lets a front spend more of its troops per tick.
+      const expansionSpeed = this.grid.modifiersOf(attack.attacker).expansionSpeed;
+      const budget = Math.max(NEUTRAL_CAPTURE_COST, attack.committed * EXPANSION_SPEND_FRACTION * expansionSpeed);
       let spent = 0;
 
       for (const ref of frontier) {
@@ -371,7 +381,8 @@ export class RasterConflict {
         if (attack.committed < cost || spent + cost > budget) continue;
 
         if (attack.target !== NEUTRAL_PLAYER) {
-          this.grid.addTroops(attack.target, -DEFENDER_LOSS_PER_TILE);
+          // Fortress Wall also blunts the defender's troop bleed per tile lost.
+          this.grid.addTroops(attack.target, -DEFENDER_LOSS_PER_TILE / this.grid.modifiersOf(attack.target).defense);
         }
         this.grid.claim(ref, attack.attacker);
         attack.committed -= cost;

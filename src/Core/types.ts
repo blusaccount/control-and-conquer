@@ -13,6 +13,8 @@
 // directly: "expand my border toward (x, y) with N percent of my pool".
 // ---------------------------------------------------------------------------
 
+import type { PerkClientMessage, PerkServerMessage, RasterJoinClientMessage } from "./messages.js";
+
 /** Per-player snapshot row for raster mode. */
 export interface RasterPlayerInfo {
   /** Engine-side numeric id (1+). 0 reserved for NEUTRAL. */
@@ -25,6 +27,26 @@ export interface RasterPlayerInfo {
   troops: number;
   /** Number of capturable tiles currently owned. */
   tiles: number;
+  /**
+   * Troops generated per second at the current territory size — what the
+   * leaderboard renders as "(+N/s)". Server-computed from tile count so every
+   * client shows the same figure.
+   */
+  troopsPerSecond: number;
+  /**
+   * Tile column of the player's capital ("Hauptstadt"). The capital is the
+   * player's founding tile; losing it eliminates the player. `-1` when unknown
+   * (e.g. snapshots built without capital data, only in tests).
+   */
+  capitalX: number;
+  /** Tile row of the player's capital. `-1` when unknown. */
+  capitalY: number;
+  /**
+   * True once this player's capital has been captured. Eliminated players hold
+   * no tiles (all were turned neutral on capture) and are dropped from the
+   * active leaderboard / no longer draw a capital marker.
+   */
+  eliminated: boolean;
 }
 
 /**
@@ -133,11 +155,51 @@ export interface RasterPlayerAssignedPayload {
   color: string;
 }
 
+/** Why a match ended. */
+export type RasterMatchEndReason =
+  /** A single player came to own every capturable tile. */
+  | "conquest"
+  /** The match clock ran out; the territory leader is declared the winner. */
+  | "timeLimit";
+
+/**
+ * End-of-run statistics for a single player, shown on the post-match screen.
+ * Built per-recipient so each client sees its own run.
+ */
+export interface RasterRunStats {
+  playerId: number;
+  /** Most tiles this player ever held during the match. */
+  peakTiles: number;
+  /** Tiles held at the final tick. */
+  finalTiles: number;
+  /** Opponents this player eliminated by capturing their capital. */
+  kills: number;
+  /** Ticks the player survived (until eliminated, else the full match). */
+  survivedTicks: number;
+  /** True if the player's capital was captured before the match ended. */
+  eliminated: boolean;
+  /** True if this player is the declared winner. */
+  won: boolean;
+}
+
+/** Payload broadcast when a raster match ends. */
+export interface RasterMatchEndedPayload {
+  /** Declared winner, or null if no player held any territory. */
+  winnerPlayerId: number | null;
+  reason: RasterMatchEndReason;
+  /** Total ticks the match ran. */
+  durationTicks: number;
+  /** Simulation tick rate, so the client can convert ticks to seconds. */
+  tickRate: number;
+  /** The receiving player's own run statistics. */
+  stats: RasterRunStats;
+}
+
 /** Messages the client can send to the server. */
-export type RasterClientMessage = {
-  type: "CLIENT_RASTER_EXPAND";
-  payload: RasterExpandIntent;
-};
+export type RasterClientMessage =
+  | { type: "CLIENT_RASTER_EXPAND"; payload: RasterExpandIntent }
+  | RasterJoinClientMessage
+  | PerkClientMessage;
 
 /** Messages the server can send to the client. */
 export type RasterServerMessage =
@@ -145,4 +207,5 @@ export type RasterServerMessage =
   | { type: "SERVER_RASTER_PLAYER_ASSIGNED"; payload: RasterPlayerAssignedPayload }
   | { type: "SERVER_RASTER_SNAPSHOT"; payload: RasterSnapshot }
   | { type: "SERVER_RASTER_ACTION_REJECTED"; payload: RasterActionRejectedEvent }
-  | { type: "SERVER_RASTER_MATCH_ENDED"; payload: { winnerPlayerId: number } };
+  | { type: "SERVER_RASTER_MATCH_ENDED"; payload: RasterMatchEndedPayload }
+  | PerkServerMessage;

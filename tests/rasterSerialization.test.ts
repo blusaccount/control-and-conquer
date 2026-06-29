@@ -4,6 +4,8 @@ import { Buffer } from "node:buffer";
 import { generateTerrain } from "../src/Core/terrainGenerator.js";
 import { TerritoryGrid } from "../src/Core/TerritoryGrid.js";
 import { encodeTerrain, encodeOwners, buildRasterSnapshot } from "../src/Server/rasterSerialization.js";
+import { INCOME_PER_TILE_PER_TICK } from "../src/Core/rasterCombatConfig.js";
+import { SIMULATION_TICK_RATE } from "../src/Server/simulationConfig.js";
 
 test("encodeTerrain returns a stable hash for identical terrain", () => {
   const map = generateTerrain({ width: 32, height: 24, seed: 7 });
@@ -48,4 +50,30 @@ test("buildRasterSnapshot only includes terrainBase64 when requested", () => {
   assert.equal(withTerrain.height, 12);
   assert.equal(withTerrain.players.length, 1);
   assert.equal(withTerrain.players[0].playerId, 1);
+});
+
+test("buildRasterSnapshot reports troopsPerSecond proportional to tiles", () => {
+  const map = generateTerrain({ width: 16, height: 12, seed: 2 });
+  const grid = new TerritoryGrid(map);
+  grid.addPlayer(1, 50);
+  // Claim a handful of capturable tiles so the rate is non-zero and checkable.
+  let claimed = 0;
+  for (let ref = 0; ref < map.size && claimed < 4; ref += 1) {
+    if (grid.isCapturable(ref)) {
+      grid.claim(ref, 1);
+      claimed += 1;
+    }
+  }
+  const playerMeta = new Map([[1, { name: "Blue", color: "#3b82f6" }]]);
+  const { terrainHash, terrainBase64 } = encodeTerrain(map);
+  const snap = buildRasterSnapshot({
+    tick: 0, mapName: "T", map, grid, playerMeta,
+    includeTerrain: false, terrainHash, terrainBase64,
+    winnerPlayerId: null, recentEvents: [],
+  });
+  const row = snap.players[0];
+  assert.equal(row.tiles, claimed);
+  // Rate must track the engine's real income: tiles * per-tick income * TPS.
+  const expected = claimed * INCOME_PER_TILE_PER_TICK * SIMULATION_TICK_RATE;
+  assert.ok(Math.abs(row.troopsPerSecond - expected) < 1e-9, "rate should equal real per-second income");
 });

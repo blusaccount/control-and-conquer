@@ -1,7 +1,6 @@
 import type { GameMap, TileRef } from "./GameMap.js";
-import { MAX_SEA_CROSSING_TILES } from "./rasterCombatConfig.js";
-// MAX_SEA_CROSSING_TILES bounds both the seaLinks reachability graph and the
-// per-launch ship path search, keeping the two in agreement.
+import { MAX_SEA_CROSSING_TILES, MAX_SEA_RANGE_MULTIPLIER } from "./rasterCombatConfig.js";
+import { IDENTITY_MODIFIERS, type PlayerModifiers } from "./perks.js";
 import { SeaLinks } from "./seaLinks.js";
 
 /**
@@ -25,6 +24,8 @@ interface PlayerStanding {
    * the whole ownership raster.
    */
   tiles: Set<TileRef>;
+  /** Accumulated perk/class modifiers; defaults to no effect. */
+  modifiers: PlayerModifiers;
 }
 
 /**
@@ -76,6 +77,9 @@ export class TerritoryGrid {
   constructor(map: GameMap) {
     this.map = map;
     this.owner = new Uint16Array(map.size);
+    // The reachability graph spans the base crossing range. A Sea God's extended
+    // reach is served by {@link findSeaPath}'s own range-parameterised BFS, so the
+    // graph (used for frontier discovery) stays at the baseline everyone shares.
     this.seaLinks = SeaLinks.build(map, MAX_SEA_CROSSING_TILES);
     let capturable = 0;
     for (let ref = 0; ref < map.size; ref += 1) {
@@ -160,7 +164,34 @@ export class TerritoryGrid {
     if (troops < 0) {
       throw new Error(`Starting troops must be non-negative, got ${troops}.`);
     }
-    this.standings.set(id, { troops, tiles: new Set() });
+    this.standings.set(id, { troops, tiles: new Set(), modifiers: { ...IDENTITY_MODIFIERS } });
+  }
+
+  /** This player's accumulated perk/class modifiers. */
+  modifiersOf(id: PlayerId): PlayerModifiers {
+    return this.standing(id).modifiers;
+  }
+
+  /** Replace this player's modifiers (e.g. after a perk choice). */
+  setModifiers(id: PlayerId, modifiers: PlayerModifiers): void {
+    this.standing(id).modifiers = modifiers;
+  }
+
+  /** Convenience for the snapshot: this player's income multiplier. */
+  incomeMultiplierOf(id: PlayerId): number {
+    return this.standing(id).modifiers.income;
+  }
+
+  /**
+   * The crossing range (in water tiles) this player can currently project,
+   * scaling the base reach by their sea-range modifier (Sea God / Admiral). The
+   * crossing graph and ship pathfinding both honour this, so a larger range
+   * reaches farther coasts.
+   */
+  seaRangeOf(id: PlayerId): number {
+    const scaled = Math.round(MAX_SEA_CROSSING_TILES * this.standing(id).modifiers.seaRange);
+    // Bound the reach (and thus the per-launch BFS cost) even if perks stack.
+    return Math.min(MAX_SEA_CROSSING_TILES * MAX_SEA_RANGE_MULTIPLIER, scaled);
   }
 
   hasPlayer(id: PlayerId): boolean {
@@ -200,6 +231,16 @@ export class TerritoryGrid {
   /** Number of tiles a player currently owns. */
   tileCountOf(id: PlayerId): number {
     return this.standing(id).tiles.size;
+  }
+
+  /**
+   * A snapshot array of every tile a player currently owns. Returns a fresh copy
+   * (not the live set), so callers can safely {@link claim} tiles away while
+   * iterating — used when an eliminated player's territory is turned neutral.
+   * Ascending `TileRef` order for determinism.
+   */
+  tilesOf(id: PlayerId): TileRef[] {
+    return [...this.standing(id).tiles].sort((a, b) => a - b);
   }
 
   /**
@@ -276,7 +317,7 @@ export class TerritoryGrid {
    * shortest crossing in one pass. Deterministic: the map's fixed neighbour order
    * makes the search reproducible, ties broken by that order.
    */
-  findSeaPath(attacker: PlayerId, dest: TileRef): TileRef[] | null {
+  findSeaPath(attacker: PlayerId, dest: TileRef, maxCrossing: number = MAX_SEA_CROSSING_TILES): TileRef[] | null {
     if (!this.isCapturable(dest) || this.owner[dest] === attacker) return null;
 
     // Per-water-tile BFS scratch, generation-stamped so we never clear the whole
@@ -310,7 +351,7 @@ export class TerritoryGrid {
           path.push(dest);
           return path;
         }
-        if (this.map.isWater(n) && stamp[n] !== generation && depth[water] < MAX_SEA_CROSSING_TILES) {
+        if (this.map.isWater(n) && stamp[n] !== generation && depth[water] < maxCrossing) {
           stamp[n] = generation;
           parent[n] = water;
           depth[n] = depth[water] + 1;
@@ -334,12 +375,13 @@ export class TerritoryGrid {
    */
   frontierOf(attacker: PlayerId, target: PlayerId): TileRef[] {
     const found = new Set<TileRef>();
+    const seaRange = this.seaRangeOf(attacker);
     const consider = (ref: TileRef): void => {
       if (this.owner[ref] === target && this.isCapturable(ref)) found.add(ref);
     };
     for (const ref of this.standing(attacker).tiles) {
       for (const n of this.map.neighbors(ref)) consider(n);
-      for (const n of this.seaLinks.neighborsOf(ref)) consider(n);
+      for (const n of this.seaLinks.neighborsWithin(ref, seaRange)) consider(n);
     }
     return [...found].sort((a, b) => a - b);
   }
@@ -363,6 +405,7 @@ export class TerritoryGrid {
   frontierTargets(attacker: PlayerId): Array<{ target: PlayerId; tiles: number; sample: TileRef }> {
     const acc = new Map<PlayerId, { tiles: number; sample: TileRef }>();
     const seen = new Set<TileRef>();
+    const seaRange = this.seaRangeOf(attacker);
     const consider = (ref: TileRef): void => {
       const owner = this.owner[ref];
       if (owner === attacker || !this.isCapturable(ref) || seen.has(ref)) return;
@@ -377,7 +420,7 @@ export class TerritoryGrid {
     };
     for (const ref of this.standing(attacker).tiles) {
       for (const n of this.map.neighbors(ref)) consider(n);
-      for (const n of this.seaLinks.neighborsOf(ref)) consider(n);
+      for (const n of this.seaLinks.neighborsWithin(ref, seaRange)) consider(n);
     }
     return [...acc.entries()]
       .map(([target, value]) => ({ target, tiles: value.tiles, sample: value.sample }))
@@ -389,11 +432,12 @@ export class TerritoryGrid {
    * counting amphibious crossings as borders.
    */
   hasFrontier(attacker: PlayerId, target: PlayerId): boolean {
+    const seaRange = this.seaRangeOf(attacker);
     const reaches = (ref: TileRef): boolean =>
       this.owner[ref] === target && this.isCapturable(ref);
     for (const ref of this.standing(attacker).tiles) {
       for (const n of this.map.neighbors(ref)) if (reaches(n)) return true;
-      for (const n of this.seaLinks.neighborsOf(ref)) if (reaches(n)) return true;
+      for (const n of this.seaLinks.neighborsWithin(ref, seaRange)) if (reaches(n)) return true;
     }
     return false;
   }

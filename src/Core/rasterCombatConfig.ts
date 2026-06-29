@@ -23,6 +23,27 @@ export const INCOME_PER_TILE_PER_TICK = 0.02;
 /** Troop pool ceiling, scaled by territory size, to keep numbers bounded. */
 export const MAX_POOL_PER_TILE = 50;
 
+/**
+ * Troops generated per second by a player holding `tiles` tiles — the figure the
+ * leaderboard shows as "(+N/s)". Derived directly from the engine's real per-tick
+ * income so the displayed rate matches the pool growth a player actually sees.
+ * `incomeMultiplier` folds in perk/class bonuses (e.g. Wachstumstreiber) so the
+ * display tracks them; `ticksPerSecond` converts the per-tick income to seconds.
+ */
+export const troopsPerSecond = (
+  tiles: number,
+  ticksPerSecond: number,
+  incomeMultiplier = 1,
+): number => tiles * INCOME_PER_TILE_PER_TICK * ticksPerSecond * incomeMultiplier;
+
+/**
+ * Maximum wall-clock length of a single roguelite run, in seconds. When the
+ * clock runs out the territory leader is declared the winner. Kept in seconds
+ * (a pure gameplay rule) so it stays independent of the server tick rate, which
+ * the session multiplies in to derive a tick budget.
+ */
+export const RASTER_MATCH_DURATION_SECONDS = 600;
+
 /** Base troop cost to claim a flat (elevation 0) neutral tile. */
 export const NEUTRAL_CAPTURE_COST = 1;
 
@@ -60,6 +81,17 @@ export const MAX_SEA_CROSSING_TILES = 6;
  * Crossing water is meant to be possible but costlier than a contiguous push.
  */
 export const SEA_CROSSING_SURCHARGE = 8;
+
+/**
+ * Largest factor any perk/class can scale a player's sea-crossing range by. The
+ * crossing graph is precomputed once at `MAX_SEA_CROSSING_TILES` times this, so
+ * a Sea God player's extended reach is already in the graph and just gets
+ * un-filtered; base players are filtered back down to {@link MAX_SEA_CROSSING_TILES}.
+ */
+export const MAX_SEA_RANGE_MULTIPLIER = 2;
+
+/** Seconds between perk-offer rounds in a roguelite run. */
+export const PERK_OFFER_INTERVAL_SECONDS = 120;
 
 /**
  * How many transport ships a single player may have at sea simultaneously.

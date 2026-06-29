@@ -173,23 +173,153 @@
         margin-top: 4px;
       }
       .menu-overlay.hidden { display: none; }
+
+      .stats-card {
+        background: #161a22;
+        border: 1px solid #2a3341;
+        border-radius: 12px;
+        padding: 20px 24px;
+        width: 360px;
+        max-width: 90vw;
+      }
+      .stats-card .verdict {
+        font-size: 22px;
+        font-weight: 700;
+        margin: 0 0 4px;
+      }
+      .stats-card .verdict.win { color: #4ade80; }
+      .stats-card .verdict.loss { color: #fca5a5; }
+      .stats-card .run-label {
+        color: #9ca3af;
+        font-size: 13px;
+        margin: 0 0 16px;
+      }
+      .stats-grid {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px 12px;
+        font-size: 14px;
+      }
+      .stats-grid .k { color: #9ca3af; }
+      .stats-grid .v { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+      .stats-history {
+        margin-top: 16px;
+        border-top: 1px solid #2a3341;
+        padding-top: 12px;
+      }
+      .stats-history h3 { font-size: 13px; margin: 0 0 8px; color: #cbd5e1; }
+      .stats-history .row {
+        display: flex;
+        justify-content: space-between;
+        font-size: 12px;
+        color: #9ca3af;
+        padding: 2px 0;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .perk-cards {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        justify-content: center;
+        max-width: 720px;
+      }
+      .perk-card {
+        width: 200px;
+        background: #161a22;
+        border: 1px solid #2a3341;
+        border-radius: 12px;
+        padding: 18px;
+        cursor: pointer;
+        text-align: left;
+        color: #f3f4f6;
+        transition: border-color 0.12s, transform 0.12s;
+      }
+      .perk-card:hover,
+      .perk-card:focus-visible {
+        border-color: #2563eb;
+        transform: translateY(-2px);
+        outline: none;
+      }
+      .perk-card h3 { margin: 0 0 8px; font-size: 16px; }
+      .perk-card p { margin: 0; font-size: 13px; color: #9ca3af; }
       #events .event {
         font-size: 12px;
         padding: 4px 0;
         border-bottom: 1px solid #1f2937;
         color: #cbd5e1;
       }
+
+      #leaderboard .lb-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 4px 6px;
+        border-radius: 6px;
+        font-size: 13px;
+        line-height: 1.3;
+      }
+      #leaderboard .lb-row.me {
+        background: #1f2937;
+        font-weight: 600;
+      }
+      /* "You are winning": your row, while you hold the lead, glows green. */
+      #leaderboard .lb-row.me.leader {
+        background: rgba(34, 197, 94, 0.18);
+        box-shadow: inset 0 0 0 1px rgba(34, 197, 94, 0.55);
+        color: #bbf7d0;
+      }
+      #leaderboard .lb-dot {
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        flex: 0 0 auto;
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25);
+      }
+      #leaderboard .lb-name {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #leaderboard .lb-stats {
+        flex: 0 0 auto;
+        text-align: right;
+        color: #9ca3af;
+        font-variant-numeric: tabular-nums;
+        font-size: 12px;
+      }
+      #leaderboard .lb-row.me .lb-stats {
+        color: inherit;
+      }
+      #leaderboard .lb-empty {
+        font-size: 12px;
+        color: #6b7280;
+      }
+
+      #minimapCanvas {
+        width: 100%;
+        height: auto;
+        background: #0b1220;
+        border: 1px solid #293447;
+        border-radius: 8px;
+        display: block;
+        cursor: pointer;
+        image-rendering: pixelated;
+      }
     </style>
   </head>
   <body>
 
+    <div id="statsOverlay" class="menu-overlay hidden"></div>
+    <div id="perkOverlay" class="menu-overlay hidden">
+      <h1 id="perkHeading">Choose a Perk</h1>
+      <div id="perkCards" class="perk-cards"></div>
+    </div>
     <div id="menuOverlay" class="menu-overlay">
       <h1>Control &amp; Conquer</h1>
-      <p class="hint">OpenFront-style territorial conquest on real-world maps. Expand your borders, cross the straits, take the map.</p>
-      <button id="playButton" class="menu-button primary" type="button">
-        Play vs Bot
-        <span class="sub">Real-world terrain, organic fronts, amphibious crossings — instant start</span>
-      </button>
+      <p class="hint">OpenFront-style territorial conquest on real-world maps. Pick a starter class to begin a run.</p>
+      <div id="classCards" class="perk-cards"></div>
     </div>
     <main>
       <aside>
@@ -201,6 +331,11 @@
         <section>
           <h2>Your Team</h2>
           <div id="teamInfo">Connecting...</div>
+        </section>
+
+        <section>
+          <h2>Leaderboard</h2>
+          <div id="leaderboard"><div class="lb-empty">Waiting for the match…</div></div>
         </section>
 
         <section>
@@ -220,6 +355,11 @@
         <section>
           <h2>Recent Events</h2>
           <div id="events"></div>
+        </section>
+
+        <section>
+          <h2>Minimap</h2>
+          <canvas id="minimapCanvas" width="120" height="80" title="Click to jump the camera"></canvas>
         </section>
       </aside>
 

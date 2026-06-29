@@ -4,6 +4,7 @@ import { GameMap, type TileRef } from "../src/Core/GameMap.js";
 import { NEUTRAL_PLAYER, type PlayerId, TerritoryGrid } from "../src/Core/TerritoryGrid.js";
 import { encodeTile, IMPASSABLE_MAGNITUDE } from "../src/Core/terrainCodec.js";
 import { generateTerrain } from "../src/Core/terrainGenerator.js";
+import { MAX_SEA_CROSSING_TILES } from "../src/Core/rasterCombatConfig.js";
 
 /** Build a flat all-land map of the given size (elevation 0). */
 const flatLand = (width: number, height: number, elevation = 0): GameMap => {
@@ -177,9 +178,14 @@ test("frontierOf matches a brute-force scan over a real generated map", () => {
     const out: TileRef[] = [];
     for (let ref = 0; ref < map.size; ref += 1) {
       if (grid.ownerOf(ref) !== target || !grid.isCapturable(ref)) continue;
+      // Players here have default modifiers, so their effective sea reach is the
+      // base crossing range — mirror that with neighborsWithin (the graph itself
+      // is now built out to the wider perk-boosted maximum).
       const reaches =
         map.neighbors(ref).some((n) => grid.ownerOf(n) === attacker) ||
-        grid.seaLinks.neighborsOf(ref).some((n) => grid.ownerOf(n) === attacker);
+        grid.seaLinks
+          .neighborsWithin(ref, MAX_SEA_CROSSING_TILES)
+          .some((n) => grid.ownerOf(n) === attacker);
       if (reaches) out.push(ref);
     }
     return out;
