@@ -141,6 +141,55 @@ test("frontier priority captures easy low ground before high ground", () => {
   assert.equal(grid.ownerOf(0), 1, "the high ground is eventually captured too");
 });
 
+test("expansion spreads as an even blob, not a contour-hugging tendril", () => {
+  // A front must advance as a roughly radial bulge in every direction, not snake
+  // single-file along the lowest ground. We lay an elevation gradient across x
+  // (column 0 lowest, column W-1 highest) and let a centred player expand into
+  // open neutral land. The smoothing term must dominate elevation, so the
+  // territory grows outward on every side rather than threading toward column 0.
+  const W = 21;
+  const H = 21;
+  const cx = 10;
+  const cy = 10;
+  const terrain = new Uint8Array(W * H);
+  for (let y = 0; y < H; y += 1) {
+    for (let x = 0; x < W; x += 1) {
+      terrain[y * W + x] = encodeTile({ land: true, shoreline: false, ocean: false, magnitude: x });
+    }
+  }
+  const grid = new TerritoryGrid(new GameMap(W, H, terrain));
+  grid.addPlayer(1, 200);
+  grid.claim(cy * W + cx, 1);
+  const conflict = new RasterConflict(grid);
+
+  assert.equal(conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 200 }), null);
+  runTicks(conflict, 12);
+
+  let towardHigh = 0;
+  let towardLow = 0;
+  let up = 0;
+  let down = 0;
+  for (const ref of grid.tilesOf(1)) {
+    const x = ref % W;
+    const y = Math.floor(ref / W);
+    if (x > cx) towardHigh += 1;
+    if (x < cx) towardLow += 1;
+    if (y < cy) up += 1;
+    if (y > cy) down += 1;
+  }
+
+  // The front advances on the high-ground side too — not just down the gradient.
+  // (A pre-fix contour-hugging tendril leaves this near zero.)
+  assert.ok(towardHigh > 0, "the front advances onto higher ground, not only the lowest");
+  assert.ok(
+    towardHigh >= towardLow * 0.3,
+    `growth is blob-like, not a low-ground tendril (low=${towardLow}, high=${towardHigh})`,
+  );
+  // Elevation varies only across x, so the perpendicular (vertical) axis spreads
+  // symmetrically — a tendril would collapse one of these to ~0.
+  assert.ok(up > 0 && down > 0, "the front also spreads perpendicular to the gradient");
+});
+
 test("a front blocked against a player refunds troops minus the retreat malus", () => {
   // 2x1: player 1 (tile 0) attacks player 2 (tile 1) with too few troops to
   // afford the enemy tile (flat enemy cost = 1 + 2 surcharge = 3). The assault

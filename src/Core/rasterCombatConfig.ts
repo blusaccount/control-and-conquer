@@ -120,20 +120,29 @@ export const defenderLossPerTile = (troops: number, tiles: number): number => {
 /**
  * Frontier ordering weights. A land attack captures the tiles of its frontier
  * in *priority* order rather than raw tile order, so fronts grow organically —
- * eating the easy, enclosed ground first the way OpenFront's conquest queue
- * does. Each frontier tile gets a priority (lower = captured sooner):
+ * filling pockets and eating the easy ground first the way OpenFront's conquest
+ * queue does. Each frontier tile gets a priority (lower = captured sooner):
  *
  *   priority = max(FRONTIER_PRIORITY_FLOOR,
  *                  1 + magnitude * FRONTIER_MAGNITUDE_WEIGHT
  *                    - ownedNeighbours * FRONTIER_SURROUND_WEIGHT) * jitter
  *
- * High ground (`magnitude`) is pushed later; a tile hugged by many of the
- * attacker's own tiles (a pocket/bay) is pulled earlier so borders smooth out
- * instead of leaving ragged islands. `jitter` is a deterministic per-tile/-tick
- * wobble (no RNG, so replays stay stable) that only breaks ties between
- * otherwise-equal tiles — its span is kept small so terrain dominates order.
+ * The **surround** term must dominate so a front spreads as an even, radial ring
+ * rather than a thin tendril. A frontier tile has 1–4 owned neighbours, so the
+ * surround term spans at most ~2.4; land elevation (`magnitude`) spans 1–30, so
+ * if its weight were comparable the front would simply chase the lowest ground
+ * across the whole map — snaking single-file along a coast or valley instead of
+ * bulging outward, and extending that thread rather than back-filling the
+ * concavities behind it. `FRONTIER_MAGNITUDE_WEIGHT` is therefore kept small: a
+ * tile hugged by more of the attacker's own land (a pocket/bay) is always pulled
+ * in before the perimeter pushes further out, so borders smooth into a blob;
+ * elevation only gently biases *which* perimeter tile goes next (and high ground
+ * already costs more troops to take — see {@link ELEVATION_COST_PER_LEVEL}).
+ * `jitter` is a deterministic per-tile/-tick wobble (no RNG, so replays stay
+ * stable) that scatters captures among otherwise-equal perimeter tiles, keeping
+ * the ring from advancing lopsidedly along one edge.
  */
-export const FRONTIER_MAGNITUDE_WEIGHT = 0.5;
+export const FRONTIER_MAGNITUDE_WEIGHT = 0.02;
 export const FRONTIER_SURROUND_WEIGHT = 0.6;
 export const FRONTIER_PRIORITY_FLOOR = 0.05;
 export const FRONTIER_JITTER_SPAN = 0.15;
