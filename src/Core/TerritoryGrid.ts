@@ -170,6 +170,46 @@ export class TerritoryGrid {
   }
 
   /**
+   * Every owner whose tiles `attacker` could expand into this tick — neutral
+   * land and bordering opponents alike — with the number of distinct frontier
+   * tiles touching each and a deterministic sample tile (lowest `TileRef`) to
+   * aim an intent at.
+   *
+   * Counts both land borders and amphibious (sea-link) crossings, mirroring
+   * {@link frontierOf}, so it naturally surfaces enemies reachable only across a
+   * narrow strait. Each frontier tile is counted once even when several owned
+   * tiles touch it. Returned in ascending target-id order ({@link NEUTRAL_PLAYER}
+   * first when present).
+   *
+   * This is a single pass over the attacker's owned set, so it is far cheaper
+   * than calling {@link frontierOf} once per candidate target — the shape a bot
+   * needs to weigh "grab neutral land vs. attack which neighbour" every decision.
+   */
+  frontierTargets(attacker: PlayerId): Array<{ target: PlayerId; tiles: number; sample: TileRef }> {
+    const acc = new Map<PlayerId, { tiles: number; sample: TileRef }>();
+    const seen = new Set<TileRef>();
+    const consider = (ref: TileRef): void => {
+      const owner = this.owner[ref];
+      if (owner === attacker || !this.isCapturable(ref) || seen.has(ref)) return;
+      seen.add(ref);
+      const entry = acc.get(owner);
+      if (!entry) {
+        acc.set(owner, { tiles: 1, sample: ref });
+      } else {
+        entry.tiles += 1;
+        if (ref < entry.sample) entry.sample = ref;
+      }
+    };
+    for (const ref of this.standing(attacker).tiles) {
+      for (const n of this.map.neighbors(ref)) consider(n);
+      for (const n of this.seaLinks.neighborsOf(ref)) consider(n);
+    }
+    return [...acc.entries()]
+      .map(([target, value]) => ({ target, tiles: value.tiles, sample: value.sample }))
+      .sort((a, b) => a.target - b.target);
+  }
+
+  /**
    * True if `attacker` owns at least one tile bordering a tile of `target`,
    * counting amphibious crossings as borders.
    */

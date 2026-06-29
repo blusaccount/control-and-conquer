@@ -4,7 +4,7 @@ import { extname, join, normalize } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { MatchRegistry } from "./MatchRegistry.js";
+import { MatchRegistry, DEFAULT_RASTER_BOT_COUNT, MAX_RASTER_BOTS } from "./MatchRegistry.js";
 import { validateCommand } from "./validateCommand.js";
 import { DEFAULT_REAL_MAP_ID, getRealMap } from "../Core/realMaps.js";
 import {
@@ -27,6 +27,13 @@ const activeMapId = getRealMap(requestedMapId) ? requestedMapId : DEFAULT_REAL_M
 if (activeMapId !== requestedMapId) {
   console.warn(`Unknown map "${requestedMapId}". Falling back to "${DEFAULT_REAL_MAP_ID}".`);
 }
+
+// Number of AI opponents seated in each solo match. Defaults to a small FFA;
+// clamp to the seats a session can fill and fall back on a bad value.
+const requestedBots = Number(process.env.RASTER_BOTS ?? DEFAULT_RASTER_BOT_COUNT);
+const botCount = Number.isFinite(requestedBots)
+  ? Math.max(0, Math.min(Math.floor(requestedBots), MAX_RASTER_BOTS))
+  : DEFAULT_RASTER_BOT_COUNT;
 
 const registry = new MatchRegistry();
 let clientSequence = 0;
@@ -91,7 +98,7 @@ wss.on("connection", (socket) => {
     socket.send(JSON.stringify(message));
   };
 
-  const unsubscribe = registry.joinRasterSolo(clientId, send, { realMapId: activeMapId });
+  const unsubscribe = registry.joinRasterSolo(clientId, send, { realMapId: activeMapId }, botCount);
 
   socket.on("message", (data) => {
     let parsed: unknown;
@@ -121,6 +128,7 @@ wss.on("connection", (socket) => {
 server.listen(port, () => {
   console.log(`Control & Conquer listening on http://localhost:${port}`);
   console.log(`Active map: "${activeMapId}".`);
+  console.log(`Seating ${botCount} AI opponent(s) per solo match.`);
   console.log(`Simulation loop running at ${SIMULATION_TICK_RATE} TPS.`);
 });
 
