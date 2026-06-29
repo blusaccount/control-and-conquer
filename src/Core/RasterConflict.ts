@@ -16,6 +16,7 @@ import {
   FRONTIER_MAGNITUDE_WEIGHT,
   FRONTIER_PRIORITY_FLOOR,
   FRONTIER_SURROUND_WEIGHT,
+  FRONTIER_TOWARD_WEIGHT,
   growthFactor,
   INCOME_PER_TILE_PER_TICK,
   MAX_POOL_PER_TILE,
@@ -34,6 +35,13 @@ export interface AttackIntent {
   target: PlayerId;
   /** Troops to commit from the attacker's pool. Positive integer. */
   troops: number;
+  /**
+   * The tile the player actually clicked, used to bias which part of the front
+   * advances first so the push heads *toward* the click (see
+   * {@link FRONTIER_TOWARD_WEIGHT}). Optional: omitted (e.g. a beachhead's inland
+   * push) means undirected, radial growth.
+   */
+  toward?: TileRef;
 }
 
 /**
@@ -118,6 +126,12 @@ interface RasterAttack {
    * label. `-1` until the attack has been advanced at least once.
    */
   anchor: TileRef;
+  /**
+   * The tile the attacker pointed at, biasing the front to advance toward it
+   * (see {@link FRONTIER_TOWARD_WEIGHT}). `-1` means undirected (radial). The
+   * latest reinforcing click wins, so re-clicking elsewhere redirects the push.
+   */
+  toward: TileRef;
 }
 
 /** A transport ship en route to its landing tile. */
@@ -232,11 +246,15 @@ export class RasterConflict {
     if (!this.grid.hasLandBorderWith(attacker, target)) return "NO_FRONTIER";
 
     this.grid.addTroops(attacker, -troops);
+    const toward = intent.toward ?? -1;
     const existing = this.attacks.find((a) => a.attacker === attacker && a.target === target);
     if (existing) {
       existing.committed += troops;
+      // The freshest click redirects the combined push; an undirected reinforce
+      // (no toward) leaves the existing heading untouched.
+      if (toward >= 0) existing.toward = toward;
     } else {
-      this.attacks.push({ attacker, target, committed: troops, anchor: -1 });
+      this.attacks.push({ attacker, target, committed: troops, anchor: -1, toward });
     }
     return null;
   }
@@ -255,7 +273,7 @@ export class RasterConflict {
     if (!this.grid.isCapturable(dest) || this.grid.ownerOf(dest) === attacker) return "INVALID_TARGET";
     if (!Number.isInteger(troops) || troops <= 0) return "INVALID_TROOP_COUNT";
     if (troops > this.grid.troopsOf(attacker)) return "INSUFFICIENT_TROOPS";
-    if (this.shipCountOf(attacker) >= MAX_TRANSPORT_SHIPS_PER_PLAYER) return "TOO_MANY_SHIPS";
+    if (this.shipCountOf(attacker) >= this.grid.maxShipsOf(attacker)) return "TOO_MANY_SHIPS";
 
     const path = this.grid.findSeaPath(attacker, dest, this.grid.seaRangeOf(attacker));
     if (!path) return "NO_FRONTIER";
@@ -360,14 +378,43 @@ export class RasterConflict {
 
   /**
    * The attacker's land frontier against `target`, ordered by capture priority
-   * for this tick. A fresh array (the grid's frontier is not mutated).
+   * for this tick. When `toward >= 0` the ordering is biased so the front
+   * advances toward that tile (the click): each tile's priority gains its
+   * distance-to-`toward`, normalised across the frontier to [0,1], times
+   * {@link FRONTIER_TOWARD_WEIGHT}. A fresh array (the grid's frontier is not
+   * mutated).
    */
-  private orderedFrontier(attacker: PlayerId, target: PlayerId): TileRef[] {
+  private orderedFrontier(attacker: PlayerId, target: PlayerId, toward: TileRef): TileRef[] {
     // Score each tile once, then sort — priority is fixed for the tick, so we
     // avoid recomputing it on every comparison.
-    const scored = this.grid
-      .landFrontierOf(attacker, target)
-      .map((ref) => ({ ref, p: this.tilePriority(attacker, ref) }));
+    const frontier = this.grid.landFrontierOf(attacker, target);
+    if (toward < 0 || frontier.length === 0) {
+      const scored = frontier.map((ref) => ({ ref, p: this.tilePriority(attacker, ref) }));
+      scored.sort((a, b) => a.p - b.p || a.ref - b.ref);
+      return scored.map((s) => s.ref);
+    }
+
+    // Directed push: normalise each tile's Euclidean distance to the clicked
+    // tile across the frontier, so the side facing the click sorts first. The
+    // bias is bounded (< the per-neighbour surround step), so pocket-filling
+    // still dominates and the front bulges rather than snakes.
+    const tx = this.grid.map.x(toward);
+    const ty = this.grid.map.y(toward);
+    let minD = Infinity;
+    let maxD = -Infinity;
+    const dist = frontier.map((ref) => {
+      const dx = this.grid.map.x(ref) - tx;
+      const dy = this.grid.map.y(ref) - ty;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d < minD) minD = d;
+      if (d > maxD) maxD = d;
+      return d;
+    });
+    const span = maxD - minD || 1;
+    const scored = frontier.map((ref, i) => ({
+      ref,
+      p: this.tilePriority(attacker, ref) + ((dist[i] - minD) / span) * FRONTIER_TOWARD_WEIGHT,
+    }));
     scored.sort((a, b) => a.p - b.p || a.ref - b.ref);
     return scored.map((s) => s.ref);
   }
@@ -498,7 +545,9 @@ export class RasterConflict {
         // owner, expanding from the freshly-taken beachhead.
         const existing = this.attacks.find((a) => a.attacker === ship.attacker && a.target === owner);
         if (existing) existing.committed += remaining;
-        else this.attacks.push({ attacker: ship.attacker, target: owner, committed: remaining, anchor: dest });
+        // A beachhead's inland push has no clicked target — it radiates outward
+        // from the landing tile (undirected).
+        else this.attacks.push({ attacker: ship.attacker, target: owner, committed: remaining, anchor: dest, toward: -1 });
       } else {
         this.grid.addTroops(ship.attacker, remaining);
       }
@@ -565,7 +614,7 @@ export class RasterConflict {
     }
 
     for (const attack of this.attacks) {
-      const frontier = this.orderedFrontier(attack.attacker, attack.target);
+      const frontier = this.orderedFrontier(attack.attacker, attack.target, attack.toward);
 
       // No reachable target tiles: the front is blocked or the target is gone.
       // Pulling back from a player is taxed (retreat malus); neutral is free.

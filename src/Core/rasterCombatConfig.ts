@@ -150,6 +150,14 @@ export const terrainLossMultiplier = (elevation: number): number => {
  * poke to a halt; an overwhelming assault floors the factor at
  * {@link DEFENDER_STRENGTH_MIN}× and rolls through. This is what gives a
  * stockpiled troop pool real *defensive* value.
+ *
+ * The {@link DEFENDER_STRENGTH_MAX} cap is **deliberately** tighter than the
+ * fort/defense-post ceiling ({@link DEFENSE_POST_STRENGTH}×): this axis scales
+ * with a raw *troop advantage*, which the runaway leader has in abundance, so
+ * capping it keeps a trailing player able to dislodge a stockpiled empire (an
+ * uncapped troop-ratio defence would harden the snowball into an unbeatable
+ * turtle). Forts are the *uncapped* defensive axis on purpose — they cost gold
+ * and a tile, a deliberate investment rather than a side effect of hoarding.
  */
 export const DEFENDER_STRENGTH_MIN = 0.6;
 export const DEFENDER_STRENGTH_MAX = 2.0;
@@ -171,13 +179,22 @@ export const defenderStrengthFactor = (defenderTroops: number, attackerTroops: n
 
 /**
  * How much faster (or slower) a front advances given the garrison it faces —
- * OpenFront's "conquest speed scales with the attacker's advantage". Derived
- * from the same garrison factor: a weak defender (factor < 1) is overrun faster,
- * a strong one (factor > 1) slows the advance, clamped to a sane band. Neutral
- * land has no garrison (factor 1), so it advances at the base rate.
+ * OpenFront's "conquest speed scales with the attacker's advantage". The speed
+ * is simply the reciprocal of the garrison factor: a weak defender (factor < 1)
+ * is overrun faster, a strong one (factor > 1) slows the advance. Neutral land
+ * has no garrison (factor 1), so it advances at the base rate.
+ *
+ * The bounds are **derived from** the garrison-factor band rather than picked
+ * independently, so they stay consistent with it: the only input in play is
+ * {@link defenderStrengthFactor}'s output, itself clamped to
+ * [{@link DEFENDER_STRENGTH_MIN}, {@link DEFENDER_STRENGTH_MAX}], so the speed
+ * can only ever range over [1/MAX, 1/MIN]. Hard-coding a wider ceiling (the old
+ * `2.0`) was dead — the reciprocal of a clamped-in factor could never reach it —
+ * and misleadingly implied a speed the engine can't produce. A degenerate
+ * non-positive factor still floors to the ceiling.
  */
-export const ATTACK_SPEED_MIN = 0.5;
-export const ATTACK_SPEED_MAX = 2.0;
+export const ATTACK_SPEED_MIN = 1 / DEFENDER_STRENGTH_MAX;
+export const ATTACK_SPEED_MAX = 1 / DEFENDER_STRENGTH_MIN;
 export const attackSpeedFactor = (garrisonFactor: number): number => {
   if (garrisonFactor <= 0) return ATTACK_SPEED_MAX;
   return Math.min(ATTACK_SPEED_MAX, Math.max(ATTACK_SPEED_MIN, 1 / garrisonFactor));
@@ -246,6 +263,21 @@ export const FRONTIER_MAGNITUDE_WEIGHT = 0.02;
 export const FRONTIER_SURROUND_WEIGHT = 0.6;
 export const FRONTIER_PRIORITY_FLOOR = 0.05;
 export const FRONTIER_JITTER_SPAN = 0.15;
+
+/**
+ * Directional pull toward the tile a player actually clicked. When an attack
+ * carries a `toward` target, each frontier tile's priority is nudged up by its
+ * normalised distance (0 at the frontier tile nearest the click, 1 at the
+ * farthest) times this weight, so the limited per-tick budget is spent on the
+ * side of the front facing the click — the blob *bulges* toward where you
+ * pointed instead of advancing evenly on all sides (OpenFront's directed
+ * attack). Deliberately kept **below** {@link FRONTIER_SURROUND_WEIGHT}: one
+ * extra owned neighbour (a pocket) lowers priority by 0.6, more than this term
+ * can ever add, so back-filling concavities still dominates and the front stays
+ * a smooth bulge rather than snaking a tendril straight at the target. `0`
+ * disables the bias entirely (pure radial growth, the old behaviour).
+ */
+export const FRONTIER_TOWARD_WEIGHT = 0.5;
 
 /**
  * Fraction of an attack's remaining committed troops that may be spent in a

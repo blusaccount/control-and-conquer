@@ -21,7 +21,6 @@ import { BUILDING_DEFS, buildingCost } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import type { RasterMatchPhase } from "../Core/types.js";
 import { buildRasterSnapshot, encodeOwnerDelta, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
-import { MAX_TRANSPORT_SHIPS_PER_PLAYER } from "../Core/rasterCombatConfig.js";
 
 export type RasterMessageHandler = (message: RasterServerMessage) => void;
 
@@ -784,13 +783,29 @@ export class RasterGameSession {
       return { kind: "rejected", reason: "INVALID_PERCENT", message: "Percent must be an integer 1..100." };
     }
 
+    const rawRef = this.map.ref(intent.targetX, intent.targetY);
+    const pool = this.grid.troopsOf(attacker);
+    const troops = Math.max(1, Math.floor((pool * intent.percent) / 100));
+    if (troops > pool) {
+      return { kind: "rejected", reason: "INSUFFICIENT_TROOPS", message: "Not enough troops in your pool." };
+    }
+
     // Snap a click that fell on un-ownable terrain (open water or impassable
     // rock) to the nearest land the player plausibly meant, so targeting works
     // by territory rather than by exact pixel — a tap just off a coastline or on
-    // a mountain pixel inside enemy land resolves to the obvious land. A click
-    // far out in empty space snaps to nothing and is rejected.
-    const ref = this.grid.nearestCapturable(this.map.ref(intent.targetX, intent.targetY));
+    // a mountain pixel inside enemy land resolves to the obvious land.
+    const ref = this.grid.nearestCapturable(rawRef);
     if (ref === null) {
+      // The click landed on open water (or rock) too far from any land to snap to
+      // — but the snap radius is much shorter than how far a boat can cross, so a
+      // tap mid-channel toward a far coast would otherwise die as "no land there".
+      // Before giving up, treat it as an amphibious order: if a transport ship can
+      // reach a shore near the click, sail there. Only a click with no reachable
+      // shore at all is finally rejected.
+      const landing = this.grid.resolveSeaLanding(attacker, rawRef, this.grid.seaRangeOf(attacker));
+      if (landing !== null) {
+        return { kind: "sea", intent: { attacker, dest: landing, troops } };
+      }
       return { kind: "rejected", reason: "INVALID_TILE", message: "No land near there to target." };
     }
 
@@ -799,25 +814,28 @@ export class RasterGameSession {
       return { kind: "rejected", reason: "INVALID_TILE", message: "You already own that tile." };
     }
 
-    const pool = this.grid.troopsOf(attacker);
-    const troops = Math.max(1, Math.floor((pool * intent.percent) / 100));
-    if (troops > pool) {
-      return { kind: "rejected", reason: "INSUFFICIENT_TROOPS", message: "Not enough troops in your pool." };
-    }
-
     // Same landmass as the attacker → a contiguous land attack can march to it.
     // A different landmass (across open water) → dispatch a transport ship to the
     // exact clicked tile instead.
     if (this.grid.ownsLandComponentOf(attacker, ref)) {
+      // We already border the clicked owner (neutral or a rival): push straight
+      // into them, biased toward the exact tile clicked.
       if (this.grid.hasLandBorderWith(attacker, target)) {
-        return { kind: "land", intent: { attacker, target, troops } };
+        return { kind: "land", intent: { attacker, target, troops, toward: ref } };
+      }
+      // Same landmass but not yet bordering that rival. Rather than a dead
+      // rejection, march toward the click through whatever neutral ground we do
+      // border — the front heads that way and rolls into the rival once adjacent,
+      // instead of the player having to hand-walk their border over there first.
+      if (target !== NEUTRAL_PLAYER && this.grid.hasLandBorderWith(attacker, NEUTRAL_PLAYER)) {
+        return { kind: "land", intent: { attacker, target: NEUTRAL_PLAYER, troops, toward: ref } };
       }
       return {
         kind: "rejected",
         reason: "NO_FRONTIER",
         message: target === NEUTRAL_PLAYER
           ? "Your border doesn't touch any neutral land there yet."
-          : "Your border doesn't touch that opponent yet.",
+          : "There's no land route toward that opponent yet.",
       };
     }
     // The click is on a different landmass. Rather than demanding the player hit
@@ -910,7 +928,7 @@ export class RasterGameSession {
       case "TOO_MANY_SHIPS":
         return {
           reason: "TOO_MANY_SHIPS",
-          message: `You already have ${this.conflict.shipCountOf(attacker)} transport ships at sea (max ${MAX_TRANSPORT_SHIPS_PER_PLAYER}).`,
+          message: `You already have ${this.conflict.shipCountOf(attacker)} transport ships at sea (max ${this.grid.maxShipsOf(attacker)}).`,
         };
       case "INSUFFICIENT_TROOPS":
         return { reason: "INSUFFICIENT_TROOPS", message: "Not enough troops in your pool." };
