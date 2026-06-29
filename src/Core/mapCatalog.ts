@@ -56,19 +56,19 @@ export const MAP_CHOICES: readonly MapChoice[] = [
   {
     id: "earth-standard",
     name: "Earth — Standard",
-    description: "A lighter Earth for quicker runs. ~155k tiles.",
+    description: "A compact globe for quicker runs against a handful of rival nations.",
     options: { realMapId: "earth", mapSize: 640 },
   },
   {
     id: "earth-large",
     name: "Earth — Large",
-    description: "Real-world continents and coastlines. ~620k tiles.",
+    description: "Real-world continents and coastlines with a few dozen rivals.",
     options: { realMapId: "earth", mapSize: 1280 },
   },
   {
     id: "earth-huge",
     name: "Earth — Huge",
-    description: "The whole planet at high detail. ~2.5M tiles.",
+    description: "The whole planet in detail — a sprawling field of nations.",
     options: { realMapId: "earth", mapSize: 2560 },
   },
 ];
