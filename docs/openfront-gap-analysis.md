@@ -50,11 +50,17 @@
   Fractal-Value-Noise → Land/Wasser-Maske → Speckle-Cleanup → Finishing-Pipeline.
 - **Hand-authored Real-Maps** (`realMaps.ts`): ASCII-Landmasken (Mediterranean,
   World), gleiche Finishing-Pipeline (`terrainBuilder.ts`).
+- **Heightmap-Maps** (`heightmapMaps.ts` + `pngDecode.ts`): große, reale Karten,
+  aus einer committeten Equirectangular-Topografie-PNG (`assets/maps/earth-topo.png`)
+  zur konfigurierten Gridgröße (`RASTER_MAP_SIZE`) heruntergesampelt — bis
+  OpenFront-Maßstab (~2 Mio. Tiles). Gleiche Finishing-Pipeline; Quelle
+  regenerierbar via `scripts/buildMap.ts`.
 - **Sea-Links** (`seaLinks.ts`): vorberechnete amphibische Adjazenz für schmale
   Gewässer.
 
 ### UI / UX
-- Canvas 2D, 1 Pixel pro Tile (`rasterPaint.ts`/`rasterPalette.ts`), hochskaliert.
+- Canvas 2D, 1 Pixel pro Tile (`rasterPaint.ts`/`rasterPalette.ts`); Pan/Zoom-
+  Kamera (`rasterClient.ts`) für große Karten.
 - Boot-Animationen für amphibische Landungen (`rasterClient.ts`).
 - Slider-basierte Attack-UX (% des Pools), Event-Log, Victory-Banner.
 
@@ -74,7 +80,7 @@
 | Echtes PvP (geteilte Session, Matchmaking, Player-Identity) | offen | P1 |
 | Stärkere Bot-KI (Sea-Crossing-Nutzung, Zielpriorisierung) | **erledigt** — strategiebasierte Multi-Bot-KI mit Persönlichkeiten, amphibischer Expansion & Gegner-Priorisierung (`RasterBotController`) | — |
 | Schwierigkeits-/Persönlichkeits-Presets als wählbare Lobby-Option | offen | P2 |
-| Delta-Snapshots (Owner-Raster nur als Diff senden) | offen | P2 |
+| Delta-Snapshots (Owner-Raster nur als Diff senden) | **erledigt** — initialer Full-Snapshot + inkrementelle Owner-Deltas bei niedriger Churn (`encodeOwnerDelta`) | — |
 | Reconnect/Resync-Protokoll | offen | P2 |
 | Persistenz für Match-Resultate / Progression | offen | P2 |
 | Lobby-/Menü-UI über „Play vs Bot" hinaus | offen | P3 |
@@ -110,6 +116,5 @@
 
 ## 6) Nächste konkret kleine Schritte
 1. Fraktions-Datenmodell (Nation → Modifikatoren auf Income/Capture-Kosten).
-2. Delta-Owner-Snapshots als Bandbreiten-Optimierung ab größeren Karten.
-3. Geteilte PvP-Session als zweiter `MatchRegistry`-Modus neben Solo.
-4. Bot-Persönlichkeit/Anzahl als wählbare Lobby-Option (heute nur via `RASTER_BOTS`).
+2. Geteilte PvP-Session als zweiter `MatchRegistry`-Modus neben Solo.
+3. Bot-Persönlichkeit/Anzahl als wählbare Lobby-Option (heute nur via `RASTER_BOTS`).

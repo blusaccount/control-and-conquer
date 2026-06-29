@@ -38,11 +38,15 @@ Modul B: Server/
 - `MatchRegistry.ts`: Solo-Match-Isolation (ein Client = eine Session + Bot-Feld, FFA; Anzahl via `RASTER_BOTS`).
 - `RasterGameSession.ts`: hält den Master-State, validiert Intents, broadcastet.
 - `RasterBotController.ts`: strategiebasierte serverseitige KI (Persönlichkeits-Presets; Neutral-Expansion, Gegner-Priorisierung, amphibische Übersetzungen; spielt über denselben Intent-Kanal wie ein Mensch).
-- `validateCommand.ts` / `rasterSerialization.ts` / `simulationConfig.ts`.
+- `pngDecode.ts` / `heightmapMaps.ts`: dependency-freier PNG-Decoder + große,
+  reale Karten aus einer Heightmap-PNG (Downsampling über dieselbe Pipeline).
+- `validateCommand.ts` / `rasterSerialization.ts` (inkl. Owner-Delta-Encoding) /
+  `simulationConfig.ts`.
 
 Modul C: Client/
 - `main.ts`/`dom.ts`: Bootstrap + DOM-Handles.
-- `rasterClient.ts`: WebSocket, Render-Schleife, Klick-zu-Expand, Boot-Animation.
+- `rasterClient.ts`: WebSocket, Render-Schleife (Pan/Zoom-Kamera), Klick-zu-Expand,
+  Owner-Delta-Anwendung, Boot-Animation.
 - `rasterPaint.ts`/`rasterPalette.ts`: reines Terrain→Pixel-Mapping (testbar).
 
 Geplante Fraktions-Asymmetrie (Generals), noch nicht implementiert:

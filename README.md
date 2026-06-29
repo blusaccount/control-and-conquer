@@ -21,8 +21,28 @@ npm run dev      # tsx watch — serves http://localhost:3000
 Then open <http://localhost:3000> and click **Play vs Bot** to drop into a
 free-for-all against a field of AI opponents.
 
-Select the active real-world map with the `RASTER_MAP` env var
-(`mediterranean` (default) or `world`), e.g. `RASTER_MAP=world npm run dev`.
+Select the active map with the `RASTER_MAP` env var. Two kinds of maps exist:
+
+- **Heightmap maps** — large, real-world maps downsampled from a committed
+  equirectangular topology raster. Currently `earth`. Their size is set with
+  `RASTER_MAP_SIZE` (target width in tiles; height follows the geography), so
+  the same source scales from a quick 256-wide game up to an OpenFront-scale
+  ~2 million-tile world:
+
+  ```bash
+  RASTER_MAP=earth RASTER_MAP_SIZE=2048 npm run dev   # ~1.6M tiles
+  RASTER_MAP=earth RASTER_MAP_SIZE=1024 npm run dev   # ~400k tiles (default)
+  ```
+
+- **Hand-authored ASCII maps** — small, stylised maps in `src/Core/realMaps.ts`:
+  `mediterranean` (default) and `world`, e.g. `RASTER_MAP=world npm run dev`.
+
+On large maps, drag to pan and scroll to zoom. Regenerate or replace the
+heightmap source with the build tool:
+
+```bash
+tsx scripts/buildMap.ts --in <source-heightmap.png> --out earth-topo.png --max-width 2048
+```
 
 Set the number of AI opponents with `RASTER_BOTS` (default 4, max 5), e.g.
 `RASTER_BOTS=5 npm run dev`. Each bot is seated with a distinct personality
@@ -62,6 +82,12 @@ Browser (Canvas 2D)  ──WebSocket──►  Node + ws
   `TerritoryGrid`; the tick logic lives in `RasterConflict`.
 - **`src/Server/`** — WebSocket server, fixed-step scheduler, per-client solo
   matches against a server-side bot, command validation, snapshot serialization.
+  Large real-world maps are decoded from a heightmap PNG (`pngDecode`) and
+  downsampled to the configured grid (`heightmapMaps`) through the same
+  `buildTerrainFromMask` finishing pass as every other map. Ownership is shipped
+  as a full raster on the first snapshot and as compact per-tile **deltas**
+  thereafter, so per-tick bandwidth scales with the churn at the front rather
+  than with the (million-tile) map size.
 - **`src/Client/`** — WebSocket client, canvas raster renderer, click-to-expand,
   boat animations for amphibious crossings.
 

@@ -1,5 +1,6 @@
 import { generateTerrain } from "../Core/terrainGenerator.js";
 import { buildRealMap, getRealMap } from "../Core/realMaps.js";
+import { buildHeightmapGameMap, getHeightmapMap } from "./heightmapMaps.js";
 import { NEUTRAL_PLAYER, TerritoryGrid, type PlayerId } from "../Core/TerritoryGrid.js";
 import type { GameMap, TileRef } from "../Core/GameMap.js";
 import { RasterConflict, type AttackIntent } from "../Core/RasterConflict.js";
@@ -10,7 +11,7 @@ import type {
   RasterRejectReason,
   RasterServerMessage,
 } from "../Core/types.js";
-import { buildRasterSnapshot, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
+import { buildRasterSnapshot, encodeOwnerDelta, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
 
 export type RasterMessageHandler = (message: RasterServerMessage) => void;
 
@@ -21,6 +22,13 @@ interface RasterSubscriber {
   send: RasterMessageHandler;
   /** False until the client has received a snapshot containing terrain bytes. */
   hasTerrain: boolean;
+  /**
+   * Per-subscriber owner baseline: the ownership raster this client last
+   * received. Owner snapshots after the first are encoded as a delta against
+   * this array, which is then advanced to match. `null` until the first
+   * (full-owner) snapshot is sent.
+   */
+  lastOwner: Uint16Array | null;
 }
 
 interface PendingExpand {
@@ -52,11 +60,18 @@ export interface RasterGameSessionOptions {
   /** Starting troop pool every player begins with. Default 50. */
   startingTroops?: number;
   /**
-   * When set to a known real-world map id (see `realMaps`), the match runs on
-   * that hand-authored map instead of procedural terrain. Unknown ids fall back
-   * to procedural generation.
+   * When set to a known map id, the match runs on that map instead of
+   * procedural terrain. Resolved in order: heightmap maps (`heightmapMaps`,
+   * e.g. `earth`), then hand-authored ASCII maps (`realMaps`, e.g.
+   * `mediterranean`). Unknown ids fall back to procedural generation.
    */
   realMapId?: string;
+  /**
+   * Target width in tiles for heightmap maps (height is derived to keep a
+   * geographic aspect ratio). Ignored for ASCII and procedural maps. `0` uses
+   * the map's default size.
+   */
+  mapSize?: number;
 }
 
 const DEFAULT_OPTIONS: Required<RasterGameSessionOptions> = {
@@ -66,6 +81,7 @@ const DEFAULT_OPTIONS: Required<RasterGameSessionOptions> = {
   mapName: "Procedural Continent",
   startingTroops: 50,
   realMapId: "",
+  mapSize: 0,
 };
 
 /**
@@ -101,13 +117,19 @@ export class RasterGameSession {
 
   public constructor(options: RasterGameSessionOptions = {}) {
     const opts = { ...DEFAULT_OPTIONS, ...options };
-    const realMap = opts.realMapId ? getRealMap(opts.realMapId) : undefined;
-    // Prefer the real map's own name unless the caller explicitly set one.
-    this.mapName = options.mapName ?? (realMap ? realMap.name : opts.mapName);
+    const heightmapDef = opts.realMapId ? getHeightmapMap(opts.realMapId) : undefined;
+    const realMap = !heightmapDef && opts.realMapId ? getRealMap(opts.realMapId) : undefined;
+    // Prefer the map's own name unless the caller explicitly set one.
+    this.mapName =
+      options.mapName ?? (heightmapDef ? heightmapDef.name : realMap ? realMap.name : opts.mapName);
     this.startingTroops = opts.startingTroops;
 
     let map;
-    if (realMap) {
+    if (heightmapDef) {
+      // Heightmap maps are downsampled from a real-world topology raster to the
+      // requested size; they always contain ample playable land.
+      map = buildHeightmapGameMap(heightmapDef, opts.mapSize || undefined);
+    } else if (realMap) {
       // Real-world maps already guarantee playable land, so use them verbatim.
       map = buildRealMap(realMap);
     } else {
@@ -152,24 +174,32 @@ export class RasterGameSession {
       throw new Error("Generated terrain has no land tiles — cannot start raster match.");
     }
 
+    // Farthest-point sampling over a strided subset of the land tiles. On big
+    // maps the land array holds hundreds of thousands of tiles; scanning all of
+    // them per spawn would be wasteful, so we cap the candidate pool with a
+    // deterministic stride. The sampling still spreads spawns well because the
+    // pool stays evenly distributed across the whole land mass. Distances use
+    // squared magnitude (monotonic, so the argmax is identical to Euclidean).
+    const MAX_CANDIDATES = 3000;
+    const stride = Math.max(1, Math.floor(landTiles.length / MAX_CANDIDATES));
+    const candidates: TileRef[] = [];
+    for (let k = 0; k < landTiles.length; k += stride) candidates.push(landTiles[k]);
+
     const chosen: TileRef[] = [];
     // First spawn: the corner-most land tile (low x, low y).
     chosen.push(landTiles[0]);
-    // Subsequent spawns: pick the candidate that maximises min-distance to any
-    // already-chosen spawn. This produces well-separated start positions even
-    // when the land mass is irregular.
     while (chosen.length < PLAYER_PALETTE.length) {
       let bestRef = landTiles[0];
       let bestScore = -1;
-      for (const candidate of landTiles) {
+      for (const candidate of candidates) {
         if (chosen.includes(candidate)) continue;
         const cx = this.map.x(candidate);
         const cy = this.map.y(candidate);
         let minDist = Infinity;
         for (const seat of chosen) {
-          const sx = this.map.x(seat);
-          const sy = this.map.y(seat);
-          const dist = Math.hypot(cx - sx, cy - sy);
+          const dx = cx - this.map.x(seat);
+          const dy = cy - this.map.y(seat);
+          const dist = dx * dx + dy * dy;
           if (dist < minDist) minDist = dist;
         }
         if (minDist > bestScore) {
@@ -201,6 +231,7 @@ export class RasterGameSession {
       playerId,
       send,
       hasTerrain: false,
+      lastOwner: null,
     };
     this.subscribers.set(clientId, subscriber);
 
@@ -357,6 +388,21 @@ export class RasterGameSession {
 
   private sendSnapshotTo(subscriber: RasterSubscriber): void {
     const includeTerrain = !subscriber.hasTerrain;
+    const owner = this.grid.owner;
+
+    // Owner encoding: the first snapshot (and any with no baseline yet) carries
+    // the full raster and seeds the baseline. Later snapshots send only the
+    // tiles that changed — unless the churn is so high that a full resend would
+    // be smaller, in which case we resend in full.
+    let ownerDeltaBase64: string | undefined;
+    if (subscriber.lastOwner === null) {
+      subscriber.lastOwner = Uint16Array.from(owner);
+    } else {
+      const { deltaBase64, changed } = encodeOwnerDelta(subscriber.lastOwner, owner);
+      // 6 bytes/change vs 2 bytes/tile full: a delta only wins below ~1/3 churn.
+      if (changed * 3 <= owner.length) ownerDeltaBase64 = deltaBase64;
+    }
+
     const snapshot = buildRasterSnapshot({
       tick: this.conflict.tick,
       mapName: this.mapName,
@@ -369,6 +415,7 @@ export class RasterGameSession {
       winnerPlayerId: this.conflict.winner,
       recentEvents: this.recentEvents,
       crossings: this.lastCrossings,
+      ownerDeltaBase64,
     });
     subscriber.send({ type: "SERVER_RASTER_SNAPSHOT", payload: snapshot });
     if (includeTerrain) {
