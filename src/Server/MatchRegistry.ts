@@ -6,6 +6,7 @@ import {
 import { RasterGameSession, type RasterMessageHandler, type RasterGameSessionOptions } from "./RasterGameSession.js";
 import { RasterBuildIntent, RasterExpandIntent } from "../Core/types.js";
 import type { RasterDifficulty } from "../Core/messages.js";
+import { SIMULATION_TICK_RATE, SPAWN_PHASE_SECONDS } from "./simulationConfig.js";
 
 /**
  * Most opponents a solo match can seat (the session caps total nations at 32, so
@@ -71,7 +72,13 @@ export class MatchRegistry {
   ): () => void {
     this.matchSequence += 1;
     const matchId = `match-${this.matchSequence}-raster-solo`;
-    const session = new RasterGameSession(options);
+    // Open every solo match with a start phase: the human gets time to choose a
+    // spawn before the game (and the bots) begin taking territory. A caller may
+    // still override the length via `options.spawnPhaseTicks`.
+    const session = new RasterGameSession({
+      spawnPhaseTicks: SPAWN_PHASE_SECONDS * SIMULATION_TICK_RATE,
+      ...options,
+    });
     this.activeMatches.set(matchId, session);
 
     // The human is seated only once they pick a start position (autoSpawn=false).

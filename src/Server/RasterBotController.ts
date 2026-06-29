@@ -157,6 +157,9 @@ export class RasterBotController {
   private handleSnapshot(snapshot: RasterSnapshot): void {
     if (this.myPlayerId === null || !this.session) return;
     if (snapshot.winnerPlayerId !== null) return;
+    // During the opening start phase nobody may take territory yet — the bot
+    // simply holds its seat and waits for the game phase to begin.
+    if (snapshot.phase !== "playing") return;
 
     // Throttle decisions (and the work behind them) to the personality cadence.
     if (snapshot.tick - this.lastDecisionTick < this.config.personality.decisionCooldownTicks) return;

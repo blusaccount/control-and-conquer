@@ -102,10 +102,29 @@ export interface RasterBuilding {
   type: BuildingType;
 }
 
+/**
+ * The phase a raster match is in.
+ *  - `spawn`: the opening start phase — every player picks where their nation is
+ *    founded and nobody can take territory yet. A countdown runs.
+ *  - `playing`: the live game — territory can be captured and combat resolves.
+ */
+export type RasterMatchPhase = "spawn" | "playing";
+
 /** Snapshot of a raster-mode match. */
 export interface RasterSnapshot {
   tick: number;
   mapName: string;
+  /**
+   * Current match phase. During `spawn` the client shows the start-phase
+   * countdown and only allows picking a start position; expansion/build clicks
+   * are gated until `playing`.
+   */
+  phase: RasterMatchPhase;
+  /**
+   * Whole seconds left in the spawn (start) phase, for the client countdown.
+   * Always 0 once {@link phase} is `playing`.
+   */
+  spawnRemainingSeconds: number;
   /** Grid width in tiles. */
   width: number;
   /** Grid height in tiles. */
