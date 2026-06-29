@@ -1,6 +1,7 @@
 import { GameMap } from "../Core/GameMap.js";
 import type { PlayerId } from "../Core/TerritoryGrid.js";
 import type {
+  RasterBuilding,
   RasterClientMessage,
   RasterCrossing,
   RasterMatchEndedPayload,
@@ -16,6 +17,12 @@ import { playerColor, playerEmoji } from "./rasterPalette.js";
 import { loadRunHistory, recordRun, type RunRecord, type StorageLike } from "./runHistory.js";
 import { computeNameAnchors, type NameAnchor } from "./nameLayout.js";
 import { MAX_POOL_PER_TILE } from "../Core/rasterCombatConfig.js";
+import {
+  BUILDING_DEFS,
+  BUILDING_TYPES,
+  buildingCost,
+  type BuildingType,
+} from "../Core/buildings.js";
 import type { RasterDifficulty } from "../Core/messages.js";
 
 /** Options for starting a raster match: the chosen map and difficulty. */
@@ -83,6 +90,17 @@ interface RasterRuntime {
   pool: number;
   myTiles: number;
   myShips: number;
+  /** Our current gold pool and its per-second growth. */
+  gold: number;
+  goldPerSecond: number;
+  /** Our current building tallies, for the build-menu cost ramp. */
+  myCities: number;
+  myPorts: number;
+  myForts: number;
+  /** The structure type the player is placing, or null when not in build mode. */
+  buildMode: BuildingType | null;
+  /** Structures on the map this snapshot, drawn as icon markers. */
+  buildings: RasterBuilding[];
   capturableTotal: number;
   /** Full player standings from the latest snapshot, for the leaderboard. */
   players: RasterPlayerInfo[];
@@ -196,6 +214,13 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     pool: 0,
     myTiles: 0,
     myShips: 0,
+    gold: 0,
+    goldPerSecond: 0,
+    myCities: 0,
+    myPorts: 0,
+    myForts: 0,
+    buildMode: null,
+    buildings: [],
     capturableTotal: 0,
     players: [],
     recentEvents: [],
@@ -227,6 +252,67 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   const sendSelectSpawn = (x: number, y: number): void => {
     const message: RasterClientMessage = { type: "CLIENT_RASTER_SELECT_SPAWN", payload: { x, y } };
     socket.send(JSON.stringify(message));
+  };
+
+  const sendBuild = (targetX: number, targetY: number, building: BuildingType): void => {
+    const message: RasterClientMessage = {
+      type: "CLIENT_RASTER_BUILD",
+      payload: { targetX, targetY, building },
+    };
+    socket.send(JSON.stringify(message));
+  };
+
+  /** How many of `type` we currently own — feeds the geometric cost ramp. */
+  const myBuildingCount = (type: BuildingType): number =>
+    type === "city" ? runtime.myCities : type === "port" ? runtime.myPorts : runtime.myForts;
+
+  /**
+   * Build the (static) build-menu buttons once and wire each to toggle build
+   * mode for its type. Costs/affordability are refreshed per snapshot by
+   * {@link refreshBuildMenu}; this only lays out the buttons + handlers.
+   */
+  const renderBuildMenuOnce = (): void => {
+    if (ui.buildMenu.children.length > 0) return;
+    ui.buildMenu.innerHTML = BUILDING_TYPES.map((type) => {
+      const def = BUILDING_DEFS[type];
+      return (
+        `<button class="build-btn" type="button" data-building="${type}">` +
+        `<span class="icon">${def.icon}</span>` +
+        `<span class="label">${escapeHtml(def.name)}<span class="sub">${escapeHtml(def.description)}</span></span>` +
+        `<span class="cost" data-cost></span>` +
+        `</button>`
+      );
+    }).join("");
+    for (const btn of ui.buildMenu.querySelectorAll<HTMLButtonElement>("[data-building]")) {
+      btn.addEventListener("click", () => {
+        const type = btn.getAttribute("data-building") as BuildingType;
+        runtime.buildMode = runtime.buildMode === type ? null : type;
+        refreshBuildMenu();
+        renderSidebar();
+        if (runtime.buildMode) {
+          setStatus(ui, `Build mode: click a tile you own to place a ${BUILDING_DEFS[type].name}.`);
+        } else {
+          setStatus(ui, "Build cancelled.");
+        }
+      });
+    }
+  };
+
+  /** Refresh each build button's cost, affordability and selected state. */
+  const refreshBuildMenu = (): void => {
+    const canBuild = runtime.spawned && !runtime.matchEnded;
+    for (const btn of ui.buildMenu.querySelectorAll<HTMLButtonElement>("[data-building]")) {
+      const type = btn.getAttribute("data-building") as BuildingType;
+      const cost = buildingCost(type, myBuildingCount(type));
+      const affordable = runtime.gold >= cost;
+      btn.classList.toggle("selected", runtime.buildMode === type);
+      btn.disabled = !canBuild;
+      const costEl = btn.querySelector<HTMLSpanElement>("[data-cost]");
+      if (costEl) {
+        costEl.textContent = `${formatCount(cost)}g`;
+        costEl.classList.toggle("unaffordable", !affordable);
+      }
+    }
   };
 
   // Seat ourselves on the chosen map as soon as the socket is open.
@@ -393,6 +479,12 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const me = snapshot.players.find((p) => p.playerId === runtime.myPlayerId);
     runtime.pool = me?.troops ?? 0;
     runtime.myTiles = me?.tiles ?? 0;
+    runtime.gold = me?.gold ?? 0;
+    runtime.goldPerSecond = me?.goldPerSecond ?? 0;
+    runtime.myCities = me?.cities ?? 0;
+    runtime.myPorts = me?.ports ?? 0;
+    runtime.myForts = me?.forts ?? 0;
+    runtime.buildings = snapshot.buildings ?? [];
 
     // The first snapshot in which we hold land marks the end of the spawn phase:
     // zoom the camera in on our new capital so the run starts focused on home.
@@ -568,6 +660,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       recomputeNames(now);
       drawNames(ctx, scale);
+      drawBuildings(ctx, scale);
       drawCapitals(ctx, scale);
       drawShips(ctx, scale);
       drawLandings(now, ctx, scale);
@@ -709,6 +802,32 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   /**
+   * Draw each structure as its building icon (emoji) over the tile it stands on,
+   * in screen space so it stays a constant size. The icon only appears once a
+   * tile is large enough on screen to read; below that the map stays clean.
+   */
+  const drawBuildings = (ctx: CanvasRenderingContext2D, scale: number): void => {
+    if (runtime.buildings.length === 0) return;
+    const px = scale * 0.95;
+    if (px < 7) return; // Too small to read — skip to keep zoomed-out maps tidy.
+    const cw = ui.mapCanvas.width;
+    const ch = ui.mapCanvas.height;
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = `${px}px serif`;
+    for (const b of runtime.buildings) {
+      const { x: sx, y: sy } = worldToScreen(b.x + 0.5, b.y + 0.5);
+      if (sx < -px || sy < -px || sx > cw + px || sy > ch + px) continue;
+      ctx.lineWidth = Math.max(2, px * 0.16);
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.7)";
+      ctx.strokeText(BUILDING_DEFS[b.type].icon, sx, sy);
+      ctx.fillText(BUILDING_DEFS[b.type].icon, sx, sy);
+    }
+    ctx.restore();
+  };
+
+  /**
    * Draw each living player's capital as a cross in their colour with a white
    * outline, in screen space so the marker stays legible at any zoom. The cross
    * scales gently with zoom but is clamped so it never vanishes when zoomed out
@@ -793,7 +912,27 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.landings = survivors;
   };
 
+  /** Update the gold readout, build menu and contextual build hint. */
+  const renderEconomy = (): void => {
+    ui.goldInfo.innerHTML = runtime.spawned
+      ? `<strong>Gold:</strong> ${formatCount(runtime.gold)} (+${formatRate(runtime.goldPerSecond)}/s) · ` +
+        `🏛️ ${runtime.myCities} ⚓ ${runtime.myPorts} 🛡️ ${runtime.myForts}`
+      : `Gold: —`;
+    refreshBuildMenu();
+    if (!runtime.spawned) {
+      ui.buildHint.textContent = "";
+    } else if (runtime.buildMode) {
+      const def = BUILDING_DEFS[runtime.buildMode];
+      ui.buildHint.innerHTML =
+        `<strong>Placing ${escapeHtml(def.name)}.</strong> Click a tile you own. ` +
+        `<em>Click the button again to cancel.</em>`;
+    } else {
+      ui.buildHint.textContent = "Select a structure above, then click your land to build it.";
+    }
+  };
+
   const renderSidebar = (): void => {
+    renderEconomy();
     if (!runtime.spawned) {
       ui.selectionInfo.innerHTML =
         `<strong>Choose your start position.</strong><br/>` +
@@ -852,7 +991,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         const own = runtime.capturableTotal > 0 ? (p.tiles / runtime.capturableTotal) * 100 : 0;
         const ownStr = own >= 10 ? String(Math.round(own)) : own.toFixed(1);
         const stats =
-          `${ownStr}% · ${formatCount(p.troops)}/${formatCount(maxPool)} (+${formatRate(p.troopsPerSecond)}/s)`;
+          `${ownStr}% · ${formatCount(p.troops)}/${formatCount(maxPool)} (+${formatRate(p.troopsPerSecond)}/s)` +
+          ` · ${formatCount(p.gold)}g`;
         return (
           `<div class="${rowClass}">` +
           `<span class="lb-dot" style="background:${escapeHtml(p.color)}"></span>` +
@@ -923,6 +1063,14 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       return;
     }
 
+    // In build mode a click places the selected structure instead of expanding.
+    if (runtime.buildMode) {
+      const def = BUILDING_DEFS[runtime.buildMode];
+      sendBuild(tileX, tileY, runtime.buildMode);
+      setStatus(ui, `Building ${def.name} at (${tileX}, ${tileY})…`);
+      return;
+    }
+
     const percent = Number(ui.attackPercentInput.value);
     sendExpand(tileX, tileY, percent);
     setStatus(ui, `Expanding toward (${tileX}, ${tileY}) with ${percent}% of pool.`);
@@ -987,6 +1135,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   ui.attackPercentInput.addEventListener("input", () => {
     ui.attackPercentOutput.textContent = `${ui.attackPercentInput.value}%`;
   });
+
+  // Lay out the build menu once and seed its initial (disabled, pre-spawn) state.
+  renderBuildMenuOnce();
+  refreshBuildMenu();
 
   // Match the canvas backing store to its rendered size now and whenever the
   // window changes, so the map fills the available play area at all times.

@@ -87,8 +87,10 @@
   %-Commit-Slider, Leaderboard, Defeat-Screen, logistischer Truppen-Soft-Cap.
 
 **Spürbare Lücken (Kandidaten für die Roadmap):**
-- **Gold als zweite Ressource** + **Bau-/Einheitenschicht** (Städte/Häfen/…) —
-  der größte inhaltliche Unterschied.
+- ~~**Gold als zweite Ressource** + **Bau-/Einheitenschicht** (Städte/Häfen/…) —
+  der größte inhaltliche Unterschied.~~ **Erledigt:** Gold akkumuliert pro Tile/Tick
+  und wird im Build-Menü in **Städte 🏛️ / Häfen ⚓ / Forts 🛡️** investiert (Marker
+  auf der Karte, Gold + Bauzähler im HUD/Leaderboard). Siehe Gap-Analyse §2.
 - **Truppen „aktuell / max" im HUD** sichtbar machen (wir haben den Soft-Cap, aber
   zeigen das Maximum nicht an).
 - **Truppenzahl unter dem Nationsnamen** auf der Karte (nicht nur im Leaderboard).

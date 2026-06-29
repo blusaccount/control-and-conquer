@@ -2,6 +2,7 @@ import type { RasterGameSession } from "./RasterGameSession.js";
 import type { GameMap, TileRef } from "../Core/GameMap.js";
 import { NEUTRAL_PLAYER, type PlayerId, type TerritoryGrid } from "../Core/TerritoryGrid.js";
 import { MAX_POOL_PER_TILE } from "../Core/rasterCombatConfig.js";
+import { buildingCost } from "../Core/buildings.js";
 import type { RasterServerMessage, RasterSnapshot } from "../Core/types.js";
 
 /**
@@ -103,6 +104,15 @@ export class RasterBotController {
   private myPlayerId: PlayerId | null = null;
   private lastDecisionTick = Number.NEGATIVE_INFINITY;
   private session: RasterGameSession | null = null;
+  /** This bot's capital tile (read off snapshots), kept off the build list. */
+  private myCapital: TileRef | null = null;
+
+  /**
+   * The bot reinvests in a city once it holds at least this much land — early
+   * game it pours everything into expansion; a maturing empire banks gold into
+   * structures that compound its economy.
+   */
+  private static readonly MIN_TILES_TO_BUILD = 8;
 
   public constructor(private readonly config: RasterBotConfig = DEFAULT_RASTER_BOT_CONFIG) {}
 
@@ -112,6 +122,7 @@ export class RasterBotController {
     return () => {
       this.session = null;
       this.myPlayerId = null;
+      this.myCapital = null;
       this.lastDecisionTick = Number.NEGATIVE_INFINITY;
       unsubscribe();
     };
@@ -152,9 +163,49 @@ export class RasterBotController {
     this.lastDecisionTick = snapshot.tick;
 
     const grid = this.session.peekGrid();
+    const map = this.session.peekMap();
+
+    // Track our capital so we never try to build over it (the server would
+    // reject it, and the seat is reserved as a fortified centre).
+    const me = snapshot.players.find((p) => p.playerId === this.myPlayerId);
+    this.myCapital = me && me.capitalX >= 0 ? map.ref(me.capitalX, me.capitalY) : null;
+
+    // Reinvest banked gold into a city independent of the troop decision below,
+    // so a maturing bot economy keeps compounding without stalling expansion.
+    this.maybeBuildCity(grid, map);
+
     if (grid.troopsOf(this.myPlayerId) < this.config.personality.minPool) return;
 
-    this.decide(grid, this.session.peekMap());
+    this.decide(grid, map);
+  }
+
+  /**
+   * Queue a city build when the bot can afford its next one and has interior
+   * land to place it on. Picks the lowest-`TileRef` owned tile that is neither
+   * the capital nor already built on — deterministic, so replays stay identical.
+   */
+  private maybeBuildCity(grid: TerritoryGrid, map: GameMap): void {
+    const me = this.myPlayerId;
+    const session = this.session;
+    if (me === null || !session) return;
+    if (grid.tileCountOf(me) < RasterBotController.MIN_TILES_TO_BUILD) return;
+    const cost = buildingCost("city", grid.buildingCountOf(me, "city"));
+    if (grid.goldOf(me) < cost) return;
+
+    let target: TileRef | null = null;
+    for (const ref of grid.tilesOf(me)) {
+      if (ref !== this.myCapital && !grid.hasBuilding(ref)) {
+        target = ref;
+        break;
+      }
+    }
+    if (target === null) return;
+
+    session.queueBuild(this.config.botId, {
+      targetX: map.x(target),
+      targetY: map.y(target),
+      building: "city",
+    });
   }
 
   /** Pick and queue one expand intent for this decision tick (or bank troops). */

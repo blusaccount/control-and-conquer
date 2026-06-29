@@ -82,8 +82,11 @@ Browser (Canvas 2D)  ──WebSocket──►  Node + ws
 - **`src/Core/`** — deterministic simulation engine. No `Server`/`Client`
   imports, no `Math.random`/`Date.now` in the sim path. Terrain is a 1-byte-per-
   tile raster (`terrainCodec`), generated from a seed (`terrainGenerator`) or a
-  hand-authored ASCII map (`realMaps`). Ownership and troop pools live in
-  `TerritoryGrid`; the tick logic lives in `RasterConflict`.
+  hand-authored ASCII map (`realMaps`). Ownership, troop **and gold** pools live
+  in `TerritoryGrid`; the tick logic lives in `RasterConflict`. A second economy
+  axis layers on top: gold accrues from territory and is spent on **buildings**
+  (cities, ports, forts — see `buildings.ts`) that boost income, sea reach or
+  defence.
 - **`src/Server/`** — WebSocket server, fixed-step scheduler, per-client solo
   matches against a server-side bot, command validation, snapshot serialization.
   Large real-world maps are decoded from a heightmap PNG (`pngDecode`) and

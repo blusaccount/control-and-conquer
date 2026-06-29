@@ -13,6 +13,8 @@
  *     claiming flat neutral land.
  */
 
+import { CITY_TROOP_INCOME_PER_TICK } from "./buildings.js";
+
 /**
  * Fractional troops generated per owned tile per tick. Accumulated per player
  * and flushed into the integer pool once it reaches >= 1, mirroring the
@@ -45,7 +47,8 @@ export const growthFactor = (troops: number, tiles: number): number => {
  * "(+N/s)". Derived directly from the engine's real per-tick income (including
  * the logistic {@link growthFactor} soft cap) so the displayed rate matches the
  * pool growth a player actually sees: it tapers toward 0 as the empire fills up.
- * `incomeMultiplier` folds in any income modifiers; `ticksPerSecond` converts
+ * `incomeMultiplier` folds in any income modifiers; `cities` adds each city's
+ * flat troop dividend (gated by the same soft cap); `ticksPerSecond` converts
  * the per-tick income to seconds.
  */
 export const troopsPerSecond = (
@@ -53,8 +56,13 @@ export const troopsPerSecond = (
   troops: number,
   ticksPerSecond: number,
   incomeMultiplier = 1,
-): number =>
-  tiles * INCOME_PER_TILE_PER_TICK * ticksPerSecond * incomeMultiplier * growthFactor(troops, tiles);
+  cities = 0,
+): number => {
+  const perTick =
+    (tiles * INCOME_PER_TILE_PER_TICK * incomeMultiplier + cities * CITY_TROOP_INCOME_PER_TICK) *
+    growthFactor(troops, tiles);
+  return perTick * ticksPerSecond;
+};
 
 /**
  * Maximum wall-clock length of a single roguelite run, in seconds. When the

@@ -13,6 +13,9 @@ export interface UiElements {
   attackPercentOutput: HTMLOutputElement;
   selectionInfo: HTMLDivElement;
   statusMessage: HTMLDivElement;
+  goldInfo: HTMLDivElement;
+  buildMenu: HTMLDivElement;
+  buildHint: HTMLDivElement;
   eventsPanel: HTMLDivElement;
   leaderboard: HTMLDivElement;
   menuOverlay: HTMLDivElement;
@@ -29,6 +32,9 @@ export const getUiElements = (): UiElements => {
   const attackPercentOutput = document.querySelector<HTMLOutputElement>("#attackPercentOutput");
   const selectionInfo = document.querySelector<HTMLDivElement>("#selectionInfo");
   const statusMessage = document.querySelector<HTMLDivElement>("#statusMessage");
+  const goldInfo = document.querySelector<HTMLDivElement>("#goldInfo");
+  const buildMenu = document.querySelector<HTMLDivElement>("#buildMenu");
+  const buildHint = document.querySelector<HTMLDivElement>("#buildHint");
   const eventsPanel = document.querySelector<HTMLDivElement>("#events");
   const leaderboard = document.querySelector<HTMLDivElement>("#leaderboard");
   const menuOverlay = document.querySelector<HTMLDivElement>("#menuOverlay");
@@ -42,6 +48,9 @@ export const getUiElements = (): UiElements => {
     !attackPercentOutput ||
     !selectionInfo ||
     !statusMessage ||
+    !goldInfo ||
+    !buildMenu ||
+    !buildHint ||
     !eventsPanel ||
     !leaderboard ||
     !menuOverlay ||
@@ -66,6 +75,9 @@ export const getUiElements = (): UiElements => {
     attackPercentOutput,
     selectionInfo,
     statusMessage,
+    goldInfo,
+    buildMenu,
+    buildHint,
     eventsPanel,
     leaderboard,
     menuOverlay,

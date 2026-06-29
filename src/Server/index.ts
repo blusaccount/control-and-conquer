@@ -151,6 +151,8 @@ wss.on("connection", (socket) => {
         registry.selectRasterSpawn(clientId, message.payload.x, message.payload.y);
       } else if (message.type === "CLIENT_RASTER_EXPAND") {
         registry.queueRasterExpand(clientId, message.payload);
+      } else if (message.type === "CLIENT_RASTER_BUILD") {
+        registry.queueRasterBuild(clientId, message.payload);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown command error.";

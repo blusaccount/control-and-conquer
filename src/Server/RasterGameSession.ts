@@ -6,6 +6,7 @@ import type { GameMap, TileRef } from "../Core/GameMap.js";
 import { RasterConflict, type AttackIntent, type AttackRejectReason, type SeaAttackIntent } from "../Core/RasterConflict.js";
 import type {
   RasterActionRejectedEvent,
+  RasterBuildIntent,
   RasterCrossing,
   RasterExpandIntent,
   RasterMatchEndReason,
@@ -15,6 +16,7 @@ import type {
   RasterShip,
 } from "../Core/types.js";
 import { RASTER_MATCH_DURATION_SECONDS } from "../Core/rasterCombatConfig.js";
+import { BUILDING_DEFS, buildingCost } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import { buildRasterSnapshot, encodeOwnerDelta, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
 import { MAX_TRANSPORT_SHIPS_PER_PLAYER } from "../Core/rasterCombatConfig.js";
@@ -40,6 +42,11 @@ interface RasterSubscriber {
 interface PendingExpand {
   clientId: string;
   intent: RasterExpandIntent;
+}
+
+interface PendingBuild {
+  clientId: string;
+  intent: RasterBuildIntent;
 }
 
 const MAX_EVENTS = 10;
@@ -139,6 +146,7 @@ export class RasterGameSession {
   private readonly playerMeta = new Map<PlayerId, PlayerMeta>();
   private readonly subscribers = new Map<string, RasterSubscriber>();
   private readonly pendingExpands: PendingExpand[] = [];
+  private readonly pendingBuilds: PendingBuild[] = [];
   private recentEvents: string[] = ["Match started."];
   /** Transport-ship landings from the most recent tick, broadcast for animation. */
   private lastCrossings: RasterCrossing[] = [];
@@ -382,6 +390,11 @@ export class RasterGameSession {
     this.pendingExpands.push({ clientId, intent });
   }
 
+  public queueBuild(clientId: string, intent: RasterBuildIntent): void {
+    if (!this.subscribers.has(clientId)) return;
+    this.pendingBuilds.push({ clientId, intent });
+  }
+
   /**
    * Drive one simulation step: validate queued expands, convert valid ones into
    * `AttackIntent`s, advance the conflict engine, then broadcast snapshots.
@@ -422,6 +435,24 @@ export class RasterGameSession {
       }
     }
     this.pendingExpands.length = 0;
+
+    // Resolve queued build orders before combat advances, so a fort raised this
+    // tick already fortifies the ground it stands on. Each spends gold and places
+    // a structure, or is rejected (unaffordable, occupied, not your land).
+    for (const pending of this.pendingBuilds) {
+      const subscriber = this.subscribers.get(pending.clientId);
+      if (!subscriber) continue;
+      const result = this.processBuild(subscriber.playerId, pending.intent);
+      if (result.kind === "rejected") {
+        rejections.push({
+          clientId: pending.clientId,
+          rejection: { reason: result.reason, message: result.message, intent: pending.intent },
+        });
+      } else {
+        eventLines.push(result.line);
+      }
+    }
+    this.pendingBuilds.length = 0;
 
     const tickResult = this.conflict.processTick(intents);
 
@@ -696,6 +727,61 @@ export class RasterGameSession {
       kind: "rejected",
       reason: "NO_FRONTIER",
       message: "No water route reaches that area (it may be too far across open water).",
+    };
+  }
+
+  /**
+   * Validate and apply one build order: the clicked tile must be open, owned
+   * land the player holds (not their capital seat), carry no existing structure,
+   * and the player must afford the gold cost — which scales with how many of the
+   * type they already own. On success the gold is spent, the structure placed,
+   * and an event line returned; otherwise a typed rejection.
+   */
+  private processBuild(
+    attacker: PlayerId,
+    intent: RasterBuildIntent,
+  ): { kind: "ok"; line: string } | { kind: "rejected"; reason: RasterRejectReason; message: string } {
+    if (this.conflict.winner !== null || this.matchEndedBroadcast) {
+      return { kind: "rejected", reason: "MATCH_ENDED", message: "The match has already ended." };
+    }
+    if (!this.grid.hasPlayer(attacker)) {
+      return { kind: "rejected", reason: "NOT_BUILDABLE", message: "Choose a starting position first." };
+    }
+    if (!Number.isInteger(intent.targetX) || !Number.isInteger(intent.targetY) ||
+        !this.map.inBounds(intent.targetX, intent.targetY)) {
+      return { kind: "rejected", reason: "INVALID_TILE", message: "Target tile is out of bounds." };
+    }
+    const def = BUILDING_DEFS[intent.building];
+    if (!def) {
+      return { kind: "rejected", reason: "INVALID_BUILDING", message: "Unknown building type." };
+    }
+
+    const ref = this.map.ref(intent.targetX, intent.targetY);
+    if (!this.grid.isCapturable(ref) || this.grid.ownerOf(ref) !== attacker) {
+      return { kind: "rejected", reason: "NOT_BUILDABLE", message: `Build a ${def.name.toLowerCase()} on land you own.` };
+    }
+    if (this.capitals.get(attacker) === ref) {
+      return { kind: "rejected", reason: "NOT_BUILDABLE", message: "Your capital can't be built over." };
+    }
+    if (this.grid.hasBuilding(ref)) {
+      return { kind: "rejected", reason: "TILE_OCCUPIED", message: "That tile already has a building." };
+    }
+
+    const cost = buildingCost(intent.building, this.grid.buildingCountOf(attacker, intent.building));
+    if (this.grid.goldOf(attacker) < cost) {
+      return {
+        kind: "rejected",
+        reason: "INSUFFICIENT_GOLD",
+        message: `Not enough gold — a ${def.name.toLowerCase()} costs ${cost}.`,
+      };
+    }
+
+    this.grid.addGold(attacker, -cost);
+    this.grid.placeBuilding(ref, intent.building);
+    const builderName = this.playerMeta.get(attacker)?.name ?? `Player ${attacker}`;
+    return {
+      kind: "ok",
+      line: `${builderName} built a ${def.name} (${cost} gold) at (${intent.targetX}, ${intent.targetY}).`,
     };
   }
 

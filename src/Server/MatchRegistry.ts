@@ -4,7 +4,7 @@ import {
   type RasterBotPersonality,
 } from "./RasterBotController.js";
 import { RasterGameSession, type RasterMessageHandler, type RasterGameSessionOptions } from "./RasterGameSession.js";
-import { RasterExpandIntent } from "../Core/types.js";
+import { RasterBuildIntent, RasterExpandIntent } from "../Core/types.js";
 import type { RasterDifficulty } from "../Core/messages.js";
 
 /**
@@ -97,6 +97,10 @@ export class MatchRegistry {
 
   public queueRasterExpand(clientId: string, intent: RasterExpandIntent): void {
     this.clientToSession.get(clientId)?.queueExpand(clientId, intent);
+  }
+
+  public queueRasterBuild(clientId: string, intent: RasterBuildIntent): void {
+    this.clientToSession.get(clientId)?.queueBuild(clientId, intent);
   }
 
   public selectRasterSpawn(clientId: string, x: number, y: number): void {
