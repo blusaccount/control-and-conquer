@@ -94,20 +94,31 @@ export class RasterBotController {
       this.map = new GameMap(this.width, this.height, new Uint8Array(terrain));
     }
 
-    // Cheap gates first, so we skip the O(tiles) owner decode on idle ticks.
+    // Keep the owner mirror current on every snapshot. Ownership arrives as a
+    // full raster on the first snapshot and as a compact delta afterwards, so
+    // applying it each tick is cheap (proportional to the churn) and — unlike
+    // the old "skip on idle ticks" shortcut — never lets the mirror desync.
+    if (snapshot.ownerBase64 !== undefined) {
+      const ownerBuffer = Buffer.from(snapshot.ownerBase64, "base64");
+      if (!this.owner || this.owner.length !== this.width * this.height) {
+        this.owner = new Uint16Array(this.width * this.height);
+      }
+      for (let i = 0; i < this.owner.length; i += 1) {
+        this.owner[i] = ownerBuffer.readUInt16LE(i * 2);
+      }
+    } else if (snapshot.ownerDeltaBase64 !== undefined && this.owner) {
+      const delta = Buffer.from(snapshot.ownerDeltaBase64, "base64");
+      const records = Math.floor(delta.length / 6);
+      for (let k = 0; k < records; k += 1) {
+        const index = delta.readUInt32LE(k * 6);
+        if (index < this.owner.length) this.owner[index] = delta.readUInt16LE(k * 6 + 4);
+      }
+    }
+
+    // Gate the expensive frontier scan: respect the expand cooldown and pool floor.
     if (snapshot.tick - this.lastExpandTick < this.config.expandCooldownTicks) return;
     const myStanding = snapshot.players.find((p) => p.playerId === this.myPlayerId);
     if (!myStanding || myStanding.troops < this.config.minPool) return;
-
-    // Decode the owner array. The grid never changes dimensions mid-match so
-    // we can lazy-allocate once.
-    const ownerBuffer = Buffer.from(snapshot.ownerBase64, "base64");
-    if (!this.owner || this.owner.length !== this.width * this.height) {
-      this.owner = new Uint16Array(this.width * this.height);
-    }
-    for (let i = 0; i < this.owner.length; i += 1) {
-      this.owner[i] = ownerBuffer.readUInt16LE(i * 2);
-    }
 
     const target = this.pickFrontierTile();
     if (!target) return;

@@ -7,6 +7,7 @@ import { WebSocketServer } from "ws";
 import { MatchRegistry } from "./MatchRegistry.js";
 import { validateCommand } from "./validateCommand.js";
 import { DEFAULT_REAL_MAP_ID, getRealMap } from "../Core/realMaps.js";
+import { buildHeightmapGameMap, getHeightmapMap, HEIGHTMAP_MAP_IDS } from "./heightmapMaps.js";
 import {
   DRIFT_WARN_MS,
   MAX_CATCH_UP_TICKS,
@@ -20,12 +21,25 @@ const publicDir = join(rootDir, "public");
 const assetDir = join(rootDir, "dist");
 const port = Number(process.env.PORT ?? 3000);
 
-// The active map is a real-world map selected via RASTER_MAP, defaulting to the
-// Mediterranean. Unknown ids fall back to the default.
+// The active map is selected via RASTER_MAP, defaulting to the Mediterranean.
+// Ids resolve as heightmap maps (e.g. "earth") or hand-authored ASCII maps
+// (e.g. "mediterranean"); unknown ids fall back to the default. Heightmap maps
+// honour RASTER_MAP_SIZE (target width in tiles).
 const requestedMapId = process.env.RASTER_MAP ?? DEFAULT_REAL_MAP_ID;
-const activeMapId = getRealMap(requestedMapId) ? requestedMapId : DEFAULT_REAL_MAP_ID;
+const isKnownMap = (id: string): boolean => Boolean(getHeightmapMap(id) ?? getRealMap(id));
+const activeMapId = isKnownMap(requestedMapId) ? requestedMapId : DEFAULT_REAL_MAP_ID;
+const rasterMapSize = Number(process.env.RASTER_MAP_SIZE ?? 0) || 0;
 if (activeMapId !== requestedMapId) {
   console.warn(`Unknown map "${requestedMapId}". Falling back to "${DEFAULT_REAL_MAP_ID}".`);
+}
+
+// Heightmap maps take a few hundred ms to downsample from the source raster.
+// Pre-warm the active one (cached by size) at boot so the first connection
+// doesn't pay that cost mid-handshake.
+const activeHeightmap = getHeightmapMap(activeMapId);
+if (activeHeightmap) {
+  const built = buildHeightmapGameMap(activeHeightmap, rasterMapSize || undefined);
+  console.log(`Pre-built heightmap map "${activeMapId}" at ${built.width}x${built.height} (${built.size} tiles).`);
 }
 
 const registry = new MatchRegistry();
@@ -91,7 +105,10 @@ wss.on("connection", (socket) => {
     socket.send(JSON.stringify(message));
   };
 
-  const unsubscribe = registry.joinRasterSolo(clientId, send, { realMapId: activeMapId });
+  const unsubscribe = registry.joinRasterSolo(clientId, send, {
+    realMapId: activeMapId,
+    mapSize: rasterMapSize,
+  });
 
   socket.on("message", (data) => {
     let parsed: unknown;
@@ -120,7 +137,8 @@ wss.on("connection", (socket) => {
 
 server.listen(port, () => {
   console.log(`Control & Conquer listening on http://localhost:${port}`);
-  console.log(`Active map: "${activeMapId}".`);
+  const sizeNote = getHeightmapMap(activeMapId) && rasterMapSize ? ` (size ${rasterMapSize})` : "";
+  console.log(`Active map: "${activeMapId}"${sizeNote}. Heightmap maps: ${HEIGHTMAP_MAP_IDS.join(", ")}.`);
   console.log(`Simulation loop running at ${SIMULATION_TICK_RATE} TPS.`);
 });
 

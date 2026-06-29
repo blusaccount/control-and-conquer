@@ -49,11 +49,17 @@
   Fractal-Value-Noise → Land/Wasser-Maske → Speckle-Cleanup → Finishing-Pipeline.
 - **Hand-authored Real-Maps** (`realMaps.ts`): ASCII-Landmasken (Mediterranean,
   World), gleiche Finishing-Pipeline (`terrainBuilder.ts`).
+- **Heightmap-Maps** (`heightmapMaps.ts` + `pngDecode.ts`): große, reale Karten,
+  aus einer committeten Equirectangular-Topografie-PNG (`assets/maps/earth-topo.png`)
+  zur konfigurierten Gridgröße (`RASTER_MAP_SIZE`) heruntergesampelt — bis
+  OpenFront-Maßstab (~2 Mio. Tiles). Gleiche Finishing-Pipeline; Quelle
+  regenerierbar via `scripts/buildMap.ts`.
 - **Sea-Links** (`seaLinks.ts`): vorberechnete amphibische Adjazenz für schmale
   Gewässer.
 
 ### UI / UX
-- Canvas 2D, 1 Pixel pro Tile (`rasterPaint.ts`/`rasterPalette.ts`), hochskaliert.
+- Canvas 2D, 1 Pixel pro Tile (`rasterPaint.ts`/`rasterPalette.ts`); Pan/Zoom-
+  Kamera (`rasterClient.ts`) für große Karten.
 - Boot-Animationen für amphibische Landungen (`rasterClient.ts`).
 - Slider-basierte Attack-UX (% des Pools), Event-Log, Victory-Banner.
 
@@ -72,7 +78,7 @@
 | Roguelite-Meta-Loop (Runs, Upgrades zwischen Matches) | offen | P1 |
 | Echtes PvP (geteilte Session, Matchmaking, Player-Identity) | offen | P1 |
 | Stärkere Bot-KI (Sea-Crossing-Nutzung, Zielpriorisierung) | offen | P2 |
-| Delta-Snapshots (Owner-Raster nur als Diff senden) | offen | P2 |
+| Delta-Snapshots (Owner-Raster nur als Diff senden) | erledigt | P2 |
 | Reconnect/Resync-Protokoll | offen | P2 |
 | Persistenz für Match-Resultate / Progression | offen | P2 |
 | Lobby-/Menü-UI über „Play vs Bot" hinaus | offen | P3 |
@@ -109,5 +115,4 @@
 ## 6) Nächste konkret kleine Schritte
 1. Fraktions-Datenmodell (Nation → Modifikatoren auf Income/Capture-Kosten).
 2. Sea-Crossing-Nutzung in der Bot-KI (heute nur Land-Frontier).
-3. Delta-Owner-Snapshots als Bandbreiten-Optimierung ab größeren Karten.
-4. Geteilte PvP-Session als zweiter `MatchRegistry`-Modus neben Solo.
+3. Geteilte PvP-Session als zweiter `MatchRegistry`-Modus neben Solo.

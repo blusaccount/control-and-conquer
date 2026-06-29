@@ -57,10 +57,21 @@ export interface RasterSnapshot {
    */
   terrainBase64?: string;
   /**
-   * Base64-encoded little-endian `Uint16Array` of length width*height holding
-   * the player id owning each tile. 0 = NEUTRAL.
+   * Full ownership raster: base64-encoded little-endian `Uint16Array` of length
+   * width*height holding the player id owning each tile (0 = NEUTRAL). Sent on
+   * the first snapshot (to seed the client) and whenever a delta would be
+   * larger than a full resend; otherwise omitted in favour of `ownerDeltaBase64`.
    */
-  ownerBase64: string;
+  ownerBase64?: string;
+  /**
+   * Incremental ownership update relative to the last snapshot this client
+   * received. Base64-encoded packed records of 6 bytes each: a little-endian
+   * `Uint32` tile index followed by a little-endian `Uint16` new owner. Keeps
+   * per-tick bandwidth proportional to the churn at the front rather than to the
+   * whole map, which is what makes million-tile maps playable. Exactly one of
+   * `ownerBase64` / `ownerDeltaBase64` is present on any snapshot.
+   */
+  ownerDeltaBase64?: string;
   /** Player standings in deterministic ascending playerId order. */
   players: RasterPlayerInfo[];
   /** Total capturable (passable land) tiles — convenience for victory bars. */

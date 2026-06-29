@@ -7,6 +7,27 @@ export const createPixelBuffer = (map: GameMap): Uint8ClampedArray =>
   new Uint8ClampedArray(map.size * 4);
 
 /**
+ * Paint a single tile's terrain + ownership colour into an RGBA buffer. Used
+ * for incremental repaints: when an ownership delta touches only a few thousand
+ * of a million tiles, repainting just those tiles is far cheaper than redrawing
+ * the whole raster.
+ */
+export const paintTileInto = (
+  map: GameMap,
+  owner: ArrayLike<PlayerId>,
+  ref: number,
+  pixels: Uint8ClampedArray,
+  palette: readonly Rgba[] = DEFAULT_PLAYER_PALETTE,
+): void => {
+  const color = tileColor(map.tile(ref), owner[ref], palette);
+  const offset = ref * 4;
+  pixels[offset] = color.r;
+  pixels[offset + 1] = color.g;
+  pixels[offset + 2] = color.b;
+  pixels[offset + 3] = color.a;
+};
+
+/**
  * Paint a map's terrain + ownership into an RGBA buffer at one pixel per tile,
  * in row-major order (matching `ImageData` layout). Pure — no DOM — so it can
  * be unit-tested; the browser wrapper just hands the result to a canvas.
