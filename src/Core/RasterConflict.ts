@@ -281,11 +281,15 @@ export class RasterConflict {
   }
 
   /**
-   * Capture priority of a single frontier tile (lower = taken sooner). Easy, low
-   * ground enclosed by the attacker's own territory is grabbed first so fronts
-   * advance as smooth bulges rather than ragged spikes — the organic feel of
-   * OpenFront's conquest queue. The `jitter` is a deterministic hash of tile and
-   * tick (no RNG, so replays stay identical), used only to break ties.
+   * Capture priority of a single frontier tile (lower = taken sooner). Tiles
+   * enclosed by more of the attacker's own territory are grabbed first so a front
+   * fills its concavities and advances as a smooth, radial bulge rather than
+   * snaking outward as a thin tendril — the organic feel of OpenFront's conquest
+   * queue. Elevation only gently biases ties between equally-enclosed tiles (the
+   * surround term dominates; see the weights in `rasterCombatConfig`). The
+   * `jitter` is a deterministic hash of tile and tick (no RNG, so replays stay
+   * identical) that scatters captures across otherwise-equal perimeter tiles so
+   * the ring grows evenly instead of advancing lopsidedly along one edge.
    */
   private tilePriority(attacker: PlayerId, ref: TileRef): number {
     let ownedNeighbours = 0;
