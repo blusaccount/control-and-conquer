@@ -1,9 +1,11 @@
 import { generateTerrain } from "../Core/terrainGenerator.js";
+import { buildRealMap, getRealMap } from "../Core/realMaps.js";
 import { NEUTRAL_PLAYER, TerritoryGrid, type PlayerId } from "../Core/TerritoryGrid.js";
 import type { GameMap, TileRef } from "../Core/GameMap.js";
 import { RasterConflict, type AttackIntent } from "../Core/RasterConflict.js";
 import type {
   RasterActionRejectedEvent,
+  RasterCrossing,
   RasterExpandIntent,
   RasterRejectReason,
   RasterServerMessage,
@@ -39,9 +41,9 @@ const PLAYER_PALETTE: ReadonlyArray<{ name: string; color: string }> = [
 ];
 
 export interface RasterGameSessionOptions {
-  /** Width in tiles. Default 64. */
+  /** Width in tiles. Default 64. Ignored when `realMapId` is set. */
   width?: number;
-  /** Height in tiles. Default 40. */
+  /** Height in tiles. Default 40. Ignored when `realMapId` is set. */
   height?: number;
   /** Integer seed for the terrain generator. Default uses a fixed seed. */
   seed?: number;
@@ -49,6 +51,12 @@ export interface RasterGameSessionOptions {
   mapName?: string;
   /** Starting troop pool every player begins with. Default 50. */
   startingTroops?: number;
+  /**
+   * When set to a known real-world map id (see `realMaps`), the match runs on
+   * that hand-authored map instead of procedural terrain. Unknown ids fall back
+   * to procedural generation.
+   */
+  realMapId?: string;
 }
 
 const DEFAULT_OPTIONS: Required<RasterGameSessionOptions> = {
@@ -57,6 +65,7 @@ const DEFAULT_OPTIONS: Required<RasterGameSessionOptions> = {
   seed: 1,
   mapName: "Procedural Continent",
   startingTroops: 50,
+  realMapId: "",
 };
 
 /**
@@ -81,6 +90,8 @@ export class RasterGameSession {
   private readonly subscribers = new Map<string, RasterSubscriber>();
   private readonly pendingExpands: PendingExpand[] = [];
   private recentEvents: string[] = ["Match started."];
+  /** Amphibious crossings from the most recent tick, broadcast for animation. */
+  private lastCrossings: RasterCrossing[] = [];
   /** Determines spawn placement: each new subscriber takes the next slot. */
   private nextPlayerId: PlayerId = 1;
   private matchEndedBroadcast = false;
@@ -89,19 +100,28 @@ export class RasterGameSession {
 
   public constructor(options: RasterGameSessionOptions = {}) {
     const opts = { ...DEFAULT_OPTIONS, ...options };
-    this.mapName = opts.mapName;
-    // Generate terrain. Some (seed × dims) combinations produce a fully
-    // water grid (especially small maps), which leaves no playable land.
-    // Walk down seaLevel until at least 8% of tiles are passable land — that
-    // floor guarantees both a spawn corner and room to expand.
-    let map = generateTerrain({ width: opts.width, height: opts.height, seed: opts.seed });
-    const minLand = Math.max(8, Math.floor(opts.width * opts.height * 0.08));
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      let landTiles = 0;
-      for (let i = 0; i < map.terrain.length; i += 1) if (map.isLand(i) && !map.isImpassable(i)) landTiles += 1;
-      if (landTiles >= minLand) break;
-      const seaLevel = 0.5 - 0.1 * (attempt + 1);
-      map = generateTerrain({ width: opts.width, height: opts.height, seed: opts.seed, seaLevel });
+    const realMap = opts.realMapId ? getRealMap(opts.realMapId) : undefined;
+    // Prefer the real map's own name unless the caller explicitly set one.
+    this.mapName = options.mapName ?? (realMap ? realMap.name : opts.mapName);
+
+    let map;
+    if (realMap) {
+      // Real-world maps already guarantee playable land, so use them verbatim.
+      map = buildRealMap(realMap);
+    } else {
+      // Generate terrain. Some (seed × dims) combinations produce a fully
+      // water grid (especially small maps), which leaves no playable land.
+      // Walk down seaLevel until at least 8% of tiles are passable land — that
+      // floor guarantees both a spawn corner and room to expand.
+      map = generateTerrain({ width: opts.width, height: opts.height, seed: opts.seed });
+      const minLand = Math.max(8, Math.floor(opts.width * opts.height * 0.08));
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        let landTiles = 0;
+        for (let i = 0; i < map.terrain.length; i += 1) if (map.isLand(i) && !map.isImpassable(i)) landTiles += 1;
+        if (landTiles >= minLand) break;
+        const seaLevel = 0.5 - 0.1 * (attempt + 1);
+        map = generateTerrain({ width: opts.width, height: opts.height, seed: opts.seed, seaLevel });
+      }
     }
     this.map = map;
     this.grid = new TerritoryGrid(this.map);
@@ -228,6 +248,15 @@ export class RasterGameSession {
 
     const tickResult = this.conflict.processTick(intents);
 
+    // Convert this tick's amphibious landings to wire coordinates for animation.
+    this.lastCrossings = tickResult.crossings.map((c) => ({
+      playerId: c.attacker,
+      fromX: this.map.x(c.from),
+      fromY: this.map.y(c.from),
+      toX: this.map.x(c.to),
+      toY: this.map.y(c.to),
+    }));
+
     // Append a single event line per capture-rich tick if anything happened.
     if (intents.length > 0) {
       const lines = intents.map((i) => {
@@ -337,6 +366,7 @@ export class RasterGameSession {
       terrainBase64: this.terrainBase64,
       winnerPlayerId: this.conflict.winner,
       recentEvents: this.recentEvents,
+      crossings: this.lastCrossings,
     });
     subscriber.send({ type: "SERVER_RASTER_SNAPSHOT", payload: snapshot });
     if (includeTerrain) {

@@ -1,5 +1,6 @@
 import { GameMap } from "./GameMap.js";
-import { encodeTile, MAX_LAND_ELEVATION, MAX_MAGNITUDE } from "./terrainCodec.js";
+import { buildTerrainFromMask } from "./terrainBuilder.js";
+import { MAX_LAND_ELEVATION } from "./terrainCodec.js";
 
 /**
  * Procedural pixel-raster terrain generator.
@@ -278,88 +279,8 @@ export const generateTerrain = (options: TerrainGeneratorOptions): GameMap => {
     }
   }
 
-  // 5. Coastlines: a tile is shoreline when any 4-neighbour is the other
-  //    element (land next to water, or water next to land).
-  const shore = new Uint8Array(size);
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const i = y * width + x;
-      const here = land[i];
-      const differs =
-        (x > 0 && land[i - 1] !== here) ||
-        (x < width - 1 && land[i + 1] !== here) ||
-        (y > 0 && land[i - width] !== here) ||
-        (y < height - 1 && land[i + width] !== here);
-      if (differs) shore[i] = 1;
-    }
-  }
-
-  // 6. Ocean vs lake: flood-fill water inward from every border water tile.
-  //    Reachable water is open ocean; the rest are inland lakes.
-  const ocean = new Uint8Array(size);
-  const oceanQueue: number[] = [];
-  const enqueueOcean = (i: number): void => {
-    if (land[i] === 0 && ocean[i] === 0) {
-      ocean[i] = 1;
-      oceanQueue.push(i);
-    }
-  };
-  for (let x = 0; x < width; x += 1) {
-    enqueueOcean(x);
-    enqueueOcean((height - 1) * width + x);
-  }
-  for (let y = 0; y < height; y += 1) {
-    enqueueOcean(y * width);
-    enqueueOcean(y * width + (width - 1));
-  }
-  for (let head = 0; head < oceanQueue.length; head += 1) {
-    const i = oceanQueue[head];
-    const x = i % width;
-    const y = (i - x) / width;
-    if (x > 0) enqueueOcean(i - 1);
-    if (x < width - 1) enqueueOcean(i + 1);
-    if (y > 0) enqueueOcean(i - width);
-    if (y < height - 1) enqueueOcean(i + width);
-  }
-
-  // 7. Water depth: multi-source BFS outward from shoreline water tiles.
-  //    Shore water is depth 1, each step away adds 1, capped at the field max.
-  const depth = new Uint8Array(size);
-  const depthQueue: number[] = [];
-  for (let i = 0; i < size; i += 1) {
-    if (land[i] === 0 && shore[i] === 1) {
-      depth[i] = 1;
-      depthQueue.push(i);
-    }
-  }
-  for (let head = 0; head < depthQueue.length; head += 1) {
-    const i = depthQueue[head];
-    const next = Math.min(depth[i] + 1, MAX_MAGNITUDE);
-    const x = i % width;
-    const y = (i - x) / width;
-    const relax = (j: number): void => {
-      if (land[j] === 0 && depth[j] === 0) {
-        depth[j] = next;
-        depthQueue.push(j);
-      }
-    };
-    if (x > 0) relax(i - 1);
-    if (x < width - 1) relax(i + 1);
-    if (y > 0) relax(i - width);
-    if (y < height - 1) relax(i + width);
-  }
-
-  // 8. Pack everything into the 1-byte-per-tile terrain array.
-  const terrain = new Uint8Array(size);
-  for (let i = 0; i < size; i += 1) {
-    const isLandHere = land[i] === 1;
-    terrain[i] = encodeTile({
-      land: isLandHere,
-      shoreline: shore[i] === 1,
-      ocean: !isLandHere && ocean[i] === 1,
-      magnitude: isLandHere ? elevation[i] : depth[i],
-    });
-  }
-
-  return new GameMap(width, height, terrain);
+  // 5. Hand the land mask + elevations to the shared finishing pipeline, which
+  //    marks coastlines, separates ocean from lakes, computes water depth and
+  //    packs the result into the 1-byte tile codec.
+  return buildTerrainFromMask({ width, height, land, elevation });
 };

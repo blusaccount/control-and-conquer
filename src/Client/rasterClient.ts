@@ -2,20 +2,33 @@ import { GameMap } from "../Core/GameMap.js";
 import type { PlayerId } from "../Core/TerritoryGrid.js";
 import type {
   RasterClientMessage,
+  RasterCrossing,
   RasterPlayerAssignedPayload,
   RasterServerMessage,
   RasterSnapshot,
 } from "../Core/types.js";
 import { hideMenu, setStatus, type UiElements } from "./dom.js";
 import { paintRaster } from "./rasterPaint.js";
+import { playerColor } from "./rasterPalette.js";
 
 /**
  * Self-contained raster-mode client.
  *
- * Owns its own WebSocket, its own canvas-rendering loop and its own click
- * handler. Lives separately from the polygon client (`net.ts` + `render.ts` +
- * `input.ts`) so the two modes don't have to share state or render paths.
+ * Owns its own WebSocket, a persistent base-map canvas (repainted only when a
+ * snapshot arrives) and a requestAnimationFrame overlay loop that animates
+ * boats for every amphibious crossing the server reports, so players can see
+ * troops travelling across water and rivers.
  */
+interface Boat {
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+  color: string;
+  /** performance.now() timestamp when the crossing started animating. */
+  start: number;
+}
+
 interface RasterRuntime {
   map: GameMap | null;
   owner: Uint16Array | null;
@@ -28,7 +41,14 @@ interface RasterRuntime {
   recentEvents: string[];
   matchEnded: boolean;
   winnerPlayerId: number | null;
+  /** Offscreen 1px-per-tile render of terrain + ownership, updated per snapshot. */
+  base: HTMLCanvasElement | null;
+  /** In-flight boat animations. */
+  boats: Boat[];
 }
+
+/** How long a single crossing animation lasts, in milliseconds. */
+const BOAT_DURATION_MS = 1100;
 
 const decodeBase64ToBytes = (b64: string): Uint8Array => {
   const binary = atob(b64);
@@ -51,14 +71,13 @@ const decodeOwnerArray = (b64: string, expectedLength: number): Uint16Array => {
   return owner;
 };
 
+const rgbaToCss = (c: { r: number; g: number; b: number }): string => `rgb(${c.r}, ${c.g}, ${c.b})`;
+
 /** Connect to the raster server, paint each snapshot, and wire click-to-expand. */
 export const startRasterClient = (ui: UiElements): void => {
   hideMenu(ui);
-  // The raster mode reuses the existing canvas + sidebar but ignores polygon-mode
-  // controls. We repurpose the percent slider as "% of pool to commit per click".
   ui.attackPercentOutput.textContent = `${ui.attackPercentInput.value}%`;
   ui.selectionInfo.textContent = "Click anywhere on the map to expand toward that tile.";
-  ui.clearSelectionButton.style.display = "none";
 
   const runtime: RasterRuntime = {
     map: null,
@@ -72,10 +91,12 @@ export const startRasterClient = (ui: UiElements): void => {
     recentEvents: [],
     matchEnded: false,
     winnerPlayerId: null,
+    base: null,
+    boats: [],
   };
 
   const socketProtocol = window.location.protocol === "https:" ? "wss" : "ws";
-  const socket = new WebSocket(`${socketProtocol}://${window.location.host}/?mode=raster-solo`);
+  const socket = new WebSocket(`${socketProtocol}://${window.location.host}/`);
 
   const sendExpand = (targetX: number, targetY: number, percent: number): void => {
     const message: RasterClientMessage = {
@@ -117,6 +138,21 @@ export const startRasterClient = (ui: UiElements): void => {
     setStatus(ui, `Assigned as ${payload.name}.`);
   };
 
+  const spawnBoats = (crossings: RasterCrossing[]): void => {
+    if (crossings.length === 0) return;
+    const now = performance.now();
+    for (const c of crossings) {
+      runtime.boats.push({
+        fromX: c.fromX,
+        fromY: c.fromY,
+        toX: c.toX,
+        toY: c.toY,
+        color: rgbaToCss(playerColor(c.playerId)),
+        start: now,
+      });
+    }
+  };
+
   const onSnapshot = (snapshot: RasterSnapshot): void => {
     // Establish the static GameMap on the first snapshot that carries terrain.
     if (snapshot.terrainBase64 && !runtime.map) {
@@ -134,31 +170,98 @@ export const startRasterClient = (ui: UiElements): void => {
     const me = snapshot.players.find((p) => p.playerId === runtime.myPlayerId);
     runtime.pool = me?.troops ?? 0;
     runtime.myTiles = me?.tiles ?? 0;
+
+    spawnBoats(snapshot.crossings ?? []);
     renderSidebar();
-    paintCanvas();
+    repaintBase();
   };
 
   // ---- Rendering --------------------------------------------------------
 
-  const paintCanvas = (): void => {
+  /** Repaint the persistent terrain + ownership layer (1 pixel per tile). */
+  const repaintBase = (): void => {
     const map = runtime.map;
     const owner = runtime.owner;
     if (!map || !owner) return;
 
-    // Lazy-allocate the offscreen buffer matched to the map.
-    const offscreen = document.createElement("canvas");
-    offscreen.width = map.width;
-    offscreen.height = map.height;
-    const offCtx = offscreen.getContext("2d");
+    let base = runtime.base;
+    if (!base || base.width !== map.width || base.height !== map.height) {
+      base = document.createElement("canvas");
+      base.width = map.width;
+      base.height = map.height;
+      runtime.base = base;
+    }
+    const offCtx = base.getContext("2d");
     if (!offCtx) return;
     const imageData = offCtx.createImageData(map.width, map.height);
     paintRaster(map, owner, imageData.data);
     offCtx.putImageData(imageData, 0, 0);
+  };
 
+  /** Composite the base map plus animated boats onto the visible canvas. */
+  const renderFrame = (now: number): void => {
+    const map = runtime.map;
+    const base = runtime.base;
     const ctx = ui.mapContext;
+    const cw = ui.mapCanvas.width;
+    const ch = ui.mapCanvas.height;
+
     ctx.imageSmoothingEnabled = false;
-    ctx.clearRect(0, 0, ui.mapCanvas.width, ui.mapCanvas.height);
-    ctx.drawImage(offscreen, 0, 0, map.width, map.height, 0, 0, ui.mapCanvas.width, ui.mapCanvas.height);
+    ctx.clearRect(0, 0, cw, ch);
+    if (map && base) {
+      ctx.drawImage(base, 0, 0, map.width, map.height, 0, 0, cw, ch);
+      drawBoats(now, ctx, cw / map.width, ch / map.height);
+    }
+    requestAnimationFrame(renderFrame);
+  };
+
+  const drawBoats = (
+    now: number,
+    ctx: CanvasRenderingContext2D,
+    scaleX: number,
+    scaleY: number,
+  ): void => {
+    if (runtime.boats.length === 0) return;
+    const survivors: Boat[] = [];
+    for (const boat of runtime.boats) {
+      const t = (now - boat.start) / BOAT_DURATION_MS;
+      if (t >= 1) continue; // animation finished
+      survivors.push(boat);
+
+      const fx = (boat.fromX + 0.5) * scaleX;
+      const fy = (boat.fromY + 0.5) * scaleY;
+      const tx = (boat.toX + 0.5) * scaleX;
+      const ty = (boat.toY + 0.5) * scaleY;
+      const cx = fx + (tx - fx) * t;
+      const cy = fy + (ty - fy) * t;
+
+      // Wake: a fading dashed line from the launch coast up to the boat.
+      ctx.save();
+      ctx.globalAlpha = 0.5 * (1 - t);
+      ctx.strokeStyle = boat.color;
+      ctx.lineWidth = Math.max(1, scaleX * 0.25);
+      ctx.setLineDash([Math.max(2, scaleX * 0.5), Math.max(2, scaleX * 0.5)]);
+      ctx.beginPath();
+      ctx.moveTo(fx, fy);
+      ctx.lineTo(cx, cy);
+      ctx.stroke();
+      ctx.restore();
+
+      // Boat marker: a small filled dot in the player's colour with a halo so
+      // it stays visible over both shallow and deep water.
+      const radius = Math.max(2.5, Math.min(scaleX, scaleY) * 0.45);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius + 1.5, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.fillStyle = boat.color;
+      ctx.fill();
+      ctx.restore();
+    }
+    runtime.boats = survivors;
   };
 
   const renderSidebar = (): void => {
@@ -168,7 +271,7 @@ export const startRasterClient = (ui: UiElements): void => {
     ui.selectionInfo.innerHTML =
       `<strong>Troop pool:</strong> ${runtime.pool}<br/>` +
       `<strong>Tiles:</strong> ${runtime.myTiles} / ${runtime.capturableTotal} (${pct}%)<br/>` +
-      `<em>Click anywhere on the map to expand toward that tile.</em>`;
+      `<em>Click anywhere on the map to expand toward that tile. You can also land across narrow seas and rivers.</em>`;
 
     ui.eventsPanel.innerHTML = runtime.recentEvents
       .map((ev) => `<div class="event">${escapeHtml(ev)}</div>`)
@@ -197,6 +300,8 @@ export const startRasterClient = (ui: UiElements): void => {
   ui.attackPercentInput.addEventListener("input", () => {
     ui.attackPercentOutput.textContent = `${ui.attackPercentInput.value}%`;
   });
+
+  requestAnimationFrame(renderFrame);
 };
 
 const escapeHtml = (input: string): string =>

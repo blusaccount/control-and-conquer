@@ -5,10 +5,8 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { MatchRegistry } from "./MatchRegistry.js";
-import { loadMapById } from "./mapRepository.js";
-import { createInitialState } from "../Core/MapState.js";
-import { DEFAULT_MAP_ID } from "../Core/maps/index.js";
 import { validateCommand } from "./validateCommand.js";
+import { DEFAULT_REAL_MAP_ID, getRealMap } from "../Core/realMaps.js";
 import {
   DRIFT_WARN_MS,
   MAX_CATCH_UP_TICKS,
@@ -22,34 +20,16 @@ const publicDir = join(rootDir, "public");
 const assetDir = join(rootDir, "dist");
 const port = Number(process.env.PORT ?? 3000);
 
-// The larger grid map ships as data in maps/; the built-in basin is the
-// guaranteed fallback if the file is missing or fails validation.
-const requestedMapId = process.env.MAP_ID ?? "frontline-grid";
-let activeMapId = requestedMapId;
-let initialState;
-try {
-  initialState = createInitialState(loadMapById(requestedMapId));
-} catch (error) {
-  const reason = error instanceof Error ? error.message : "unknown error";
-  console.warn(`Could not load map "${requestedMapId}" (${reason}). Falling back to "${DEFAULT_MAP_ID}".`);
-  activeMapId = DEFAULT_MAP_ID;
-  initialState = createInitialState(loadMapById(DEFAULT_MAP_ID));
+// The active map is a real-world map selected via RASTER_MAP, defaulting to the
+// Mediterranean. Unknown ids fall back to the default.
+const requestedMapId = process.env.RASTER_MAP ?? DEFAULT_REAL_MAP_ID;
+const activeMapId = getRealMap(requestedMapId) ? requestedMapId : DEFAULT_REAL_MAP_ID;
+if (activeMapId !== requestedMapId) {
+  console.warn(`Unknown map "${requestedMapId}". Falling back to "${DEFAULT_REAL_MAP_ID}".`);
 }
 
-const registry = new MatchRegistry(initialState);
+const registry = new MatchRegistry();
 let clientSequence = 0;
-const fallbackOrder = (raw: unknown) => {
-  const message = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
-  const payload = typeof message.payload === "object" && message.payload !== null
-    ? (message.payload as Record<string, unknown>)
-    : {};
-
-  return {
-    sourceTerritoryId: typeof payload.sourceTerritoryId === "string" ? payload.sourceTerritoryId : "",
-    targetTerritoryId: typeof payload.targetTerritoryId === "string" ? payload.targetTerritoryId : "",
-    troops: typeof payload.troops === "number" && Number.isInteger(payload.troops) ? payload.troops : 1,
-  };
-};
 
 const mimeTypes: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -103,24 +83,15 @@ const server = createServer(async (request, response) => {
 
 const wss = new WebSocketServer({ server });
 
-wss.on("connection", (socket, request) => {
+wss.on("connection", (socket) => {
   clientSequence += 1;
   const clientId = `client-${clientSequence}`;
-
-  // Mode is selected by the client via the WebSocket URL query string:
-  //   ws://host/?mode=multi        -> 1v1 polygon lobby pairing (default)
-  //   ws://host/?mode=raster-solo  -> instant raster (openfront-style) match vs bot
-  const requestUrl = new URL(request.url ?? "/", `ws://${request.headers.host ?? "localhost"}`);
-  const requestedMode = requestUrl.searchParams.get("mode");
-  const mode: "multi" | "raster-solo" = requestedMode === "raster-solo" ? "raster-solo" : "multi";
 
   const send = (message: unknown): void => {
     socket.send(JSON.stringify(message));
   };
 
-  const unsubscribe = mode === "raster-solo"
-    ? registry.joinRasterSolo(clientId, send)
-    : registry.join(clientId, send);
+  const unsubscribe = registry.joinRasterSolo(clientId, send, { realMapId: activeMapId });
 
   socket.on("message", (data) => {
     let parsed: unknown;
@@ -128,34 +99,19 @@ wss.on("connection", (socket, request) => {
     try {
       parsed = JSON.parse(String(data));
       const message = validateCommand(parsed);
-
-      if (message.type === "CLIENT_ATTACK_REQUEST") {
-        registry.queueAttack(clientId, message.payload);
-      } else if (message.type === "CLIENT_RASTER_EXPAND") {
+      if (message.type === "CLIENT_RASTER_EXPAND") {
         registry.queueRasterExpand(clientId, message.payload);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown command error.";
-      // Send a mode-appropriate rejection envelope.
-      if (mode === "raster-solo") {
-        socket.send(JSON.stringify({
-          type: "SERVER_RASTER_ACTION_REJECTED",
-          payload: {
-            reason: "INVALID_MESSAGE_FORMAT",
-            message,
-            intent: { targetX: 0, targetY: 0, percent: 50 },
-          },
-        }));
-      } else {
-        socket.send(JSON.stringify({
-          type: "SERVER_ACTION_REJECTED",
-          payload: {
-            reason: "INVALID_MESSAGE_FORMAT",
-            message,
-            order: fallbackOrder(parsed),
-          },
-        }));
-      }
+      socket.send(JSON.stringify({
+        type: "SERVER_RASTER_ACTION_REJECTED",
+        payload: {
+          reason: "INVALID_MESSAGE_FORMAT",
+          message,
+          intent: { targetX: 0, targetY: 0, percent: 50 },
+        },
+      }));
     }
   });
 
@@ -164,7 +120,7 @@ wss.on("connection", (socket, request) => {
 
 server.listen(port, () => {
   console.log(`Control & Conquer listening on http://localhost:${port}`);
-  console.log(`Active map: "${initialState.mapName}" (${activeMapId}).`);
+  console.log(`Active map: "${activeMapId}".`);
   console.log(`Simulation loop running at ${SIMULATION_TICK_RATE} TPS.`);
 });
 
@@ -176,7 +132,7 @@ const runSimulationLoop = (): void => {
 
   if (driftMs > DRIFT_WARN_MS) {
     console.warn(
-      `Simulation drift detected (${driftMs.toFixed(2)}ms behind schedule). Pending inputs: ${registry.getPendingAttackCount()}.`,
+      `Simulation drift detected (${driftMs.toFixed(2)}ms behind schedule). Pending inputs: ${registry.getPendingRasterExpandCount()}.`,
     );
   }
 

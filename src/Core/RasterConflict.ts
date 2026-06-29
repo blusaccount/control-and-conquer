@@ -8,6 +8,7 @@ import {
   INCOME_PER_TILE_PER_TICK,
   MAX_POOL_PER_TILE,
   NEUTRAL_CAPTURE_COST,
+  SEA_CROSSING_SURCHARGE,
 } from "./rasterCombatConfig.js";
 
 /** A request to expand from `attacker`'s territory into `target`'s tiles. */
@@ -26,6 +27,17 @@ export type AttackRejectReason =
   | "INSUFFICIENT_TROOPS"
   | "NO_FRONTIER";
 
+/**
+ * A single amphibious landing resolved this tick: a player captured tile `to`
+ * by crossing water from its coastal tile `from`. Surfaced so the client can
+ * animate troops travelling over the water/river.
+ */
+export interface SeaCrossing {
+  attacker: PlayerId;
+  from: TileRef;
+  to: TileRef;
+}
+
 export interface RasterTickResult {
   tick: number;
   /** Set once a single player owns every capturable tile, else null. */
@@ -33,6 +45,8 @@ export interface RasterTickResult {
   rejections: Array<{ intent: AttackIntent; reason: AttackRejectReason }>;
   /** Number of attacks still in progress after this tick. */
   activeAttacks: number;
+  /** Amphibious landings that happened this tick (empty on most ticks). */
+  crossings: SeaCrossing[];
 }
 
 /** An in-flight expansion. `committed` troops are drained as tiles are taken. */
@@ -58,6 +72,8 @@ export class RasterConflict {
   private readonly grid: TerritoryGrid;
   private readonly attacks: RasterAttack[] = [];
   private readonly incomeAccumulator = new Map<PlayerId, number>();
+  /** Amphibious landings resolved during the current tick. */
+  private crossings: SeaCrossing[] = [];
   private tickCount = 0;
   private winnerId: PlayerId | null = null;
 
@@ -109,7 +125,7 @@ export class RasterConflict {
 
     if (this.winnerId !== null) {
       this.tickCount += 1;
-      return { tick: this.tickCount, winner: this.winnerId, rejections, activeAttacks: 0 };
+      return { tick: this.tickCount, winner: this.winnerId, rejections, activeAttacks: 0, crossings: [] };
     }
 
     for (const intent of intents) {
@@ -117,6 +133,7 @@ export class RasterConflict {
       if (reason) rejections.push({ intent, reason });
     }
 
+    this.crossings = [];
     this.applyIncome();
     this.advanceAttacks();
     this.checkVictory();
@@ -127,16 +144,44 @@ export class RasterConflict {
       winner: this.winnerId,
       rejections,
       activeAttacks: this.attacks.length,
+      crossings: this.crossings,
     };
   }
 
-  /** Troop cost to capture a single tile, factoring terrain and ownership. */
-  private captureCost(ref: TileRef, target: PlayerId): number {
+  /**
+   * The attacker-owned coastal tile a landing on `ref` set out from: the
+   * sea-linked neighbour of `ref` owned by the attacker that is closest to it.
+   * Returns -1 if none (should not happen for a genuine sea capture).
+   */
+  private nearestSeaOrigin(attacker: PlayerId, ref: TileRef): TileRef {
+    const map = this.grid.map;
+    const tx = map.x(ref);
+    const ty = map.y(ref);
+    let best = -1;
+    let bestDist = Infinity;
+    for (const n of this.grid.seaLinks.neighborsOf(ref)) {
+      if (this.grid.ownerOf(n) !== attacker) continue;
+      const dist = Math.hypot(map.x(n) - tx, map.y(n) - ty);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = n;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Troop cost to capture a single tile, factoring terrain, ownership and
+   * whether the tile is taken across a land border or by an amphibious landing
+   * (`viaSea`), which carries an extra surcharge.
+   */
+  private captureCost(ref: TileRef, target: PlayerId, viaSea: boolean): number {
     const base = target === NEUTRAL_PLAYER
       ? NEUTRAL_CAPTURE_COST
       : NEUTRAL_CAPTURE_COST + ENEMY_CAPTURE_SURCHARGE;
     const elevationCost = this.grid.map.magnitude(ref) * ELEVATION_COST_PER_LEVEL;
-    return Math.ceil(base + elevationCost);
+    const seaCost = viaSea ? SEA_CROSSING_SURCHARGE : 0;
+    return Math.ceil(base + elevationCost + seaCost);
   }
 
   /**
@@ -189,11 +234,19 @@ export class RasterConflict {
         // A tile may have been captured already if a player relinquished it; skip
         // anything no longer owned by the target.
         if (this.grid.ownerOf(ref) !== attack.target) continue;
-        const cost = this.captureCost(ref, attack.target);
+        // Reached only via an amphibious landing if no land border touches it.
+        const viaSea = !this.grid.hasLandFrontier(attack.attacker, ref);
+        const cost = this.captureCost(ref, attack.target, viaSea);
         if (attack.committed < cost || spent + cost > budget) continue;
 
         if (attack.target !== NEUTRAL_PLAYER) {
           this.grid.addTroops(attack.target, -DEFENDER_LOSS_PER_TILE);
+        }
+        if (viaSea) {
+          // Record the landing so the client can animate the crossing. The
+          // origin is the attacker's coastal tile on the near bank.
+          const from = this.nearestSeaOrigin(attack.attacker, ref);
+          if (from >= 0) this.crossings.push({ attacker: attack.attacker, from, to: ref });
         }
         this.grid.claim(ref, attack.attacker);
         attack.committed -= cost;
