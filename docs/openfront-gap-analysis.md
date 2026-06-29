@@ -1,6 +1,7 @@
 # OpenFront-ähnliche Roadmap: Repository Audit + Gap-Analyse
 
-> **Letztes Update:** 2026-06-29 (OpenFront-Combat-Fidelity: Dichte-Bleed, Prioritäts-Fronten, Retreat-Malus, Defense-Posts, Grenz-Rendering).
+> **Letztes Update:** 2026-06-29 (Economy & Gebäude: Gold als zweite Ressource +
+> Bau-Schicht — Städte, Häfen, Forts).
 > Dieses Dokument spiegelt den Ist-Zustand auf `main` nach dem Umbau auf die
 > Pixel-Raster-Engine (commit „Rebuild as OpenFront-style raster game"). Die
 > ältere Polygon-/`MapState`-Engine existiert nicht mehr.
@@ -41,6 +42,23 @@
     Hauptstadt, verschwindet die Aura.
 - **Win-Condition:** ein Spieler, der alle eroberbaren Tiles hält, gewinnt;
   `SERVER_RASTER_MATCH_ENDED` wird einmalig gebroadcastet.
+
+### Economy & Gebäude (`buildings.ts`, `TerritoryGrid`, `RasterConflict`)
+- **Gold als zweite Ressource:** jeder Spieler akkumuliert einen eigenen Gold-Pool
+  (`applyGoldIncome`), proportional zum Territorium (`GOLD_PER_TILE_PER_TICK`) plus
+  Städte-Dividende — fraktionaler Akkumulator wie bei den Truppen, aber **ungedeckelt**
+  (Gold ist eine Ausgabe-Ressource, gesenkt durch Bauwerke).
+- **Bau-Schicht** (`CLIENT_RASTER_BUILD` → `RasterGameSession.processBuild`): Gold wird
+  auf eigenen Tiles in Strukturen investiert; Kosten skalieren geometrisch je Typ
+  (`buildingCost`), sodass Bauwerke knapp bleiben. Drei Typen:
+  - **Stadt** 🏛️ — erhöht Gold- *und* Truppen-Einkommen (letzteres weiter durch den
+    logistischen Soft-Cap begrenzt, bricht die Pool-Decke also nicht).
+  - **Hafen** ⚓ — vergrößert die amphibische Reichweite (`seaRangeOf`, gedeckelt).
+  - **Fort** 🛡️ — legt eine Defense-Post-Aura an (Capture-Kosten ↑ im Umkreis).
+- **Bauwerke leben mit ihrem Tile:** wird ein Tile erobert oder neutralisiert, fällt
+  die Struktur (und eine Fort-Aura) — der Eroberer erbt nacktes Land (`claim` → `destroyBuilding`).
+- **Bots reinvestieren** Gold ab einer Mindestgröße in Städte (`maybeBuildCity`),
+  deterministisch wie alle Bot-Entscheidungen.
 
 ### Networking / Multiplayer
 - WebSocket + autoritativer Server (`ws`, `src/Server/index.ts`).
@@ -112,7 +130,7 @@ neu gegenüber Abschnitt 3:
 | # | Lücke (beobachtet) | Wirkung | Prio |
 |---|---|---|---|
 | A | **Eliminierung ohne Feedback:** Als meine Hauptstadt fiel (~40 s) hatte ich 0 Tiles/0 Pool und war aus dem Leaderboard, aber das Match lief weiter mit voller Expand-UI und „Playing as Blue Empire" — **kein Defeat-Screen, kein Spectate, kein Zurück-ins-Menü.** Das Stats-Overlay feuert nur beim Gesamt-Matchende, nicht beim Tod des Spielers. | Feel-Breaker: man „stirbt" lautlos und klickt ins Leere. | **P0** |
-| B | **Runaway-Ökonomie:** Im Spätspiel hielt Violet 379k+ Truppen (+7838/s) und verschiffte 154k-Truppen-Boote. Income/Truppen wachsen ~exponentiell mit Territorium; die Zahlen werden bedeutungslos. OpenFront bindet Max-Population an Territorium mit abnehmendem Ertrag. | Snowball ist absolut, kein Comeback; Zahlen unlesbar. | **P1** |
+| B | **Runaway-Ökonomie:** Im Spätspiel hielt Violet 379k+ Truppen (+7838/s) und verschiffte 154k-Truppen-Boote. Income/Truppen wachsen ~exponentiell mit Territorium; die Zahlen werden bedeutungslos. OpenFront bindet Max-Population an Territorium mit abnehmendem Ertrag. | Snowball ist absolut, kein Comeback; Zahlen unlesbar. | **teilw. erledigt** — Truppen-Soft-Cap + **Gold/Bau-Schicht** als zweite, ausgaben-getriebene Achse. |
 | C | **Bot-Snowball / Pacing:** Bots expandieren explosiv; ein casual Human ist in ~40 s ausgelöscht, ohne geschützte Anfangsphase oder Schwierigkeitswahl. | Frust für neue Spieler, keine Lernkurve. | **P1** |
 | D | **Grenz-Kontrast zu schwach:** Grenzen werden gezeichnet (aufgehellte Outline), lesen sich bei Normalzoom aber eher als Küstenglühen denn als klare Trennlinie Nation-vs-Nation / Nation-vs-Neutral (vgl. OpenFronts knackige Borders). | Karte wirkt „flächig", Fronten schwer ablesbar. | P2 |
 | E | **Klick-Feedback nur als Fehlertext:** Einzige Rückmeldung war ein dauerhaftes rotes „Target tile is not capturable land." (Klicks aufs Meer). Kein positives Feedback bei erfolgreicher Expansion (Puls/Ripple/Sound); Wasser-Klicks Richtung Küste werden abgelehnt statt geroutet. | Eingaben fühlen sich unresponsiv an. | P2 |

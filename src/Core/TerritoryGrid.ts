@@ -6,6 +6,13 @@ import {
   MAX_SEA_RANGE_MULTIPLIER,
 } from "./rasterCombatConfig.js";
 import { IDENTITY_MODIFIERS, type PlayerModifiers } from "./playerModifiers.js";
+import {
+  type BuildingType,
+  FORT_DEFENSE_RADIUS,
+  FORT_DEFENSE_STRENGTH,
+  PORT_SEA_RANGE_PER,
+  STARTING_GOLD,
+} from "./buildings.js";
 import { SeaLinks } from "./seaLinks.js";
 
 /**
@@ -23,6 +30,12 @@ interface PlayerStanding {
   /** Current troop pool (may be fractional internally; reported rounded). */
   troops: number;
   /**
+   * Current gold pool (may be fractional internally; reported rounded). The
+   * second resource: it accrues from territory + cities and is spent on
+   * {@link buildings}.
+   */
+  gold: number;
+  /**
    * The set of tiles this player currently owns. Single source of truth for both
    * the tile count (`tiles.size`) and the player's frontier: expansion only ever
    * radiates from owned tiles, so iterating this set is far cheaper than scanning
@@ -31,6 +44,8 @@ interface PlayerStanding {
   tiles: Set<TileRef>;
   /** Per-player gameplay modifiers; defaults to no effect. */
   modifiers: PlayerModifiers;
+  /** How many of each building type this player currently owns (for cost maths). */
+  buildingCounts: Map<BuildingType, number>;
 }
 
 /**
@@ -79,6 +94,16 @@ export class TerritoryGrid {
    * capital) — so queries scan the whole map cheaply.
    */
   private readonly defensePosts = new Map<TileRef, { radius: number; strength: number }>();
+
+  /**
+   * Structures placed on owned tiles (a tile → its building type). Sparse — only
+   * a handful exist per player — and a building lives and dies with the tile
+   * beneath it: capturing or neutralising a tile destroys whatever stood on it
+   * (see {@link claim}). A fort additionally registers a {@link defensePosts}
+   * aura; a port widens its owner's {@link seaRangeOf}; a city feeds the economy
+   * (handled by the conflict engine, which reads {@link buildingCountOf}).
+   */
+  private readonly buildings = new Map<TileRef, BuildingType>();
 
   // Lazily-allocated, generation-stamped scratch buffers reused by every
   // {@link findSeaPath} call so per-launch pathfinding stays allocation-free.
@@ -177,7 +202,13 @@ export class TerritoryGrid {
     if (troops < 0) {
       throw new Error(`Starting troops must be non-negative, got ${troops}.`);
     }
-    this.standings.set(id, { troops, tiles: new Set(), modifiers: { ...IDENTITY_MODIFIERS } });
+    this.standings.set(id, {
+      troops,
+      gold: STARTING_GOLD,
+      tiles: new Set(),
+      modifiers: { ...IDENTITY_MODIFIERS },
+      buildingCounts: new Map(),
+    });
   }
 
   /** This player's gameplay modifiers. */
@@ -202,8 +233,10 @@ export class TerritoryGrid {
    * reaches farther coasts.
    */
   seaRangeOf(id: PlayerId): number {
-    const scaled = Math.round(MAX_SEA_CROSSING_TILES * this.standing(id).modifiers.seaRange);
-    // Bound the reach (and thus the per-launch BFS cost) even if perks stack.
+    // Each port the player holds widens the base reach on top of any modifier.
+    const portReach = this.buildingCountOf(id, "port") * PORT_SEA_RANGE_PER;
+    const scaled = Math.round(MAX_SEA_CROSSING_TILES * (this.standing(id).modifiers.seaRange + portReach));
+    // Bound the reach (and thus the per-launch BFS cost) even if perks/ports stack.
     return Math.min(MAX_SEA_CROSSING_TILES * MAX_SEA_RANGE_MULTIPLIER, scaled);
   }
 
@@ -241,6 +274,20 @@ export class TerritoryGrid {
     standing.troops = Math.max(0, standing.troops + delta);
   }
 
+  /** Gold pool of a player. */
+  goldOf(id: PlayerId): number {
+    return this.standing(id).gold;
+  }
+
+  setGold(id: PlayerId, gold: number): void {
+    this.standing(id).gold = Math.max(0, gold);
+  }
+
+  addGold(id: PlayerId, delta: number): void {
+    const standing = this.standing(id);
+    standing.gold = Math.max(0, standing.gold + delta);
+  }
+
   /** Number of tiles a player currently owns. */
   tileCountOf(id: PlayerId): number {
     return this.standing(id).tiles.size;
@@ -268,6 +315,9 @@ export class TerritoryGrid {
     const previous = this.owner[ref];
     if (previous === id) return;
     const comp = this.landComponent[ref];
+    // A building cannot survive its tile changing hands — raze it (and any fort
+    // aura) so the conqueror takes bare ground, not the loser's economy.
+    if (this.buildings.has(ref)) this.destroyBuilding(ref, previous);
     if (previous !== NEUTRAL_PLAYER) {
       this.standing(previous).tiles.delete(ref);
       this.bumpComponent(previous, comp, -1);
@@ -330,6 +380,79 @@ export class TerritoryGrid {
       if (contribution > factor) factor = contribution;
     }
     return factor;
+  }
+
+  // --- Buildings ------------------------------------------------------------
+
+  /** The building standing on `ref`, or `undefined` if the tile is bare. */
+  buildingAt(ref: TileRef): BuildingType | undefined {
+    return this.buildings.get(ref);
+  }
+
+  /** True if `ref` already carries a building. */
+  hasBuilding(ref: TileRef): boolean {
+    return this.buildings.has(ref);
+  }
+
+  /**
+   * How many buildings of `type` `player` owns — used both for the geometric
+   * cost ramp and for building effects (city income, port reach). Counting a
+   * single type keeps the hot economy path off a full {@link buildings} scan.
+   */
+  buildingCountOf(player: PlayerId, type: BuildingType): number {
+    return this.standing(player).buildingCounts.get(type) ?? 0;
+  }
+
+  /** Total active buildings on the map (for tests/snapshots). */
+  get buildingCount(): number {
+    return this.buildings.size;
+  }
+
+  /** Every placed building as `[tile, type]` pairs, in ascending tile order. */
+  buildingEntries(): Array<[TileRef, BuildingType]> {
+    return [...this.buildings.entries()].sort((a, b) => a[0] - b[0]);
+  }
+
+  /**
+   * Place a `type` building on `ref`, owned by the tile's current owner. The
+   * caller is responsible for having charged the gold cost first. A fort also
+   * raises a {@link defensePosts} aura around itself; a port/city take effect
+   * through the counts maintained here. Throws if the tile isn't owned by a real
+   * player or already holds a building (one structure per tile).
+   */
+  placeBuilding(ref: TileRef, type: BuildingType): void {
+    const owner = this.owner[ref];
+    if (owner === NEUTRAL_PLAYER || !this.isCapturable(ref)) {
+      throw new Error(`Tile ${ref} must be owned land to hold a building.`);
+    }
+    if (this.buildings.has(ref)) {
+      throw new Error(`Tile ${ref} already has a building.`);
+    }
+    this.buildings.set(ref, type);
+    const counts = this.standing(owner).buildingCounts;
+    counts.set(type, (counts.get(type) ?? 0) + 1);
+    if (type === "fort") this.addDefensePost(ref, FORT_DEFENSE_RADIUS, FORT_DEFENSE_STRENGTH);
+  }
+
+  /**
+   * Tear down the building on `ref`, if any, decrementing its owner's count and
+   * (for a fort) dropping its defense aura. Called from {@link claim} whenever a
+   * tile changes hands, since a structure cannot survive losing the ground under
+   * it. `previousOwner` is the player who held the tile (and thus the building)
+   * before the change. Returns whether a building was removed.
+   */
+  private destroyBuilding(ref: TileRef, previousOwner: PlayerId): boolean {
+    const type = this.buildings.get(ref);
+    if (type === undefined) return false;
+    this.buildings.delete(ref);
+    if (previousOwner !== NEUTRAL_PLAYER) {
+      const counts = this.standing(previousOwner).buildingCounts;
+      const next = (counts.get(type) ?? 0) - 1;
+      if (next > 0) counts.set(type, next);
+      else counts.delete(type);
+    }
+    if (type === "fort") this.removeDefensePost(ref);
+    return true;
   }
 
   /** True if any 4-connected land neighbour of `ref` is owned by `attacker`. */

@@ -1,6 +1,11 @@
 import type { TileRef } from "./GameMap.js";
 import { NEUTRAL_PLAYER, type PlayerId, type TerritoryGrid } from "./TerritoryGrid.js";
 import {
+  CITY_GOLD_PER_TICK,
+  CITY_TROOP_INCOME_PER_TICK,
+  GOLD_PER_TILE_PER_TICK,
+} from "./buildings.js";
+import {
   defenderLossPerTile,
   ELEVATION_COST_PER_LEVEL,
   ENEMY_CAPTURE_SURCHARGE,
@@ -121,6 +126,8 @@ export class RasterConflict {
   /** Monotonic id source so each ship has a stable handle for the client. */
   private nextShipId = 1;
   private readonly incomeAccumulator = new Map<PlayerId, number>();
+  /** Fractional gold carried between ticks, flushed into the integer pool. */
+  private readonly goldAccumulator = new Map<PlayerId, number>();
   /** Transport-ship landings resolved during the current tick. */
   private crossings: SeaCrossing[] = [];
   private tickCount = 0;
@@ -227,6 +234,7 @@ export class RasterConflict {
 
     this.crossings = [];
     this.applyIncome();
+    this.applyGoldIncome();
     this.advanceShips();
     this.advanceAttacks();
     this.checkVictory();
@@ -344,9 +352,12 @@ export class RasterConflict {
         continue;
       }
       // Logistic soft cap: income tapers as the pool nears its ceiling, so an
-      // empire's army growth slows and plateaus instead of climbing forever.
-      const incomeRate =
-        tiles * INCOME_PER_TILE_PER_TICK * this.grid.modifiersOf(id).income * growthFactor(troops, tiles);
+      // empire's army growth slows and plateaus instead of climbing forever. A
+      // city adds a flat troop dividend on top of the per-tile income, but it is
+      // gated by the same soft cap so cities never break the pool ceiling.
+      const baseRate = tiles * INCOME_PER_TILE_PER_TICK * this.grid.modifiersOf(id).income;
+      const cityRate = this.grid.buildingCountOf(id, "city") * CITY_TROOP_INCOME_PER_TICK;
+      const incomeRate = (baseRate + cityRate) * growthFactor(troops, tiles);
       const accumulated = (this.incomeAccumulator.get(id) ?? 0) + incomeRate;
       const whole = Math.floor(accumulated);
       if (whole > 0) {
@@ -354,6 +365,24 @@ export class RasterConflict {
         this.grid.setTroops(id, next);
       }
       this.incomeAccumulator.set(id, accumulated - whole);
+    }
+  }
+
+  /**
+   * Each player earns gold proportional to the tiles they hold, plus a flat
+   * dividend per city, accumulated fractionally and flushed into the integer
+   * gold pool. Unlike troops, gold is uncapped — it is a spend resource, drained
+   * by building structures — so there is no logistic soft cap here.
+   */
+  private applyGoldIncome(): void {
+    for (const id of this.grid.players()) {
+      const tiles = this.grid.tileCountOf(id);
+      const cities = this.grid.buildingCountOf(id, "city");
+      const rate = tiles * GOLD_PER_TILE_PER_TICK + cities * CITY_GOLD_PER_TICK;
+      const accumulated = (this.goldAccumulator.get(id) ?? 0) + rate;
+      const whole = Math.floor(accumulated);
+      if (whole > 0) this.grid.addGold(id, whole);
+      this.goldAccumulator.set(id, accumulated - whole);
     }
   }
 

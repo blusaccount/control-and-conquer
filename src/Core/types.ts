@@ -14,6 +14,7 @@
 // ---------------------------------------------------------------------------
 
 import type { RasterJoinClientMessage, RasterSpawnClientMessage } from "./messages.js";
+import type { BuildingType } from "./buildings.js";
 
 /** Per-player snapshot row for raster mode. */
 export interface RasterPlayerInfo {
@@ -25,6 +26,19 @@ export interface RasterPlayerInfo {
   color: string;
   /** Current troop pool. */
   troops: number;
+  /** Current gold pool — the economy resource spent on buildings. */
+  gold: number;
+  /**
+   * Gold generated per second at the current territory + city count — what the
+   * HUD renders as "(+N/s)" for gold. Server-computed so every client agrees.
+   */
+  goldPerSecond: number;
+  /** Cities this player owns (economy/troop engine). */
+  cities: number;
+  /** Ports this player owns (sea-crossing reach). */
+  ports: number;
+  /** Forts this player owns (border fortification). */
+  forts: number;
   /** Number of capturable tiles currently owned. */
   tiles: number;
   /**
@@ -76,6 +90,18 @@ export interface RasterShip {
   troops: number;
 }
 
+/**
+ * A structure on the map this snapshot: building `type` belonging to `playerId`
+ * standing on tile (`x`,`y`). Sent as a sparse list (only placed buildings) so
+ * the client can draw a marker per structure, like capitals and ships.
+ */
+export interface RasterBuilding {
+  playerId: number;
+  x: number;
+  y: number;
+  type: BuildingType;
+}
+
 /** Snapshot of a raster-mode match. */
 export interface RasterSnapshot {
   tick: number;
@@ -120,9 +146,11 @@ export interface RasterSnapshot {
   crossings: RasterCrossing[];
   /** Transport ships currently in flight (empty when none are at sea). */
   ships: RasterShip[];
+  /** Structures placed on the map (empty when none have been built). */
+  buildings: RasterBuilding[];
 }
 
-/** Reasons the server can reject a raster expand intent. */
+/** Reasons the server can reject a raster expand or build intent. */
 export type RasterRejectReason =
   | "INVALID_MESSAGE_FORMAT"
   | "INVALID_TILE"
@@ -130,7 +158,15 @@ export type RasterRejectReason =
   | "NO_FRONTIER"
   | "INSUFFICIENT_TROOPS"
   | "TOO_MANY_SHIPS"
-  | "MATCH_ENDED";
+  | "MATCH_ENDED"
+  /** The clicked tile isn't owned by the builder, or is their capital seat. */
+  | "NOT_BUILDABLE"
+  /** A building already stands on the clicked tile. */
+  | "TILE_OCCUPIED"
+  /** The player can't afford the structure. */
+  | "INSUFFICIENT_GOLD"
+  /** The requested building type is unknown. */
+  | "INVALID_BUILDING";
 
 /** Sent by the client to expand its border toward a clicked tile. */
 export interface RasterExpandIntent {
@@ -142,10 +178,21 @@ export interface RasterExpandIntent {
   percent: number;
 }
 
+/** Sent by the client to build a structure on a tile it owns. */
+export interface RasterBuildIntent {
+  /** Tile column (0..width-1) to build on. */
+  targetX: number;
+  /** Tile row (0..height-1) to build on. */
+  targetY: number;
+  /** Which structure to build. */
+  building: BuildingType;
+}
+
 export interface RasterActionRejectedEvent {
   reason: RasterRejectReason;
   message: string;
-  intent: RasterExpandIntent;
+  /** The intent that was rejected — an expand/sea click or a build request. */
+  intent: RasterExpandIntent | RasterBuildIntent;
 }
 
 /** Assignment payload for raster mode. */
@@ -198,6 +245,7 @@ export interface RasterMatchEndedPayload {
 /** Messages the client can send to the server. */
 export type RasterClientMessage =
   | { type: "CLIENT_RASTER_EXPAND"; payload: RasterExpandIntent }
+  | { type: "CLIENT_RASTER_BUILD"; payload: RasterBuildIntent }
   | RasterJoinClientMessage
   | RasterSpawnClientMessage;
 

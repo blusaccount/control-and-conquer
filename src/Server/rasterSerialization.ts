@@ -3,8 +3,9 @@ import { createHash } from "node:crypto";
 import type { GameMap } from "../Core/GameMap.js";
 import type { TerritoryGrid } from "../Core/TerritoryGrid.js";
 import { troopsPerSecond } from "../Core/rasterCombatConfig.js";
+import { goldPerSecond } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
-import type { RasterCrossing, RasterPlayerInfo, RasterShip, RasterSnapshot } from "../Core/types.js";
+import type { RasterBuilding, RasterCrossing, RasterPlayerInfo, RasterShip, RasterSnapshot } from "../Core/types.js";
 
 /**
  * Serialize a `GameMap`'s static terrain into base64 plus a stable hash.
@@ -108,18 +109,32 @@ export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
     const meta = playerMeta.get(id) ?? { name: `Player ${id}`, color: "#888" };
     const capitalRef = capitals?.get(id);
     const tiles = grid.tileCountOf(id);
+    const cities = grid.buildingCountOf(id, "city");
     players.push({
       playerId: id,
       name: meta.name,
       color: meta.color,
       troops: Math.floor(grid.troopsOf(id)),
+      gold: Math.floor(grid.goldOf(id)),
+      goldPerSecond: goldPerSecond(tiles, cities, SIMULATION_TICK_RATE),
+      cities,
+      ports: grid.buildingCountOf(id, "port"),
+      forts: grid.buildingCountOf(id, "fort"),
       tiles,
-      troopsPerSecond: troopsPerSecond(tiles, grid.troopsOf(id), SIMULATION_TICK_RATE, grid.incomeMultiplierOf(id)),
+      troopsPerSecond: troopsPerSecond(tiles, grid.troopsOf(id), SIMULATION_TICK_RATE, grid.incomeMultiplierOf(id), cities),
       capitalX: capitalRef !== undefined ? map.x(capitalRef) : -1,
       capitalY: capitalRef !== undefined ? map.y(capitalRef) : -1,
       eliminated: eliminated?.has(id) ?? false,
     });
   }
+
+  // Every placed structure as a wire record, so the client can mark the map.
+  const buildings: RasterBuilding[] = grid.buildingEntries().map(([ref, type]) => ({
+    playerId: grid.ownerOf(ref),
+    x: map.x(ref),
+    y: map.y(ref),
+    type,
+  }));
 
   return {
     tick,
@@ -139,5 +154,6 @@ export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
     recentEvents,
     crossings,
     ships,
+    buildings,
   };
 };
