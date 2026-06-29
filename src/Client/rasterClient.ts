@@ -456,6 +456,26 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     target.base.getContext("2d")?.putImageData(target.image, 0, 0);
   };
 
+  /**
+   * Size the canvas backing store to its rendered CSS box (scaled by the device
+   * pixel ratio for crisp output), then re-fit/clamp the camera. Called once at
+   * startup and on every window resize so the map always fills the play area
+   * instead of being squashed into a fixed-size canvas.
+   */
+  const resizeCanvas = (): void => {
+    const dpr = window.devicePixelRatio || 1;
+    const rect = ui.mapCanvas.getBoundingClientRect();
+    const w = Math.max(1, Math.round(rect.width * dpr));
+    const h = Math.max(1, Math.round(rect.height * dpr));
+    if (ui.mapCanvas.width !== w || ui.mapCanvas.height !== h) {
+      ui.mapCanvas.width = w;
+      ui.mapCanvas.height = h;
+    }
+    if (!runtime.map) return;
+    if (runtime.view.initialized) clampView();
+    else initView();
+  };
+
   /** Centre and fit the camera so the whole map is visible on first load. */
   const initView = (): void => {
     const map = runtime.map;
@@ -813,6 +833,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   ui.attackPercentInput.addEventListener("input", () => {
     ui.attackPercentOutput.textContent = `${ui.attackPercentInput.value}%`;
   });
+
+  // Match the canvas backing store to its rendered size now and whenever the
+  // window changes, so the map fills the available play area at all times.
+  window.addEventListener("resize", resizeCanvas);
+  resizeCanvas();
 
   requestAnimationFrame(renderFrame);
 };

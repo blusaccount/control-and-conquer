@@ -19,13 +19,14 @@
       main {
         display: grid;
         grid-template-columns: 320px 1fr;
-        min-height: 100vh;
+        height: 100vh;
       }
 
       aside {
         background: #161a22;
         border-right: 1px solid #2a3341;
         padding: 16px;
+        overflow-y: auto;
       }
 
       h1,
@@ -74,11 +75,14 @@
 
       .layout {
         padding: 16px;
+        box-sizing: border-box;
+        height: 100%;
       }
 
       #mapCanvas {
         width: 100%;
-        max-width: 760px;
+        height: 100%;
+        box-sizing: border-box;
         background: #0b1220;
         border: 1px solid #293447;
         border-radius: 12px;
