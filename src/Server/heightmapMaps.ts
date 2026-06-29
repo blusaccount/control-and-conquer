@@ -4,6 +4,8 @@ import { buildTerrainFromMask } from "../Core/terrainBuilder.js";
 import { IMPASSABLE_MAGNITUDE } from "../Core/terrainCodec.js";
 import type { GameMap } from "../Core/GameMap.js";
 import { decodePngToGray, type DecodedGray } from "./pngDecode.js";
+import { carveRivers, riverHalfWidthFor } from "./rivers.js";
+import { loadEarthRivers } from "./riverData.js";
 
 /**
  * Large, real-world maps derived from a grayscale heightmap.
@@ -37,6 +39,12 @@ export interface HeightmapMapDef {
   latMin: number;
   /** Average land elevation (0..255) at/above which a tile is impassable rock. */
   mountainGray: number;
+  /**
+   * Carve real-world rivers (Natural Earth centerlines) into this map as water.
+   * The source topography PNG has no hydrography, so rivers are overlaid as their
+   * own committed data layer (see `riverData.ts` / `rivers.ts`). @default false
+   */
+  rivers?: boolean;
 }
 
 /** Catalogue of available heightmap maps, keyed by id. */
@@ -48,6 +56,7 @@ const EARTH: HeightmapMapDef = {
   latMax: 78,
   latMin: -58,
   mountainGray: 200,
+  rivers: true,
 };
 
 const HEIGHTMAP_MAPS: ReadonlyMap<string, HeightmapMapDef> = new Map([[EARTH.id, EARTH]]);
@@ -145,6 +154,22 @@ export const buildHeightmapGameMap = (def: HeightmapMapDef, requestedWidth?: num
             : Math.max(1, Math.min(30, 1 + Math.round((avg / def.mountainGray) * 24)));
       }
     }
+  }
+
+  // Overlay rivers as water before the finishing pass. The topography source
+  // carries no hydrography, so this is the only step that puts rivers on the
+  // map; it is a hard override of the land/water classification above.
+  if (def.rivers) {
+    carveRivers({
+      width,
+      height,
+      land,
+      elevation,
+      latMax: def.latMax,
+      latMin: def.latMin,
+      rivers: loadEarthRivers(),
+      halfWidth: riverHalfWidthFor(width),
+    });
   }
 
   const map = buildTerrainFromMask({ width, height, land, elevation });
