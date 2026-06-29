@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import type { GameMap } from "../Core/GameMap.js";
 import type { TerritoryGrid } from "../Core/TerritoryGrid.js";
-import type { RasterCrossing, RasterPlayerInfo, RasterSnapshot } from "../Core/types.js";
+import type { RasterCrossing, RasterPlayerInfo, RasterShip, RasterSnapshot } from "../Core/types.js";
 
 /**
  * Serialize a `GameMap`'s static terrain into base64 plus a stable hash.
@@ -79,8 +79,10 @@ export interface BuildSnapshotInput {
   terrainBase64: string;
   winnerPlayerId: number | null;
   recentEvents: string[];
-  /** Amphibious landings resolved this tick (for client boat animation). */
+  /** Transport-ship landings resolved this tick (for the client landing flash). */
   crossings: RasterCrossing[];
+  /** Transport ships in flight this snapshot (for client ship animation). */
+  ships: RasterShip[];
   /**
    * When set, the snapshot carries this incremental ownership update instead of
    * the full owner raster. When omitted, the full raster is encoded and sent.
@@ -89,7 +91,7 @@ export interface BuildSnapshotInput {
 }
 
 export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot => {
-  const { tick, mapName, map, grid, playerMeta, includeTerrain, terrainHash, terrainBase64, winnerPlayerId, recentEvents, crossings, ownerDeltaBase64 } = input;
+  const { tick, mapName, map, grid, playerMeta, includeTerrain, terrainHash, terrainBase64, winnerPlayerId, recentEvents, crossings, ships, ownerDeltaBase64 } = input;
 
   const players: RasterPlayerInfo[] = [];
   for (const id of grid.players()) {
@@ -120,5 +122,6 @@ export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
     winnerPlayerId,
     recentEvents,
     crossings,
+    ships,
   };
 };
