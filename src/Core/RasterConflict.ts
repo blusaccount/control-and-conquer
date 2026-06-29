@@ -6,9 +6,11 @@ import {
   GOLD_PER_TILE_PER_TICK,
 } from "./buildings.js";
 import {
+  ATTACKER_EFFICIENCY,
+  attackSpeedFactor,
   defenderLossPerTile,
-  ELEVATION_COST_PER_LEVEL,
-  ENEMY_CAPTURE_SURCHARGE,
+  defenderStrengthFactor,
+  ENEMY_CAPTURE_BASE,
   EXPANSION_SPEND_FRACTION,
   FRONTIER_JITTER_SPAN,
   FRONTIER_MAGNITUDE_WEIGHT,
@@ -22,6 +24,7 @@ import {
   RETREAT_MALUS_FRACTION,
   SEA_CROSSING_SURCHARGE,
   SHIP_TILES_PER_TICK,
+  terrainLossMultiplier,
 } from "./rasterCombatConfig.js";
 
 /** A request to expand from `attacker`'s territory into `target`'s tiles. */
@@ -294,21 +297,27 @@ export class RasterConflict {
   }
 
   /**
-   * Troop cost to capture a single tile across a land border, factoring terrain
-   * and ownership. Transport-ship landings price their beachhead separately via
-   * {@link beachheadCost}.
+   * Troop cost to capture a single tile across a land border, factoring terrain,
+   * ownership, fortifications and — via `strengthFactor` — how strongly the
+   * defender is garrisoned relative to the assault (see
+   * {@link defenderStrengthFactor}). Transport-ship landings price their
+   * beachhead separately via {@link beachheadCost}. `strengthFactor` defaults to
+   * 1 (no defender-strength effect), which neutral grabs always use.
    */
-  private captureCost(ref: TileRef, target: PlayerId): number {
-    const base = target === NEUTRAL_PLAYER
-      ? NEUTRAL_CAPTURE_COST
-      : NEUTRAL_CAPTURE_COST + ENEMY_CAPTURE_SURCHARGE;
-    const elevationCost = this.grid.map.magnitude(ref) * ELEVATION_COST_PER_LEVEL;
-    let cost = base + elevationCost;
+  private captureCost(ref: TileRef, target: PlayerId, strengthFactor = 1): number {
+    const base = target === NEUTRAL_PLAYER ? NEUTRAL_CAPTURE_COST : ENEMY_CAPTURE_BASE;
+    // Terrain: plains are softer, mountains dearer (a mild multiplier, not a
+    // steep ramp), and the flat attacker-efficiency bonus favours the assault.
+    let cost = base * terrainLossMultiplier(this.grid.map.magnitude(ref)) * ATTACKER_EFFICIENCY;
     // The defender's Fortress Wall raises the cost to capture their tiles.
     if (target !== NEUTRAL_PLAYER) cost *= this.grid.modifiersOf(target).defense;
     // A nearby defense post (e.g. a capital) fortifies the ground around it,
     // raising the cost to take any tile inside its aura.
     cost *= this.grid.defenseFactorAt(ref);
+    // A well-garrisoned defender makes every tile dearer to take (the clamped
+    // attacker-vs-defender troop ratio); neutral land has no garrison, so callers
+    // pass the default factor of 1 there.
+    cost *= strengthFactor;
     return Math.ceil(cost);
   }
 
@@ -380,9 +389,13 @@ export class RasterConflict {
    * opposed landing is dearer than walking the same tile over land. The
    * attacker's Sea God perk (seaSpeed) lowers that surcharge.
    */
-  private beachheadCost(ref: TileRef, attacker: PlayerId, target: PlayerId): number {
+  private beachheadCost(ref: TileRef, attacker: PlayerId, target: PlayerId, attackerForce: number): number {
     const surcharge = Math.ceil(SEA_CROSSING_SURCHARGE / this.grid.modifiersOf(attacker).seaSpeed);
-    return this.captureCost(ref, target) + surcharge;
+    // The garrison defends a beachhead just as it defends an inland tile.
+    const strength = target === NEUTRAL_PLAYER
+      ? 1
+      : defenderStrengthFactor(this.grid.troopsOf(target), attackerForce);
+    return this.captureCost(ref, target, strength) + surcharge;
   }
 
   /**
@@ -468,7 +481,7 @@ export class RasterConflict {
         continue;
       }
 
-      const cost = this.beachheadCost(dest, ship.attacker, owner);
+      const cost = this.beachheadCost(dest, ship.attacker, owner, ship.troops);
       if (ship.troops < cost) {
         // Too few troops to force a landing — the assault is repelled. Survivors
         // fall back into the pool, taxed by the retreat malus if they recoiled off
@@ -534,6 +547,23 @@ export class RasterConflict {
   private advanceAttacks(): void {
     const survivors: RasterAttack[] = [];
 
+    // Per-defender garrison resistance for this tick. A defender's pool resists
+    // the *combined* assault against it, not each front independently: sum every
+    // front's committed force per target, then snapshot one strength factor per
+    // defender from that total. So a nation attacked on several borders can't
+    // defend each at full strength — every extra front dilutes the factor (more
+    // committed force in the denominator) — and the value is stable for the whole
+    // tick regardless of the order fronts are processed in.
+    const committedAgainst = new Map<PlayerId, number>();
+    for (const a of this.attacks) {
+      if (a.target === NEUTRAL_PLAYER) continue;
+      committedAgainst.set(a.target, (committedAgainst.get(a.target) ?? 0) + a.committed);
+    }
+    const strengthByDefender = new Map<PlayerId, number>();
+    for (const [target, committed] of committedAgainst) {
+      strengthByDefender.set(target, defenderStrengthFactor(this.grid.troopsOf(target), committed));
+    }
+
     for (const attack of this.attacks) {
       const frontier = this.orderedFrontier(attack.attacker, attack.target);
 
@@ -549,11 +579,21 @@ export class RasterConflict {
       // pre-capture frontier so the label sits on the contested edge.
       attack.anchor = this.frontierAnchor(frontier);
 
+      // The defender-strength multiplier for this front, snapshotted above from
+      // the garrison's pool against the *combined* committed force pressing this
+      // defender. A strongly-held nation makes every tile dearer, so an
+      // under-committed assault stalls — this is what lets a defender repel an
+      // attack by holding troops — while attacking on multiple fronts dilutes it.
+      const strengthFactor = strengthByDefender.get(attack.target) ?? 1;
+
       // Spend at most this slice of the remaining troops this tick, but always
       // enough to attempt the cheapest possible capture so progress is steady.
-      // Swift Attacker lets a front spend more of its troops per tick.
+      // The front advances faster the bigger the attacker's troop advantage
+      // (a weak garrison is overrun quicker, a strong one slows the push);
+      // `expansionSpeed` is the attacker's own speed modifier (Swift Attacker).
       const expansionSpeed = this.grid.modifiersOf(attack.attacker).expansionSpeed;
-      const budget = Math.max(NEUTRAL_CAPTURE_COST, attack.committed * EXPANSION_SPEND_FRACTION * expansionSpeed);
+      const speed = expansionSpeed * attackSpeedFactor(strengthFactor);
+      const budget = Math.max(NEUTRAL_CAPTURE_COST, attack.committed * EXPANSION_SPEND_FRACTION * speed);
       let spent = 0;
       // Snapshot the defender's per-tile bleed once for the tick: capturing many
       // tiles this advance shouldn't compound the density loss mid-front.
@@ -563,7 +603,7 @@ export class RasterConflict {
         // A tile may have been captured already if a player relinquished it; skip
         // anything no longer owned by the target.
         if (this.grid.ownerOf(ref) !== attack.target) continue;
-        const cost = this.captureCost(ref, attack.target);
+        const cost = this.captureCost(ref, attack.target, strengthFactor);
         if (attack.committed < cost) continue;
         // The first affordable tile (highest priority) is always taken so a front
         // never deadlocks on ground that costs more than one tick's budget; later

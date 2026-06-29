@@ -82,14 +82,106 @@ export const RASTER_MATCH_DURATION_SECONDS = 600;
  */
 export const RETREAT_MALUS_FRACTION = 0.25;
 
-/** Base troop cost to claim a flat (elevation 0) neutral tile. */
+// ---------------------------------------------------------------------------
+// Combat model
+//
+// An independent, clean-room reimplementation of the openfront-style combat
+// mechanics, written from the publicly documented behaviour (the OpenFront wiki
+// and gameplay guides) — NOT ported from OpenFront's source, which is AGPL-3.0.
+// No OpenFront code or assets are used here; only the (uncopyrightable) game
+// rules and formula shapes are reproduced, with our own constants. This keeps
+// the project freely (re)licensable.
+//
+// Per captured tile the attacker spends `captureCost` troops; the defender (if a
+// player) bleeds `defenderLossPerTile` troops. Both mirror OpenFront's
+// attacker/defender troop-loss split:
+//
+//   attackerLoss = base · terrainFactor · ATTACKER_EFFICIENCY · garrisonFactor · fortifications
+//   defenderLoss = defenderTroops / defenderTiles            (density)
+//
+// and the front's advance rate scales with the attacker's troop advantage.
+// ---------------------------------------------------------------------------
+
+/** Base troop cost to claim a flat neutral (wilderness) tile, before factors. */
 export const NEUTRAL_CAPTURE_COST = 1;
 
-/** Extra base cost to capture a tile currently held by an enemy player. */
-export const ENEMY_CAPTURE_SURCHARGE = 2;
+/**
+ * Base troop cost to capture a flat enemy-held tile at troop parity, before the
+ * terrain, attacker-efficiency and garrison factors. Higher than neutral land:
+ * an opposed border is dearer to push than empty wilderness.
+ */
+export const ENEMY_CAPTURE_BASE = 3;
 
-/** Additional troop cost per unit of land elevation (higher ground is harder). */
-export const ELEVATION_COST_PER_LEVEL = 0.1;
+/**
+ * Flat attacker efficiency (OpenFront's ~20% attacker bonus): the attacker loses
+ * this fraction of the nominal cost per tile, so committing to an assault is a
+ * touch cheaper than the raw terrain/garrison maths imply. < 1 favours the
+ * attacker; 1 would be neutral.
+ */
+export const ATTACKER_EFFICIENCY = 0.8;
+
+/**
+ * Terrain capture-cost multipliers by elevation band, mirroring OpenFront's
+ * plains/highland/mountain split (plains are softer, mountains dearer). Land
+ * elevation runs 0–30 (see `terrainCodec`); the two thresholds bucket it into
+ * the three bands. The multiplier scales the *attacker's* per-tile loss, so high
+ * ground is harder to take — but only mildly (a ~1.4× spread), as in OpenFront,
+ * rather than the steep linear ramp the engine used before.
+ */
+export const TERRAIN_PLAINS_MAX_ELEVATION = 7;
+export const TERRAIN_HIGHLAND_MAX_ELEVATION = 18;
+export const TERRAIN_LOSS_PLAINS = 0.9;
+export const TERRAIN_LOSS_HIGHLAND = 1.0;
+export const TERRAIN_LOSS_MOUNTAIN = 1.3;
+
+/** Capture-cost multiplier for a tile's terrain, by its land elevation (0–30). */
+export const terrainLossMultiplier = (elevation: number): number => {
+  if (elevation <= TERRAIN_PLAINS_MAX_ELEVATION) return TERRAIN_LOSS_PLAINS;
+  if (elevation <= TERRAIN_HIGHLAND_MAX_ELEVATION) return TERRAIN_LOSS_HIGHLAND;
+  return TERRAIN_LOSS_MOUNTAIN;
+};
+
+/**
+ * Garrison-strength clamp bounds for {@link defenderStrengthFactor}. The cost an
+ * attacker pays per captured tile scales with the ratio of the *defender's*
+ * troops to the attacking force, clamped to a band (OpenFront's clamped troop
+ * ratio): a defender holding a large army relative to the assault makes every
+ * tile dearer (up to {@link DEFENDER_STRENGTH_MAX}×), grinding an under-committed
+ * poke to a halt; an overwhelming assault floors the factor at
+ * {@link DEFENDER_STRENGTH_MIN}× and rolls through. This is what gives a
+ * stockpiled troop pool real *defensive* value.
+ */
+export const DEFENDER_STRENGTH_MIN = 0.6;
+export const DEFENDER_STRENGTH_MAX = 2.0;
+
+/**
+ * Capture-cost multiplier from the defender's relative strength: the defender's
+ * current troop pool divided by the attacking force, clamped to
+ * [{@link DEFENDER_STRENGTH_MIN}, {@link DEFENDER_STRENGTH_MAX}]. At parity it is
+ * ~1 (no change); a defender far stronger than the assault drives it toward the
+ * max (each tile costs the attacker much more); an attacker far stronger drives
+ * it toward the min. A spent-out attacking force (`attackerTroops <= 0`) yields
+ * the max — there is nothing left to push with.
+ */
+export const defenderStrengthFactor = (defenderTroops: number, attackerTroops: number): number => {
+  if (attackerTroops <= 0) return DEFENDER_STRENGTH_MAX;
+  const ratio = Math.max(0, defenderTroops) / attackerTroops;
+  return Math.min(DEFENDER_STRENGTH_MAX, Math.max(DEFENDER_STRENGTH_MIN, ratio));
+};
+
+/**
+ * How much faster (or slower) a front advances given the garrison it faces —
+ * OpenFront's "conquest speed scales with the attacker's advantage". Derived
+ * from the same garrison factor: a weak defender (factor < 1) is overrun faster,
+ * a strong one (factor > 1) slows the advance, clamped to a sane band. Neutral
+ * land has no garrison (factor 1), so it advances at the base rate.
+ */
+export const ATTACK_SPEED_MIN = 0.5;
+export const ATTACK_SPEED_MAX = 2.0;
+export const attackSpeedFactor = (garrisonFactor: number): number => {
+  if (garrisonFactor <= 0) return ATTACK_SPEED_MAX;
+  return Math.min(ATTACK_SPEED_MAX, Math.max(ATTACK_SPEED_MIN, 1 / garrisonFactor));
+};
 
 /**
  * Defense-post aura. A defense post is a fortified location (e.g. a player's
@@ -145,7 +237,7 @@ export const defenderLossPerTile = (troops: number, tiles: number): number => {
  * tile hugged by more of the attacker's own land (a pocket/bay) is always pulled
  * in before the perimeter pushes further out, so borders smooth into a blob;
  * elevation only gently biases *which* perimeter tile goes next (and high ground
- * already costs more troops to take — see {@link ELEVATION_COST_PER_LEVEL}).
+ * already costs more troops to take — see {@link terrainLossMultiplier}).
  * `jitter` is a deterministic per-tile/-tick wobble (no RNG, so replays stay
  * stable) that scatters captures among otherwise-equal perimeter tiles, keeping
  * the ring from advancing lopsidedly along one edge.

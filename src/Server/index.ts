@@ -138,13 +138,12 @@ wss.on("connection", (socket) => {
           const difficulty = isRasterDifficulty(message.payload.difficulty)
             ? message.payload.difficulty
             : "medium";
-          const bots = botOverride ?? DIFFICULTY_BOT_COUNT[difficulty];
           unsubscribe = registry.joinRasterSolo(
             clientId,
             send,
             { ...choice.options },
-            bots,
             difficulty,
+            botOverride,
           );
         }
       } else if (message.type === "CLIENT_RASTER_SELECT_SPAWN") {
@@ -178,7 +177,7 @@ server.listen(port, () => {
   console.log(
     botOverride !== undefined
       ? `Seating a fixed ${botOverride} AI opponent(s) per solo match (RASTER_BOTS override).`
-      : `AI opponents per difficulty — easy: ${DIFFICULTY_BOT_COUNT.easy}, medium: ${DIFFICULTY_BOT_COUNT.medium}, hard: ${DIFFICULTY_BOT_COUNT.hard}.`,
+      : `AI opponents scale with map size (min per difficulty — easy: ${DIFFICULTY_BOT_COUNT.easy}, medium: ${DIFFICULTY_BOT_COUNT.medium}, hard: ${DIFFICULTY_BOT_COUNT.hard}; up to ${MAX_RASTER_BOTS} on the largest maps).`,
   );
   console.log(`Simulation loop running at ${SIMULATION_TICK_RATE} TPS.`);
 });
