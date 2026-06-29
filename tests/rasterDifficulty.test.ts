@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { RasterGameSession } from "../src/Server/RasterGameSession.js";
-import { DIFFICULTY_BOT_COUNT } from "../src/Server/MatchRegistry.js";
+import { DIFFICULTY_BOT_COUNT, MAX_RASTER_BOTS, scaleBotCount } from "../src/Server/MatchRegistry.js";
 import { isRasterDifficulty, RASTER_DIFFICULTIES } from "../src/Core/messages.js";
 import { validateCommand } from "../src/Server/validateCommand.js";
 
@@ -9,6 +9,31 @@ test("difficulty seats more rival nations as it rises", () => {
   assert.ok(DIFFICULTY_BOT_COUNT.easy < DIFFICULTY_BOT_COUNT.medium);
   assert.ok(DIFFICULTY_BOT_COUNT.medium < DIFFICULTY_BOT_COUNT.hard);
   for (const d of RASTER_DIFFICULTIES) assert.ok(DIFFICULTY_BOT_COUNT[d] > 0);
+});
+
+test("the field scales up with the land a map offers", () => {
+  // A tiny (Classic-scale) map stays a small handful; ever-larger maps seat
+  // strictly more nations, scaling with the tiles available.
+  const tiny = scaleBotCount(1_500, "medium");
+  const standard = scaleBotCount(30_000, "medium");
+  const large = scaleBotCount(120_000, "medium");
+  const huge = scaleBotCount(480_000, "medium");
+  assert.ok(tiny < standard, `tiny (${tiny}) should field fewer than standard (${standard})`);
+  assert.ok(standard < large, `standard (${standard}) should field fewer than large (${large})`);
+  assert.ok(large <= huge, `large (${large}) should not exceed huge (${huge})`);
+});
+
+test("a tiny map floors at the difficulty minimum, a vast one caps at the seat limit", () => {
+  for (const d of RASTER_DIFFICULTIES) {
+    assert.equal(scaleBotCount(1, d), DIFFICULTY_BOT_COUNT[d], "tiny maps fall back to the floor");
+    assert.equal(scaleBotCount(50_000_000, d), MAX_RASTER_BOTS, "vast maps cap at the seat limit");
+  }
+});
+
+test("harder difficulty packs a denser field onto the same map", () => {
+  const tiles = 120_000;
+  assert.ok(scaleBotCount(tiles, "easy") < scaleBotCount(tiles, "medium"));
+  assert.ok(scaleBotCount(tiles, "medium") < scaleBotCount(tiles, "hard"));
 });
 
 test("isRasterDifficulty accepts the known ids and rejects everything else", () => {

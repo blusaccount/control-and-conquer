@@ -48,12 +48,17 @@ heightmap source with the build tool:
 tsx scripts/buildMap.ts --in <source-heightmap.png> --out earth-topo.png --max-width 2048
 ```
 
-Set the number of AI opponents with `RASTER_BOTS` (default 4, max 5), e.g.
-`RASTER_BOTS=5 npm run dev`. Each bot is seated with a distinct personality
-(land-grabber, warmonger, all-rounder, opportunist, turtle) and plays a
-strategic game: it races for cheap neutral land to compound its income, strikes
-the weakest rival it can beat, and uses amphibious crossings to attack across
-narrow seas.
+The size of the AI field **scales with the map**: the tiny World — Classic
+sketch stays a readable handful, while the large Earth maps fill up with many
+more rival nations (up to 31), so bigger worlds feel crowded rather than empty.
+Difficulty shifts the whole curve — harder games pack a denser, more aggressive
+field onto the same land. Set a fixed count instead with `RASTER_BOTS` (max 31),
+e.g. `RASTER_BOTS=12 npm run dev`, which overrides the per-map scaling.
+
+Each bot is seated with a distinct personality (land-grabber, warmonger,
+all-rounder, opportunist, turtle) and plays a strategic game: it races for cheap
+neutral land to compound its income, strikes the weakest rival it can beat, and
+uses amphibious crossings to attack across narrow seas.
 
 ## Scripts
 

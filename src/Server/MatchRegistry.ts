@@ -14,14 +14,38 @@ import { SIMULATION_TICK_RATE, SPAWN_PHASE_SECONDS } from "./simulationConfig.js
  */
 export const MAX_RASTER_BOTS = 31;
 
-/** Default field of AI opponents — a multi-bot FFA rather than a 1v1 duel. */
-export const DEFAULT_RASTER_BOT_COUNT = 12;
-
-/** Rival nations seated per difficulty — more, harder opponents as it rises. */
+/**
+ * Smallest field seated per difficulty — the floor used on tiny maps like the
+ * Classic world sketch. Bigger maps grow well past this (see {@link scaleBotCount}).
+ */
 export const DIFFICULTY_BOT_COUNT: Record<RasterDifficulty, number> = {
-  easy: 6,
-  medium: 12,
-  hard: 20,
+  easy: 4,
+  medium: 6,
+  hard: 8,
+};
+
+/**
+ * Land-per-nation density as a square-root divisor, by difficulty: the field
+ * grows with the square root of the capturable land divided by this, so a 4×
+ * larger map roughly doubles the field rather than quadrupling it. Smaller =
+ * denser, so Hard packs more rival nations onto the same map than Easy.
+ */
+const DIFFICULTY_FIELD_DIVISOR: Record<RasterDifficulty, number> = {
+  easy: 24,
+  medium: 16,
+  hard: 11,
+};
+
+/**
+ * Number of rival nations to seat for a map of `capturableTiles` land, scaled to
+ * the map so small maps (the Classic sketch) stay a readable handful while the
+ * large real-world Earth maps fill up with many more nations. The count climbs
+ * with the square root of the land available, is floored per difficulty so even
+ * tiny maps field some opponents, and is capped at the session's seat limit.
+ */
+export const scaleBotCount = (capturableTiles: number, difficulty: RasterDifficulty): number => {
+  const byLand = Math.round(Math.sqrt(Math.max(0, capturableTiles)) / DIFFICULTY_FIELD_DIVISOR[difficulty]);
+  return Math.max(DIFFICULTY_BOT_COUNT[difficulty], Math.min(byLand, MAX_RASTER_BOTS));
 };
 
 /**
@@ -60,15 +84,18 @@ export class MatchRegistry {
 
   /**
    * Start a SOLO raster match immediately: the human versus a field of
-   * server-side bots with varied personalities (an FFA, not a duel). `botCount`
-   * is clamped to the seats the session can actually fill.
+   * server-side bots with varied personalities (an FFA, not a duel). The field
+   * size scales with the chosen map — small maps stay a readable handful, large
+   * ones fill up (see {@link scaleBotCount}). Pass `botOverride` to force a fixed
+   * count instead (e.g. the `RASTER_BOTS` env override); it is clamped to the
+   * seats the session can actually fill.
    */
   public joinRasterSolo(
     clientId: string,
     send: RasterMessageHandler,
     options: RasterGameSessionOptions = {},
-    botCount: number = DEFAULT_RASTER_BOT_COUNT,
     difficulty: RasterDifficulty = "medium",
+    botOverride?: number,
   ): () => void {
     this.matchSequence += 1;
     const matchId = `match-${this.matchSequence}-raster-solo`;
@@ -85,6 +112,9 @@ export class MatchRegistry {
     const unsubHuman = session.subscribe(clientId, send, false);
     this.clientToSession.set(clientId, session);
 
+    // Field size: a fixed override when supplied, otherwise scaled to the land
+    // the map actually offers (read straight off the freshly built grid).
+    const botCount = botOverride ?? scaleBotCount(session.peekGrid().capturableCount, difficulty);
     const seats = Math.max(0, Math.min(Math.floor(botCount) || 0, MAX_RASTER_BOTS));
     const unsubBots: Array<() => void> = [];
     for (let i = 0; i < seats; i += 1) {
