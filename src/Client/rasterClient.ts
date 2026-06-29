@@ -1195,7 +1195,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const secs = runtime.spawnRemainingSeconds;
     const title = runtime.spawned ? "Get ready — the battle begins" : "Start phase — choose your spawn";
     const sub = runtime.spawned
-      ? "Your nation is founded. Territory opens when the timer hits zero."
+      ? "Your nation is founded. Click open land to move it; territory opens when the timer hits zero."
       : "Click anywhere on open land to found your nation.";
     ui.startBanner.innerHTML =
       `<span class="start-banner-title">${escapeHtml(title)}</span>` +
@@ -1214,7 +1214,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         ? `<strong>Choose your start position${runtime.phase === "spawn" ? ` — ${secs}s` : ""}.</strong><br/>` +
           `<em>Click anywhere on open land to found your nation. Drag to pan, scroll to zoom.</em>`
         : `<strong>Nation founded — the battle begins in ${secs}s.</strong><br/>` +
-          `<em>Hold tight: you can't take territory until the start phase ends. Drag to pan, scroll to zoom.</em>`;
+          `<em>Click open land to relocate your spawn while the timer runs. Drag to pan, scroll to zoom.</em>`;
       ui.eventsPanel.innerHTML = runtime.recentEvents
         .map((ev) => `<div class="event">${escapeHtml(ev)}</div>`)
         .join("");
@@ -1330,15 +1330,12 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const tileY = Math.floor(runtime.view.y + y / runtime.view.scale);
     if (tileX < 0 || tileY < 0 || tileX >= runtime.map.width || tileY >= runtime.map.height) return;
 
-    // During the start phase the only meaningful click is choosing a start
-    // position; once founded the player waits out the countdown before acting.
+    // During the start phase every click (re)places your spawn: the first founds
+    // your nation and each later one relocates it, so you can move your start
+    // position freely until the countdown ends.
     if (runtime.phase === "spawn") {
-      if (!runtime.spawned) {
-        sendSelectSpawn(tileX, tileY);
-        setStatus(ui, `Founding at (${tileX}, ${tileY})…`);
-      } else {
-        setStatus(ui, `The battle hasn't begun yet — ${runtime.spawnRemainingSeconds}s left in the start phase.`);
-      }
+      sendSelectSpawn(tileX, tileY);
+      setStatus(ui, runtime.spawned ? `Moving spawn to (${tileX}, ${tileY})…` : `Founding at (${tileX}, ${tileY})…`);
       return;
     }
 

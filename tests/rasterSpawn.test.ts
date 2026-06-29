@@ -52,16 +52,55 @@ test("selecting a water tile is rejected and seats nobody", () => {
   );
 });
 
-test("a spawn can only be chosen once", () => {
+test("once the game is live the spawn is fixed and re-picks are ignored", () => {
+  // No start phase configured → the session is in the `playing` phase from the
+  // first tick, so a player keeps the ground they founded on.
   const session = new RasterGameSession({ width: 32, height: 24, seed: 9, maxDurationTicks: 999 });
   session.subscribe("human", () => {}, false);
   const map = session.peekMap();
   const a = firstNeutralLand(session);
   session.selectSpawn("human", map.x(a), map.y(a));
   const tiles = session.peekGrid().tileCountOf(1);
-  // A second pick is ignored (already spawned).
+  // A second pick is ignored (already spawned, game live).
   session.selectSpawn("human", map.x(a) + 1, map.y(a));
-  assert.equal(session.peekGrid().tileCountOf(1), tiles, "second spawn pick is ignored");
+  assert.equal(session.peekGrid().tileCountOf(1), tiles, "second spawn pick is ignored once live");
+  assert.equal(session.peekGrid().ownerOf(a), 1, "the original founding tile is still ours");
+});
+
+test("during the start phase a player can move their spawn freely", () => {
+  const session = new RasterGameSession({ width: 32, height: 24, seed: 9, spawnPhaseTicks: 20 });
+  session.subscribe("human", () => {}, false);
+  const grid = session.peekGrid();
+  const map = session.peekMap();
+
+  const a = firstNeutralLand(session);
+  session.selectSpawn("human", map.x(a), map.y(a));
+  assert.equal(grid.ownerOf(a), 1, "founded on the first pick");
+  assert.equal(grid.tileCountOf(1), 1);
+
+  // Re-pick a different open tile: the spawn relocates, releasing the old one.
+  const b = a + 1;
+  assert.ok(grid.isCapturable(b) && grid.ownerOf(b) === 0, "a distinct open tile to move to");
+  session.selectSpawn("human", map.x(b), map.y(b));
+  assert.equal(grid.ownerOf(b), 1, "the spawn moved to the re-picked tile");
+  assert.equal(grid.ownerOf(a), 0, "the old founding tile is released back to neutral");
+  assert.equal(grid.tileCountOf(1), 1, "still a single founding tile after the move");
+});
+
+test("re-picking your own current spawn tile is a harmless no-op", () => {
+  const session = new RasterGameSession({ width: 32, height: 24, seed: 9, spawnPhaseTicks: 20 });
+  const msgs: RasterServerMessage[] = [];
+  session.subscribe("human", (m) => msgs.push(m), false);
+  const map = session.peekMap();
+  const a = firstNeutralLand(session);
+  session.selectSpawn("human", map.x(a), map.y(a));
+  msgs.length = 0;
+  session.selectSpawn("human", map.x(a), map.y(a));
+  assert.equal(session.peekGrid().ownerOf(a), 1, "still seated on the same tile");
+  assert.ok(
+    !msgs.some((m) => m.type === "SERVER_RASTER_ACTION_REJECTED"),
+    "clicking your own spawn is not rejected",
+  );
 });
 
 test("auto-spawn (the default, used by bots) seats immediately", () => {
