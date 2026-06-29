@@ -5,6 +5,7 @@ import {
   DEFENSE_POST_STRENGTH,
   MAX_SEA_CROSSING_TILES,
   MAX_SEA_RANGE_MULTIPLIER,
+  MAX_TRANSPORT_SHIPS_PER_PLAYER,
 } from "./rasterCombatConfig.js";
 import { IDENTITY_MODIFIERS, type PlayerModifiers } from "./playerModifiers.js";
 import {
@@ -281,6 +282,18 @@ export class TerritoryGrid {
     const scaled = Math.round(MAX_SEA_CROSSING_TILES * (this.standing(id).modifiers.seaRange + portReach));
     // Bound the reach (and thus the per-launch BFS cost) even if perks/ports stack.
     return Math.min(MAX_SEA_CROSSING_TILES * MAX_SEA_RANGE_MULTIPLIER, scaled);
+  }
+
+  /**
+   * How many transport ships this player may have at sea simultaneously: the base
+   * {@link MAX_TRANSPORT_SHIPS_PER_PLAYER} scaled by their `shipCapacity` modifier
+   * and floored at 1. Routes the ship cap through the same per-player plumbing as
+   * {@link seaRangeOf} rather than reading the bare constant, so the two naval
+   * limits stay consistent and a future perk can flex it. With the baseline
+   * (identity) modifiers this is exactly the base cap.
+   */
+  maxShipsOf(id: PlayerId): number {
+    return Math.max(1, Math.round(MAX_TRANSPORT_SHIPS_PER_PLAYER * this.standing(id).modifiers.shipCapacity));
   }
 
   hasPlayer(id: PlayerId): boolean {

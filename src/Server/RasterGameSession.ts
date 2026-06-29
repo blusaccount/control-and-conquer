@@ -21,7 +21,6 @@ import { BUILDING_DEFS, buildingCost } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import type { RasterMatchPhase } from "../Core/types.js";
 import { buildRasterSnapshot, encodeOwnerDelta, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
-import { MAX_TRANSPORT_SHIPS_PER_PLAYER } from "../Core/rasterCombatConfig.js";
 
 export type RasterMessageHandler = (message: RasterServerMessage) => void;
 
@@ -929,7 +928,7 @@ export class RasterGameSession {
       case "TOO_MANY_SHIPS":
         return {
           reason: "TOO_MANY_SHIPS",
-          message: `You already have ${this.conflict.shipCountOf(attacker)} transport ships at sea (max ${MAX_TRANSPORT_SHIPS_PER_PLAYER}).`,
+          message: `You already have ${this.conflict.shipCountOf(attacker)} transport ships at sea (max ${this.grid.maxShipsOf(attacker)}).`,
         };
       case "INSUFFICIENT_TROOPS":
         return { reason: "INSUFFICIENT_TROOPS", message: "Not enough troops in your pool." };

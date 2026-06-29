@@ -19,6 +19,12 @@ export interface PlayerModifiers {
   seaRange: number;
   /** Scales boat speed (lower sea-crossing surcharge + faster animation). */
   seaSpeed: number;
+  /**
+   * Scales how many transport ships the player may have at sea at once (the base
+   * cap times this, bounded ≥1). Mirrors `seaRange` so both naval limits flex
+   * through the same per-player plumbing instead of one being a hard constant.
+   */
+  shipCapacity: number;
   /** Scales troop income. */
   income: number;
 }
@@ -29,5 +35,6 @@ export const IDENTITY_MODIFIERS: PlayerModifiers = Object.freeze({
   defense: 1,
   seaRange: 1,
   seaSpeed: 1,
+  shipCapacity: 1,
   income: 1,
 });

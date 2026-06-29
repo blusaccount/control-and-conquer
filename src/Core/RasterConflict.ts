@@ -273,7 +273,7 @@ export class RasterConflict {
     if (!this.grid.isCapturable(dest) || this.grid.ownerOf(dest) === attacker) return "INVALID_TARGET";
     if (!Number.isInteger(troops) || troops <= 0) return "INVALID_TROOP_COUNT";
     if (troops > this.grid.troopsOf(attacker)) return "INSUFFICIENT_TROOPS";
-    if (this.shipCountOf(attacker) >= MAX_TRANSPORT_SHIPS_PER_PLAYER) return "TOO_MANY_SHIPS";
+    if (this.shipCountOf(attacker) >= this.grid.maxShipsOf(attacker)) return "TOO_MANY_SHIPS";
 
     const path = this.grid.findSeaPath(attacker, dest, this.grid.seaRangeOf(attacker));
     if (!path) return "NO_FRONTIER";

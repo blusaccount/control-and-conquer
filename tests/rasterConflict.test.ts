@@ -10,6 +10,7 @@ import {
   DEFENDER_STRENGTH_MAX,
   DEFENDER_STRENGTH_MIN,
   INCOME_PER_TILE_PER_TICK,
+  MAX_TRANSPORT_SHIPS_PER_PLAYER,
   TERRAIN_LOSS_HIGHLAND,
   TERRAIN_LOSS_MOUNTAIN,
   TERRAIN_LOSS_PLAINS,
@@ -186,6 +187,27 @@ test("attackSpeedFactor speeds the advance against a weak garrison and slows it 
   assert.ok(attackSpeedFactor(DEFENDER_STRENGTH_MAX) < 1, "a strong garrison slows the push");
   assert.equal(attackSpeedFactor(0), ATTACK_SPEED_MAX, "an unopposed advance hits the speed ceiling");
   assert.ok(attackSpeedFactor(100) >= ATTACK_SPEED_MIN, "the slowdown is clamped");
+
+  // The speed bounds are derived from the garrison-factor band, so they stay
+  // consistent with it: a real garrison factor (always clamped to the strength
+  // band) can never produce a speed outside [1/MAX, 1/MIN], and there is no dead
+  // ceiling the engine can't reach.
+  assert.equal(ATTACK_SPEED_MAX, 1 / DEFENDER_STRENGTH_MIN, "ceiling is the reciprocal of the strongest defence");
+  assert.equal(ATTACK_SPEED_MIN, 1 / DEFENDER_STRENGTH_MAX, "floor is the reciprocal of the weakest defence");
+  assert.equal(attackSpeedFactor(DEFENDER_STRENGTH_MIN), ATTACK_SPEED_MAX, "the weakest defence reaches the ceiling exactly");
+});
+
+test("maxShipsOf scales the ship cap by the shipCapacity modifier, floored at 1", () => {
+  const grid = new TerritoryGrid(flatLand(4, 1));
+  grid.addPlayer(1, 0);
+  // Baseline (identity modifiers) is exactly the base cap — no behaviour change.
+  assert.equal(grid.maxShipsOf(1), MAX_TRANSPORT_SHIPS_PER_PLAYER, "baseline equals the base cap");
+  // A perk that doubles capacity doubles the cap — the same per-player hook seaRangeOf uses.
+  grid.setModifiers(1, { ...grid.modifiersOf(1), shipCapacity: 2 });
+  assert.equal(grid.maxShipsOf(1), MAX_TRANSPORT_SHIPS_PER_PLAYER * 2);
+  // It never collapses to zero, so a player can always put at least one ship out.
+  grid.setModifiers(1, { ...grid.modifiersOf(1), shipCapacity: 0 });
+  assert.equal(grid.maxShipsOf(1), 1, "never drops below one ship");
 });
 
 test("mountain ground costs an attacker more troops to take than plains", () => {
