@@ -5,11 +5,18 @@ import { NEUTRAL_PLAYER, TerritoryGrid } from "../src/Core/TerritoryGrid.js";
 import { RasterConflict, type AttackIntent } from "../src/Core/RasterConflict.js";
 import { encodeTile } from "../src/Core/terrainCodec.js";
 import {
+  ATTACK_SPEED_MAX,
+  ATTACK_SPEED_MIN,
   DEFENDER_STRENGTH_MAX,
   DEFENDER_STRENGTH_MIN,
   INCOME_PER_TILE_PER_TICK,
+  TERRAIN_LOSS_HIGHLAND,
+  TERRAIN_LOSS_MOUNTAIN,
+  TERRAIN_LOSS_PLAINS,
+  attackSpeedFactor,
   defenderLossPerTile,
   defenderStrengthFactor,
+  terrainLossMultiplier,
 } from "../src/Core/rasterCombatConfig.js";
 
 const flatLand = (width: number, height: number): GameMap => {
@@ -133,13 +140,58 @@ test("defenderStrengthFactor clamps the troop ratio into its band", () => {
   assert.equal(defenderStrengthFactor(50, 0), DEFENDER_STRENGTH_MAX);
 });
 
+test("terrainLossMultiplier buckets elevation into plains/highland/mountain bands", () => {
+  assert.equal(terrainLossMultiplier(0), TERRAIN_LOSS_PLAINS);
+  assert.equal(terrainLossMultiplier(7), TERRAIN_LOSS_PLAINS);
+  assert.equal(terrainLossMultiplier(8), TERRAIN_LOSS_HIGHLAND);
+  assert.equal(terrainLossMultiplier(18), TERRAIN_LOSS_HIGHLAND);
+  assert.equal(terrainLossMultiplier(19), TERRAIN_LOSS_MOUNTAIN);
+  assert.equal(terrainLossMultiplier(30), TERRAIN_LOSS_MOUNTAIN);
+  // Mountains are dearer than plains, but only mildly (OpenFront-style spread).
+  assert.ok(TERRAIN_LOSS_MOUNTAIN > TERRAIN_LOSS_PLAINS);
+  assert.ok(TERRAIN_LOSS_MOUNTAIN / TERRAIN_LOSS_PLAINS < 2, "the terrain spread is gentle, not a wall");
+});
+
+test("attackSpeedFactor speeds the advance against a weak garrison and slows it against a strong one", () => {
+  assert.equal(attackSpeedFactor(1), 1, "parity advances at the base rate");
+  assert.ok(attackSpeedFactor(DEFENDER_STRENGTH_MIN) > 1, "a weak garrison is overrun faster");
+  assert.ok(attackSpeedFactor(DEFENDER_STRENGTH_MAX) < 1, "a strong garrison slows the push");
+  assert.equal(attackSpeedFactor(0), ATTACK_SPEED_MAX, "an unopposed advance hits the speed ceiling");
+  assert.ok(attackSpeedFactor(100) >= ATTACK_SPEED_MIN, "the slowdown is clamped");
+});
+
+test("mountain ground costs an attacker more troops to take than plains", () => {
+  // Two identical neutral grabs differing only in the target tile's elevation:
+  // a high mountain tile must drain more of the committed force than flat plains.
+  const run = (elevation: number): number => {
+    // 3-wide so a frontier remains after the middle tile falls and the front is
+    // still reported (its leftover committed troops reveal what the capture cost).
+    const terrain = new Uint8Array(3);
+    terrain[0] = encodeTile({ land: true, shoreline: false, ocean: false, magnitude: 0 });
+    terrain[1] = encodeTile({ land: true, shoreline: false, ocean: false, magnitude: elevation });
+    terrain[2] = encodeTile({ land: true, shoreline: false, ocean: false, magnitude: 0 });
+    const grid = new TerritoryGrid(new GameMap(3, 1, terrain));
+    grid.addPlayer(1, 20);
+    grid.claim(0, 1);
+    const conflict = new RasterConflict(grid);
+    assert.equal(conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 20 }), null);
+    conflict.processTick(); // capture the adjacent neutral tile (tile 1)
+    assert.equal(grid.ownerOf(1), 1, "the tile is taken either way");
+    // Leftover committed troops sit on the front; 20 minus them is what tile 1 cost.
+    const front = conflict.activeFronts()[0];
+    return 20 - (front ? front.troops : 0);
+  };
+
+  assert.ok(run(30) > run(0), "the mountain capture costs more than the plains one");
+});
+
 test("a strong garrison repels the very assault a weak one cannot", () => {
   // 3x1 line: player 1 (tile 0) attacks player 2 (tiles 1-2) with the same small
   // force in both runs. The only difference is how heavily player 2 is garrisoned
   // — which is exactly what should decide whether the attack breaks through.
   const build = (defenderTroops: number) => {
     const grid = new TerritoryGrid(flatLand(3, 1));
-    grid.addPlayer(1, 6);
+    grid.addPlayer(1, 4);
     grid.addPlayer(2, defenderTroops);
     grid.claim(0, 1);
     grid.claim(1, 2);
@@ -147,16 +199,17 @@ test("a strong garrison repels the very assault a weak one cannot", () => {
     return { grid, conflict: new RasterConflict(grid) };
   };
 
-  // Weak garrison: 6 committed troops grind through both tiles over a few ticks.
+  // Weak garrison: 4 committed troops can afford the (cheap) border tile and bite
+  // into player 2's territory.
   const weak = build(5);
-  assert.equal(weak.conflict.launchAttack({ attacker: 1, target: 2, troops: 6 }), null);
+  assert.equal(weak.conflict.launchAttack({ attacker: 1, target: 2, troops: 4 }), null);
   runTicks(weak.conflict, 30);
-  assert.equal(weak.grid.tileCountOf(2), 0, "a thinly-held nation is overrun");
+  assert.ok(weak.grid.tileCountOf(2) < 2, `a thinly-held nation loses ground, holds ${weak.grid.tileCountOf(2)}`);
 
-  // Strong garrison: the identical 6-troop assault can't afford a single tile and
+  // Strong garrison: the identical 4-troop assault can't afford a single tile and
   // is repelled outright — holding troops now provides real defensive value.
   const strong = build(100);
-  assert.equal(strong.conflict.launchAttack({ attacker: 1, target: 2, troops: 6 }), null);
+  assert.equal(strong.conflict.launchAttack({ attacker: 1, target: 2, troops: 4 }), null);
   runTicks(strong.conflict, 30);
   assert.equal(strong.grid.tileCountOf(2), 2, "a well-garrisoned nation holds its ground");
   assert.equal(strong.conflict.activeAttackCount, 0, "the repelled assault ends");
@@ -169,8 +222,8 @@ test("a garrison can't hold every front at full strength: a second front dilutes
   // because the defender's strength is split across the combined assault.
   const build = () => {
     const grid = new TerritoryGrid(flatLand(5, 1));
-    grid.addPlayer(1, 6);
-    grid.addPlayer(2, 6);
+    grid.addPlayer(1, 4);
+    grid.addPlayer(2, 4);
     grid.addPlayer(3, 14);
     grid.claim(0, 1);
     grid.claim(1, 3);
@@ -180,17 +233,17 @@ test("a garrison can't hold every front at full strength: a second front dilutes
     return { grid, conflict: new RasterConflict(grid) };
   };
 
-  // One front: 6 troops can't afford a tile against the full 14-troop garrison.
+  // One front: 4 troops can't afford a tile against the full 14-troop garrison.
   const solo = build();
-  assert.equal(solo.conflict.launchAttack({ attacker: 1, target: 3, troops: 6 }), null);
+  assert.equal(solo.conflict.launchAttack({ attacker: 1, target: 3, troops: 4 }), null);
   runTicks(solo.conflict, 30);
   assert.equal(solo.grid.tileCountOf(3), 3, "a single front is repelled by the full garrison");
 
-  // Two fronts: the same 6-troop assaults, now splitting the garrison's defence
+  // Two fronts: the same 4-troop assaults, now splitting the garrison's defence
   // between them, break into the defender's territory.
   const pincer = build();
-  assert.equal(pincer.conflict.launchAttack({ attacker: 1, target: 3, troops: 6 }), null);
-  assert.equal(pincer.conflict.launchAttack({ attacker: 2, target: 3, troops: 6 }), null);
+  assert.equal(pincer.conflict.launchAttack({ attacker: 1, target: 3, troops: 4 }), null);
+  assert.equal(pincer.conflict.launchAttack({ attacker: 2, target: 3, troops: 4 }), null);
   runTicks(pincer.conflict, 30);
   assert.ok(
     pincer.grid.tileCountOf(3) < 3,
@@ -291,20 +344,19 @@ test("a front blocked against a player refunds troops minus the retreat malus", 
 });
 
 test("a front blocked against neutral land refunds troops in full", () => {
-  // tile 1 is a steep neutral peak (mag 30 -> cost 4); 3 committed can't take it.
-  // Retreating from neutral land (TerraNullius) is free — full refund, no malus.
-  const terrain = new Uint8Array(2);
-  terrain[0] = encodeTile({ land: true, shoreline: false, ocean: false, magnitude: 0 });
-  terrain[1] = encodeTile({ land: true, shoreline: false, ocean: false, magnitude: 30 });
-  const grid = new TerritoryGrid(new GameMap(2, 1, terrain));
+  // tile 1 is heavily fortified neutral land (a strong defense post drives its
+  // capture cost above 3); 3 committed troops can't take it. Retreating from
+  // neutral land (TerraNullius) is free — full refund, no malus.
+  const grid = new TerritoryGrid(flatLand(2, 1));
   grid.addPlayer(1, 3);
   grid.claim(0, 1);
+  grid.addDefensePost(1, 1, 5); // factor 5 at the tile -> cost ceil(1*0.9*0.8*5)=4
   const conflict = new RasterConflict(grid);
 
   assert.equal(conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 3 }), null);
   conflict.processTick();
 
-  assert.equal(grid.ownerOf(1), NEUTRAL_PLAYER, "the peak is not taken");
+  assert.equal(grid.ownerOf(1), NEUTRAL_PLAYER, "the fortified tile is not taken");
   assert.equal(grid.troopsOf(1), 3, "all 3 troops return — neutral retreat is free");
 });
 

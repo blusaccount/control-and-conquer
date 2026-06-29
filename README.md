@@ -60,6 +60,35 @@ all-rounder, opportunist, turtle) and plays a strategic game: it races for cheap
 neutral land to compound its income, strikes the weakest rival it can beat, and
 uses amphibious crossings to attack across narrow seas.
 
+## Combat model
+
+Combat is autonomous: you only commit N% of your troop pool toward a tile, and
+the engine resolves the front. Each tick a front captures border tiles in
+priority order; per captured tile the **attacker** spends troops and the
+**defender** (if a player) bleeds troops. The per-tile attacker cost is:
+
+```
+cost = base · terrain · attackerEfficiency · garrisonFactor · fortifications
+```
+
+- **base** — flat neutral (wilderness) land is cheap; an enemy-held tile is dearer.
+- **terrain** — plains / highland / mountain bands (higher ground is mildly dearer).
+- **attackerEfficiency** — a flat ~20% bonus favouring the attacker.
+- **garrisonFactor** — the clamped ratio of the **defender's** troops to the
+  attacking force. A well-garrisoned nation makes every tile far costlier, so an
+  under-committed poke stalls and is repelled — holding troops (and border forts)
+  is your defence. Attacking on multiple fronts dilutes the garrison's strength
+  across them, so a coordinated pincer cracks a defence a single front can't.
+- **fortifications** — forts / defense posts raise the cost in an aura.
+
+The defender's per-tile loss is density-based (its pool spread over its
+territory), and a front advances faster the bigger the attacker's troop
+advantage. These mechanics are an **independent, clean-room reimplementation
+inspired by the publicly documented behaviour of [OpenFront.io](https://openfront.io)**.
+This project contains no OpenFront source code or assets, is not affiliated with
+or endorsed by OpenFront, and reproduces only the (uncopyrightable) game rules —
+keeping the project freely licensable.
+
 ## Scripts
 
 | Script | Purpose |

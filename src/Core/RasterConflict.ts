@@ -6,10 +6,11 @@ import {
   GOLD_PER_TILE_PER_TICK,
 } from "./buildings.js";
 import {
+  ATTACKER_EFFICIENCY,
+  attackSpeedFactor,
   defenderLossPerTile,
   defenderStrengthFactor,
-  ELEVATION_COST_PER_LEVEL,
-  ENEMY_CAPTURE_SURCHARGE,
+  ENEMY_CAPTURE_BASE,
   EXPANSION_SPEND_FRACTION,
   FRONTIER_JITTER_SPAN,
   FRONTIER_MAGNITUDE_WEIGHT,
@@ -23,6 +24,7 @@ import {
   RETREAT_MALUS_FRACTION,
   SEA_CROSSING_SURCHARGE,
   SHIP_TILES_PER_TICK,
+  terrainLossMultiplier,
 } from "./rasterCombatConfig.js";
 
 /** A request to expand from `attacker`'s territory into `target`'s tiles. */
@@ -303,17 +305,16 @@ export class RasterConflict {
    * 1 (no defender-strength effect), which neutral grabs always use.
    */
   private captureCost(ref: TileRef, target: PlayerId, strengthFactor = 1): number {
-    const base = target === NEUTRAL_PLAYER
-      ? NEUTRAL_CAPTURE_COST
-      : NEUTRAL_CAPTURE_COST + ENEMY_CAPTURE_SURCHARGE;
-    const elevationCost = this.grid.map.magnitude(ref) * ELEVATION_COST_PER_LEVEL;
-    let cost = base + elevationCost;
+    const base = target === NEUTRAL_PLAYER ? NEUTRAL_CAPTURE_COST : ENEMY_CAPTURE_BASE;
+    // Terrain: plains are softer, mountains dearer (a mild multiplier, not a
+    // steep ramp), and the flat attacker-efficiency bonus favours the assault.
+    let cost = base * terrainLossMultiplier(this.grid.map.magnitude(ref)) * ATTACKER_EFFICIENCY;
     // The defender's Fortress Wall raises the cost to capture their tiles.
     if (target !== NEUTRAL_PLAYER) cost *= this.grid.modifiersOf(target).defense;
     // A nearby defense post (e.g. a capital) fortifies the ground around it,
     // raising the cost to take any tile inside its aura.
     cost *= this.grid.defenseFactorAt(ref);
-    // A well-garrisoned defender makes every tile dearer to take (OpenFront's
+    // A well-garrisoned defender makes every tile dearer to take (the clamped
     // attacker-vs-defender troop ratio); neutral land has no garrison, so callers
     // pass the default factor of 1 there.
     cost *= strengthFactor;
@@ -578,21 +579,25 @@ export class RasterConflict {
       // pre-capture frontier so the label sits on the contested edge.
       attack.anchor = this.frontierAnchor(frontier);
 
-      // Spend at most this slice of the remaining troops this tick, but always
-      // enough to attempt the cheapest possible capture so progress is steady.
-      // Swift Attacker lets a front spend more of its troops per tick.
-      const expansionSpeed = this.grid.modifiersOf(attack.attacker).expansionSpeed;
-      const budget = Math.max(NEUTRAL_CAPTURE_COST, attack.committed * EXPANSION_SPEND_FRACTION * expansionSpeed);
-      let spent = 0;
-      // Snapshot the defender's per-tile bleed once for the tick: capturing many
-      // tiles this advance shouldn't compound the density loss mid-front.
-      const defenderLoss = attack.target !== NEUTRAL_PLAYER ? this.defenderLossFor(attack.target) : 0;
       // The defender-strength multiplier for this front, snapshotted above from
       // the garrison's pool against the *combined* committed force pressing this
       // defender. A strongly-held nation makes every tile dearer, so an
       // under-committed assault stalls — this is what lets a defender repel an
       // attack by holding troops — while attacking on multiple fronts dilutes it.
       const strengthFactor = strengthByDefender.get(attack.target) ?? 1;
+
+      // Spend at most this slice of the remaining troops this tick, but always
+      // enough to attempt the cheapest possible capture so progress is steady.
+      // The front advances faster the bigger the attacker's troop advantage
+      // (a weak garrison is overrun quicker, a strong one slows the push);
+      // `expansionSpeed` is the attacker's own speed modifier (Swift Attacker).
+      const expansionSpeed = this.grid.modifiersOf(attack.attacker).expansionSpeed;
+      const speed = expansionSpeed * attackSpeedFactor(strengthFactor);
+      const budget = Math.max(NEUTRAL_CAPTURE_COST, attack.committed * EXPANSION_SPEND_FRACTION * speed);
+      let spent = 0;
+      // Snapshot the defender's per-tile bleed once for the tick: capturing many
+      // tiles this advance shouldn't compound the density loss mid-front.
+      const defenderLoss = attack.target !== NEUTRAL_PLAYER ? this.defenderLossFor(attack.target) : 0;
 
       for (const ref of frontier) {
         // A tile may have been captured already if a player relinquished it; skip
