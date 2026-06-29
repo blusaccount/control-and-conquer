@@ -37,11 +37,14 @@
     Tile wird pro Tick garantiert genommen (kein Front-Deadlock).
   - *Retreat-Malus:* eine an einem Spieler blockierte/abgewehrte Offensive erstattet
     nur 75 % der Resttruppen (`RETREAT_MALUS_FRACTION`); neutraler Rückzug bleibt frei.
-  - *Defense-Posts:* jede Hauptstadt befestigt ihr Umland (Capture-Kosten ×bis-zu-
-    `DEFENSE_POST_STRENGTH`, linearer Falloff bis `DEFENSE_POST_RADIUS`); fällt die
-    Hauptstadt, verschwindet die Aura.
+  - *Defense-Posts:* ein **Fort** befestigt sein Umland (Capture-Kosten ×bis-zu-
+    `FORT_DEFENSE_STRENGTH`, linearer Falloff bis `FORT_DEFENSE_RADIUS`); wird das
+    Tile erobert, verschwindet die Aura. (Es gibt **keine Hauptstadt** mehr — eine
+    Nation wird besiegt, indem ihr *gesamtes* Territorium erobert wird, nicht durch
+    Fall eines einzelnen Sitzes.)
 - **Win-Condition:** ein Spieler, der alle eroberbaren Tiles hält, gewinnt;
-  `SERVER_RASTER_MATCH_ENDED` wird einmalig gebroadcastet.
+  `SERVER_RASTER_MATCH_ENDED` wird einmalig gebroadcastet. Eine Nation ist
+  eliminiert, sobald ihr letztes Tile erobert ist (der Eroberer behält das Land).
 
 ### Economy & Gebäude (`buildings.ts`, `TerritoryGrid`, `RasterConflict`)
 - **Gold als zweite Ressource:** jeder Spieler akkumuliert einen eigenen Gold-Pool

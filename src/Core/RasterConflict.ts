@@ -76,6 +76,23 @@ export interface TransportShipState {
   troops: number;
 }
 
+/**
+ * Public view of one active land attack as a *front*: who is pushing whom, how
+ * many troops are still committed to the fight, and a representative frontier
+ * tile to anchor an on-map readout. Surfaced so the client can label each
+ * contested border with the attacking troop count — OpenFront's "you can see at
+ * which border how many troops are fighting" feel.
+ */
+export interface AttackFrontState {
+  attacker: PlayerId;
+  /** Player being pushed back, or {@link NEUTRAL_PLAYER} for a neutral grab. */
+  target: PlayerId;
+  /** Troops still committed to (fighting on) this front. */
+  troops: number;
+  /** A frontier tile near the centre of the contested border, for the label. */
+  tile: TileRef;
+}
+
 export interface RasterTickResult {
   tick: number;
   /** Set once a single player owns every capturable tile, else null. */
@@ -92,6 +109,12 @@ interface RasterAttack {
   attacker: PlayerId;
   target: PlayerId;
   committed: number;
+  /**
+   * A representative tile on this attack's current land frontier, refreshed each
+   * tick in {@link RasterConflict.advanceAttacks}. Anchors the on-map troop
+   * label. `-1` until the attack has been advanced at least once.
+   */
+  anchor: TileRef;
 }
 
 /** A transport ship en route to its landing tile. */
@@ -167,6 +190,27 @@ export class RasterConflict {
   }
 
   /**
+   * Snapshot of every active land attack as a front, for the client's on-map
+   * troop-count labels. Each carries the attacker, the player being pushed back
+   * (or neutral), the troops still committed, and a representative frontier tile
+   * (refreshed each tick in {@link advanceAttacks}). Attacks not yet advanced —
+   * with no anchor — are skipped; there is nothing meaningful to place yet.
+   */
+  activeFronts(): AttackFrontState[] {
+    const fronts: AttackFrontState[] = [];
+    for (const attack of this.attacks) {
+      if (attack.anchor < 0) continue;
+      fronts.push({
+        attacker: attack.attacker,
+        target: attack.target,
+        troops: Math.floor(attack.committed),
+        tile: attack.anchor,
+      });
+    }
+    return fronts;
+  }
+
+  /**
    * Validate and register an attack intent. On success the committed troops
    * leave the attacker's pool immediately (preventing double-spend) and either
    * start a new attack or reinforce an existing attacker→target one. Returns a
@@ -189,7 +233,7 @@ export class RasterConflict {
     if (existing) {
       existing.committed += troops;
     } else {
-      this.attacks.push({ attacker, target, committed: troops });
+      this.attacks.push({ attacker, target, committed: troops, anchor: -1 });
     }
     return null;
   }
@@ -441,7 +485,7 @@ export class RasterConflict {
         // owner, expanding from the freshly-taken beachhead.
         const existing = this.attacks.find((a) => a.attacker === ship.attacker && a.target === owner);
         if (existing) existing.committed += remaining;
-        else this.attacks.push({ attacker: ship.attacker, target: owner, committed: remaining });
+        else this.attacks.push({ attacker: ship.attacker, target: owner, committed: remaining, anchor: dest });
       } else {
         this.grid.addTroops(ship.attacker, remaining);
       }
@@ -449,6 +493,34 @@ export class RasterConflict {
 
     this.ships.length = 0;
     this.ships.push(...survivors);
+  }
+
+  /**
+   * The frontier tile nearest the frontier's centroid — a stable, central point
+   * on the contested border to anchor the attack's troop-count label. `frontier`
+   * is assumed non-empty.
+   */
+  private frontierAnchor(frontier: TileRef[]): TileRef {
+    let sx = 0;
+    let sy = 0;
+    for (const ref of frontier) {
+      sx += this.grid.map.x(ref);
+      sy += this.grid.map.y(ref);
+    }
+    const cx = sx / frontier.length;
+    const cy = sy / frontier.length;
+    let anchor = frontier[0];
+    let bestDist = Infinity;
+    for (const ref of frontier) {
+      const dx = this.grid.map.x(ref) - cx;
+      const dy = this.grid.map.y(ref) - cy;
+      const dist = dx * dx + dy * dy;
+      if (dist < bestDist) {
+        bestDist = dist;
+        anchor = ref;
+      }
+    }
+    return anchor;
   }
 
   /**
@@ -471,6 +543,11 @@ export class RasterConflict {
         this.refundRetreat(attack.attacker, attack.committed, attack.target);
         continue;
       }
+
+      // Anchor the on-map troop label near the centre of this front: the
+      // frontier tile closest to the frontier's centroid. Computed from the
+      // pre-capture frontier so the label sits on the contested edge.
+      attack.anchor = this.frontierAnchor(frontier);
 
       // Spend at most this slice of the remaining troops this tick, but always
       // enough to attempt the cheapest possible capture so progress is steady.

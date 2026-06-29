@@ -5,7 +5,7 @@ import type { TerritoryGrid } from "../Core/TerritoryGrid.js";
 import { troopsPerSecond } from "../Core/rasterCombatConfig.js";
 import { goldPerSecond } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
-import type { RasterBuilding, RasterCrossing, RasterMatchPhase, RasterPlayerInfo, RasterShip, RasterSnapshot } from "../Core/types.js";
+import type { RasterAttackFront, RasterBuilding, RasterCrossing, RasterMatchPhase, RasterPlayerInfo, RasterShip, RasterSnapshot } from "../Core/types.js";
 
 /**
  * Serialize a `GameMap`'s static terrain into base64 plus a stable hash.
@@ -90,28 +90,30 @@ export interface BuildSnapshotInput {
   crossings: RasterCrossing[];
   /** Transport ships in flight this snapshot (for client ship animation). */
   ships: RasterShip[];
+  /** Active land-attack fronts this tick (for the on-map troop-count labels). */
+  fronts: RasterAttackFront[];
   /**
    * When set, the snapshot carries this incremental ownership update instead of
    * the full owner raster. When omitted, the full raster is encoded and sent.
    */
   ownerDeltaBase64?: string;
   /**
-   * Per-player capital ("Hauptstadt") tile, keyed by playerId. The capital's
-   * `(x, y)` is published in each player's snapshot row so the client can draw a
-   * capital marker. Omitted in tests that don't exercise capitals.
+   * Skip the ownership raster entirely (neither full nor delta). Used for
+   * headless subscribers such as server-side bots, which read engine state
+   * directly and never decode the wire ownership — encoding it for them is pure
+   * waste and, multiplied across a dozen bots, the dominant per-tick cost.
    */
-  capitals?: Map<number, number>;
-  /** Players whose capital has been captured (drawn struck-through / no marker). */
+  omitOwner?: boolean;
+  /** Players who have been wiped off the map (no tiles left). */
   eliminated?: Set<number>;
 }
 
 export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot => {
-  const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, includeTerrain, terrainHash, terrainBase64, winnerPlayerId, recentEvents, crossings, ships, ownerDeltaBase64, capitals, eliminated } = input;
+  const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, includeTerrain, terrainHash, terrainBase64, winnerPlayerId, recentEvents, crossings, ships, fronts, ownerDeltaBase64, omitOwner, eliminated } = input;
 
   const players: RasterPlayerInfo[] = [];
   for (const id of grid.players()) {
     const meta = playerMeta.get(id) ?? { name: `Player ${id}`, color: "#888" };
-    const capitalRef = capitals?.get(id);
     const tiles = grid.tileCountOf(id);
     const cities = grid.buildingCountOf(id, "city");
     players.push({
@@ -126,8 +128,6 @@ export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
       forts: grid.buildingCountOf(id, "fort"),
       tiles,
       troopsPerSecond: troopsPerSecond(tiles, grid.troopsOf(id), SIMULATION_TICK_RATE, grid.incomeMultiplierOf(id), cities),
-      capitalX: capitalRef !== undefined ? map.x(capitalRef) : -1,
-      capitalY: capitalRef !== undefined ? map.y(capitalRef) : -1,
       eliminated: eliminated?.has(id) ?? false,
     });
   }
@@ -149,11 +149,14 @@ export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
     height: map.height,
     terrainHash,
     ...(includeTerrain ? { terrainBase64 } : {}),
-    // Exactly one ownership representation: an incremental delta when the caller
-    // supplies one, otherwise the full raster.
-    ...(ownerDeltaBase64 !== undefined
-      ? { ownerDeltaBase64 }
-      : { ownerBase64: encodeOwners(grid.owner) }),
+    // Ownership representation: omitted entirely for headless subscribers; else
+    // an incremental delta when the caller supplies one, otherwise the full
+    // raster.
+    ...(omitOwner
+      ? {}
+      : ownerDeltaBase64 !== undefined
+        ? { ownerDeltaBase64 }
+        : { ownerBase64: encodeOwners(grid.owner) }),
     players,
     capturableCount: grid.capturableCount,
     winnerPlayerId,
@@ -161,5 +164,6 @@ export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
     crossings,
     ships,
     buildings,
+    fronts,
   };
 };

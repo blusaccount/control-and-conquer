@@ -49,25 +49,23 @@ test("the simulation freezes after a match ends (no further broadcasts)", () => 
   assert.equal(messages.length, countAfterEnd, "no messages should be sent once the match has ended");
 });
 
-test("capital captures are credited as kills and recorded in run stats", () => {
-  const session = new RasterGameSession({ width: 48, height: 32, seed: 9, maxDurationTicks: 2 });
+test("wiping out a nation is credited as a kill and recorded in run stats", () => {
+  const session = new RasterGameSession({ width: 48, height: 32, seed: 9, maxDurationTicks: 3 });
   const alice = collect(session, "alice");
   const bob = collect(session, "bob");
   const grid = session.peekGrid();
 
-  const snap = lastSnapshot(alice);
-  const p1 = snap.players.find((p) => p.playerId === 1)!;
-  const capitalRef = p1.capitalY * snap.width + p1.capitalX;
-
-  grid.claim(capitalRef, 2); // Bob storms Alice's capital.
-  session.tick(); // tick 1: Alice eliminated
-  session.tick(); // tick 2: time limit -> match ends
+  session.tick(); // tick 1: warm-up, so the engine has seen Alice holding ground.
+  // Bob captures the whole of Alice's territory between ticks.
+  for (const ref of grid.tilesOf(1)) grid.claim(ref, 2);
+  session.tick(); // tick 2: Alice holds nothing -> eliminated.
+  session.tick(); // tick 3: time limit -> match ends.
 
   const aliceEnded = endedOf(alice);
   const bobEnded = endedOf(bob);
   assert.ok(aliceEnded && bobEnded);
   assert.equal(aliceEnded!.payload.stats.eliminated, true, "Alice should be eliminated");
-  assert.equal(aliceEnded!.payload.stats.survivedTicks, 1, "Alice survived only to the elimination tick");
+  assert.equal(aliceEnded!.payload.stats.survivedTicks, 2, "Alice survived to the elimination tick");
   assert.equal(bobEnded!.payload.stats.kills, 1, "Bob should be credited one kill");
 });
 
@@ -79,9 +77,8 @@ test("an eliminated player gets a defeat summary at once, while the match contin
   const carol = collect(session, "carol");
   const grid = session.peekGrid();
 
-  const snap = lastSnapshot(alice);
-  const a1 = snap.players.find((p) => p.playerId === 1)!;
-  grid.claim(a1.capitalY * snap.width + a1.capitalX, 2); // Bob storms Alice's capital.
+  session.tick(); // warm-up, so the engine has seen Alice holding ground.
+  for (const ref of grid.tilesOf(1)) grid.claim(ref, 2); // Bob takes all of Alice's land.
 
   session.tick(); // Alice eliminated; Bob and Carol live on, so the match continues.
 

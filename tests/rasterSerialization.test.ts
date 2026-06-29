@@ -36,12 +36,12 @@ test("buildRasterSnapshot only includes terrainBase64 when requested", () => {
   const withTerrain = buildRasterSnapshot({
     tick: 0, mapName: "T", phase: "playing", spawnRemainingSeconds: 0, map, grid, playerMeta,
     includeTerrain: true, terrainHash, terrainBase64,
-    winnerPlayerId: null, recentEvents: [],
+    winnerPlayerId: null, recentEvents: [], crossings: [], ships: [], fronts: [],
   });
   const withoutTerrain = buildRasterSnapshot({
     tick: 1, mapName: "T", phase: "playing", spawnRemainingSeconds: 0, map, grid, playerMeta,
     includeTerrain: false, terrainHash, terrainBase64,
-    winnerPlayerId: null, recentEvents: [],
+    winnerPlayerId: null, recentEvents: [], crossings: [], ships: [], fronts: [],
   });
 
   assert.equal(withTerrain.terrainBase64, terrainBase64);
@@ -77,7 +77,7 @@ test("buildRasterSnapshot reports troopsPerSecond proportional to tiles", () => 
   const snap = buildRasterSnapshot({
     tick: 0, mapName: "T", phase: "playing", spawnRemainingSeconds: 0, map, grid, playerMeta,
     includeTerrain: false, terrainHash, terrainBase64,
-    winnerPlayerId: null, recentEvents: [],
+    winnerPlayerId: null, recentEvents: [], crossings: [], ships: [], fronts: [],
   });
   const row = snap.players[0];
   assert.equal(row.tiles, claimed);

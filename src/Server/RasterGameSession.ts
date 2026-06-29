@@ -6,6 +6,7 @@ import type { GameMap, TileRef } from "../Core/GameMap.js";
 import { RasterConflict, type AttackIntent, type AttackRejectReason, type SeaAttackIntent } from "../Core/RasterConflict.js";
 import type {
   RasterActionRejectedEvent,
+  RasterAttackFront,
   RasterBuildIntent,
   RasterCrossing,
   RasterExpandIntent,
@@ -32,10 +33,18 @@ interface RasterSubscriber {
   /** False until the client has received a snapshot containing terrain bytes. */
   hasTerrain: boolean;
   /**
+   * Whether this subscriber wants the ownership raster (terrain + owner deltas)
+   * on the wire. Real clients render it, so `true`; server-side bots read engine
+   * state directly and discard the wire ownership, so they subscribe with
+   * `false` — skipping the per-tick, whole-map owner encoding that would
+   * otherwise be paid once per bot and dominate the tick cost.
+   */
+  wantsRaster: boolean;
+  /**
    * Per-subscriber owner baseline: the ownership raster this client last
    * received. Owner snapshots after the first are encoded as a delta against
    * this array, which is then advanced to match. `null` until the first
-   * (full-owner) snapshot is sent.
+   * (full-owner) snapshot is sent. Always `null` for headless subscribers.
    */
   lastOwner: Uint16Array | null;
 }
@@ -162,18 +171,22 @@ export class RasterGameSession {
   private lastCrossings: RasterCrossing[] = [];
   /** Transport ships in flight as of the most recent tick, broadcast for animation. */
   private lastShips: RasterShip[] = [];
+  /** Active land-attack fronts from the most recent tick, for on-map troop labels. */
+  private lastFronts: RasterAttackFront[] = [];
   /** Determines spawn placement: each new subscriber takes the next slot. */
   private nextPlayerId: PlayerId = 1;
   private matchEndedBroadcast = false;
   /** Cached spawn tiles per player, chosen deterministically from the terrain. */
   private readonly spawnTiles: TileRef[] = [];
-  /**
-   * Each player's capital ("Hauptstadt") tile — its founding tile. Capturing it
-   * eliminates the player. Set when the player joins (capital = spawn tile).
-   */
-  private readonly capitals = new Map<PlayerId, TileRef>();
-  /** Players whose capital has fallen; their territory was turned neutral. */
+  /** Players wiped off the map — their entire territory has been captured. */
   private readonly eliminated = new Set<PlayerId>();
+  /**
+   * Last tile each living player was seen holding, refreshed at the start of
+   * every tick. When a player is wiped out, whoever owns this tile afterwards is
+   * the conqueror who took their final ground — so they can be credited with the
+   * kill even though the eliminated player now holds nothing to inspect.
+   */
+  private readonly lastTileSeen = new Map<PlayerId, TileRef>();
   /** Hard tick budget for the run; the match ends on the time limit when hit. */
   private readonly maxDurationTicks: number;
   /**
@@ -188,15 +201,15 @@ export class RasterGameSession {
   private spawnTicksElapsed = 0;
   /** Most tiles each player has held at any point — a run-stat. */
   private readonly peakTiles = new Map<PlayerId, number>();
-  /** Capitals each player has captured (eliminations they caused) — a run-stat. */
+  /** Nations each player has wiped out (eliminations they caused) — a run-stat. */
   private readonly kills = new Map<PlayerId, number>();
   /** Tick at which a player was eliminated, for their survival-time stat. */
   private readonly eliminationTick = new Map<PlayerId, number>();
   /**
-   * Players already sent their personal end-of-run summary — either when their
-   * capital fell (a defeat screen the instant they die) or at the overall match
-   * end. Guards against sending a second summary at match end to someone who was
-   * already eliminated mid-match.
+   * Players already sent their personal end-of-run summary — either when they
+   * were wiped off the map (a defeat screen the instant they die) or at the
+   * overall match end. Guards against sending a second summary at match end to
+   * someone who was already eliminated mid-match.
    */
   private readonly endedSent = new Set<PlayerId>();
 
@@ -308,6 +321,7 @@ export class RasterGameSession {
     clientId: string,
     send: RasterMessageHandler,
     autoSpawn = true,
+    wantsRaster = true,
   ): () => void {
     if (this.nextPlayerId > MAX_PLAYERS) {
       throw new Error(`Raster session is full (max ${MAX_PLAYERS} players).`);
@@ -322,6 +336,7 @@ export class RasterGameSession {
       playerId,
       send,
       hasTerrain: false,
+      wantsRaster,
       lastOwner: null,
     };
     this.subscribers.set(clientId, subscriber);
@@ -347,11 +362,6 @@ export class RasterGameSession {
   }
 
   /**
-   * Place a player on the map at `spawnRef`: their founding (and, at this
-   * instant, only) tile becomes their capital — a fortified defense post whose
-   * loss later eliminates them.
-   */
-  /**
    * First open (neutral, capturable) land tile, used as a fallback spawn when a
    * precomputed spawn tile is exhausted (e.g. more bots than the spread sampler
    * placed on a small map). Returns undefined only if no open land remains.
@@ -363,11 +373,14 @@ export class RasterGameSession {
     return undefined;
   }
 
+  /**
+   * Place a player on the map at `spawnRef`: their founding (and, at this
+   * instant, only) tile. There is no capital — a nation is beaten only once its
+   * whole territory is captured — so the spawn tile carries no special status.
+   */
   private seatPlayer(playerId: PlayerId, spawnRef: TileRef): void {
     this.grid.addPlayer(playerId, this.startingTroops);
     this.grid.claim(spawnRef, playerId);
-    this.capitals.set(playerId, spawnRef);
-    this.grid.addDefensePost(spawnRef);
     this.peakTiles.set(playerId, this.grid.tileCountOf(playerId));
     this.kills.set(playerId, 0);
   }
@@ -510,9 +523,19 @@ export class RasterGameSession {
     }
     this.pendingBuilds.length = 0;
 
+    // Sample one tile of each living player just before combat resolves, so the
+    // conqueror who takes their last ground can be credited with the kill. O(players),
+    // so it stays cheap even on million-tile maps.
+    for (const id of this.grid.players()) {
+      if (this.grid.tileCountOf(id) > 0) {
+        const sample = this.grid.anyTileOf(id);
+        if (sample !== undefined) this.lastTileSeen.set(id, sample);
+      }
+    }
+
     const tickResult = this.conflict.processTick(intents);
 
-    // Track each player's peak territory before any elimination neutralises it.
+    // Track each player's peak territory for the run stats.
     for (const id of this.grid.players()) {
       const tiles = this.grid.tileCountOf(id);
       if (tiles > (this.peakTiles.get(id) ?? 0)) this.peakTiles.set(id, tiles);
@@ -534,15 +557,24 @@ export class RasterGameSession {
       y: this.map.y(s.tile),
       troops: s.troops,
     }));
+    // Active land-attack fronts → wire coordinates for the on-map troop labels,
+    // so each contested border shows how many troops are fighting there.
+    this.lastFronts = this.conflict.activeFronts().map((f) => ({
+      playerId: f.attacker,
+      targetId: f.target,
+      troops: f.troops,
+      x: this.map.x(f.tile),
+      y: this.map.y(f.tile),
+    }));
 
     // Append a single event line per command issued this tick, newest first.
     if (eventLines.length > 0) {
       this.recentEvents = [...eventLines.reverse(), ...this.recentEvents].slice(0, MAX_EVENTS);
     }
 
-    // A capital captured this tick eliminates its owner: the rest of their
-    // empire collapses to neutral and an elimination event is broadcast.
-    const { lines: eliminationLines, eliminated: justEliminated } = this.resolveCapitalCaptures();
+    // A player whose last tile was captured this tick is wiped off the map; the
+    // conqueror keeps the ground they took and an elimination event is broadcast.
+    const { lines: eliminationLines, eliminated: justEliminated } = this.resolveEliminations();
     if (eliminationLines.length > 0) {
       this.recentEvents = [...eliminationLines, ...this.recentEvents].slice(0, MAX_EVENTS);
     }
@@ -559,9 +591,9 @@ export class RasterGameSession {
     }
 
     // Give every player eliminated this tick their own end-of-run summary now —
-    // a defeat screen the instant their capital falls, rather than leaving them
+    // a defeat screen the instant their last tile falls, rather than leaving them
     // staring at dead controls until the whole match resolves. Sent after the
-    // snapshot so the client first paints their collapse to neutral.
+    // snapshot so the client first paints their final loss of territory.
     if (justEliminated.length > 0) {
       const endTick = this.conflict.tick;
       for (const subscriber of this.subscribers.values()) {
@@ -665,43 +697,38 @@ export class RasterGameSession {
   }
 
   /**
-   * Detect capitals captured during the tick just processed and eliminate their
-   * owners. A capital "falls" the instant its tile is owned by anyone other than
-   * the player it belongs to. On elimination every remaining tile that player
-   * holds is turned neutral (the conqueror keeps only the capital tile they
-   * actually took), so the map reopens as contestable land rather than handing a
-   * whole empire to one attacker. Returns the elimination event lines (newest
-   * first) for the event feed, plus the ids eliminated this call. Pure
-   * bookkeeping otherwise — no broadcast here.
+   * Eliminate any player that now holds no territory — a nation is beaten only
+   * when its *entire* territory has been captured; there is no capital shortcut.
+   * A seated player with zero tiles, not already eliminated, is wiped off the
+   * map: the conqueror keeps everything they took and is credited with the kill
+   * (read off {@link lastTileSeen} — the player's last sampled ground, whose
+   * current owner is whoever finished them). Returns the elimination event lines
+   * (newest first) plus the ids eliminated this call. Pure bookkeeping
+   * otherwise — no broadcast here.
    */
-  private resolveCapitalCaptures(): { lines: string[]; eliminated: PlayerId[] } {
+  private resolveEliminations(): { lines: string[]; eliminated: PlayerId[] } {
     const lines: string[] = [];
     const eliminated: PlayerId[] = [];
-    for (const [playerId, capitalRef] of this.capitals) {
+    for (const playerId of this.grid.players()) {
       if (this.eliminated.has(playerId)) continue;
-      const conqueror = this.grid.ownerOf(capitalRef);
-      if (conqueror === playerId) continue; // Capital still held.
+      if (this.grid.tileCountOf(playerId) > 0) continue; // Still holding ground.
 
       this.eliminated.add(playerId);
       eliminated.push(playerId);
       this.eliminationTick.set(playerId, this.conflict.tick);
-      // The fallen capital is no longer a fortified seat — drop its defense aura.
-      this.grid.removeDefensePost(capitalRef);
-      // Credit the conqueror with a kill (capital captured) for their run stats.
-      if (conqueror !== NEUTRAL_PLAYER) {
+
+      // Credit the player now holding the eliminated nation's last sampled tile.
+      const sample = this.lastTileSeen.get(playerId);
+      const conqueror = sample !== undefined ? this.grid.ownerOf(sample) : NEUTRAL_PLAYER;
+      if (conqueror !== NEUTRAL_PLAYER && conqueror !== playerId) {
         this.kills.set(conqueror, (this.kills.get(conqueror) ?? 0) + 1);
-      }
-      // Neutralise the fallen player's remaining territory (the capital tile is
-      // already owned by the conqueror, so it is excluded by ownership).
-      for (const ref of this.grid.tilesOf(playerId)) {
-        this.grid.claim(ref, NEUTRAL_PLAYER);
       }
 
       const fallenName = this.playerMeta.get(playerId)?.name ?? `Player ${playerId}`;
-      const conquerorName = conqueror === NEUTRAL_PLAYER
-        ? "Neutral forces"
+      const conquerorName = conqueror === NEUTRAL_PLAYER || conqueror === playerId
+        ? "Rival nations"
         : this.playerMeta.get(conqueror)?.name ?? `Player ${conqueror}`;
-      lines.unshift(`${conquerorName} captured ${fallenName}'s capital — ${fallenName} is eliminated!`);
+      lines.unshift(`${conquerorName} conquered the last of ${fallenName}'s territory — ${fallenName} is eliminated!`);
     }
     return { lines, eliminated };
   }
@@ -788,8 +815,8 @@ export class RasterGameSession {
 
   /**
    * Validate and apply one build order: the clicked tile must be open, owned
-   * land the player holds (not their capital seat), carry no existing structure,
-   * and the player must afford the gold cost — which scales with how many of the
+   * land the player holds, carry no existing structure, and the player must
+   * afford the gold cost — which scales with how many of the
    * type they already own. On success the gold is spent, the structure placed,
    * and an event line returned; otherwise a typed rejection.
    */
@@ -815,9 +842,6 @@ export class RasterGameSession {
     const ref = this.map.ref(intent.targetX, intent.targetY);
     if (!this.grid.isCapturable(ref) || this.grid.ownerOf(ref) !== attacker) {
       return { kind: "rejected", reason: "NOT_BUILDABLE", message: `Build a ${def.name.toLowerCase()} on land you own.` };
-    }
-    if (this.capitals.get(attacker) === ref) {
-      return { kind: "rejected", reason: "NOT_BUILDABLE", message: "Your capital can't be built over." };
     }
     if (this.grid.hasBuilding(ref)) {
       return { kind: "rejected", reason: "TILE_OCCUPIED", message: "That tile already has a building." };
@@ -877,7 +901,11 @@ export class RasterGameSession {
   }
 
   private sendSnapshotTo(subscriber: RasterSubscriber): void {
-    const includeTerrain = !subscriber.hasTerrain;
+    // Headless subscribers (bots) read engine state directly and discard the
+    // wire ownership, so we skip the terrain bytes and the whole-map owner
+    // encoding for them entirely — the single biggest per-tick saving on large
+    // maps, multiplied across every bot in the match.
+    const includeTerrain = subscriber.wantsRaster && !subscriber.hasTerrain;
     const owner = this.grid.owner;
 
     // Owner encoding: the first snapshot (and any with no baseline yet) carries
@@ -885,12 +913,14 @@ export class RasterGameSession {
     // tiles that changed — unless the churn is so high that a full resend would
     // be smaller, in which case we resend in full.
     let ownerDeltaBase64: string | undefined;
-    if (subscriber.lastOwner === null) {
-      subscriber.lastOwner = Uint16Array.from(owner);
-    } else {
-      const { deltaBase64, changed } = encodeOwnerDelta(subscriber.lastOwner, owner);
-      // 6 bytes/change vs 2 bytes/tile full: a delta only wins below ~1/3 churn.
-      if (changed * 3 <= owner.length) ownerDeltaBase64 = deltaBase64;
+    if (subscriber.wantsRaster) {
+      if (subscriber.lastOwner === null) {
+        subscriber.lastOwner = Uint16Array.from(owner);
+      } else {
+        const { deltaBase64, changed } = encodeOwnerDelta(subscriber.lastOwner, owner);
+        // 6 bytes/change vs 2 bytes/tile full: a delta only wins below ~1/3 churn.
+        if (changed * 3 <= owner.length) ownerDeltaBase64 = deltaBase64;
+      }
     }
 
     const spawnRemainingTicks =
@@ -911,8 +941,9 @@ export class RasterGameSession {
       recentEvents: this.recentEvents,
       crossings: this.lastCrossings,
       ships: this.lastShips,
+      fronts: this.lastFronts,
       ownerDeltaBase64,
-      capitals: this.capitals,
+      omitOwner: !subscriber.wantsRaster,
       eliminated: this.eliminated,
     });
     subscriber.send({ type: "SERVER_RASTER_SNAPSHOT", payload: snapshot });
