@@ -114,6 +114,13 @@ export class RasterGameSession {
   private matchEndedBroadcast = false;
   /** Cached spawn tiles per player, chosen deterministically from the terrain. */
   private readonly spawnTiles: TileRef[] = [];
+  /**
+   * Each player's capital ("Hauptstadt") tile — its founding tile. Capturing it
+   * eliminates the player. Set when the player joins (capital = spawn tile).
+   */
+  private readonly capitals = new Map<PlayerId, TileRef>();
+  /** Players whose capital has fallen; their territory was turned neutral. */
+  private readonly eliminated = new Set<PlayerId>();
 
   public constructor(options: RasterGameSessionOptions = {}) {
     const opts = { ...DEFAULT_OPTIONS, ...options };
@@ -221,10 +228,13 @@ export class RasterGameSession {
     const meta = PLAYER_PALETTE[playerId - 1];
     this.playerMeta.set(playerId, meta);
 
-    // Register the player, give them a starting pool + their spawn tile.
+    // Register the player, give them a starting pool + their spawn tile. The
+    // spawn is the player's founding (and, at this instant, only) tile, so it
+    // becomes their capital — losing it later eliminates them.
     this.grid.addPlayer(playerId, this.startingTroops);
     const spawn = this.spawnTiles[playerId - 1];
     this.grid.claim(spawn, playerId);
+    this.capitals.set(playerId, spawn);
 
     const subscriber: RasterSubscriber = {
       clientId,
@@ -302,6 +312,13 @@ export class RasterGameSession {
       this.recentEvents = [...lines.reverse(), ...this.recentEvents].slice(0, MAX_EVENTS);
     }
 
+    // A capital captured this tick eliminates its owner: the rest of their
+    // empire collapses to neutral and an elimination event is broadcast.
+    const eliminationLines = this.resolveCapitalCaptures();
+    if (eliminationLines.length > 0) {
+      this.recentEvents = [...eliminationLines, ...this.recentEvents].slice(0, MAX_EVENTS);
+    }
+
     for (const { clientId, rejection } of rejections) {
       this.subscribers.get(clientId)?.send({
         type: "SERVER_RASTER_ACTION_REJECTED",
@@ -341,6 +358,38 @@ export class RasterGameSession {
 
   public peekMap(): GameMap {
     return this.map;
+  }
+
+  /**
+   * Detect capitals captured during the tick just processed and eliminate their
+   * owners. A capital "falls" the instant its tile is owned by anyone other than
+   * the player it belongs to. On elimination every remaining tile that player
+   * holds is turned neutral (the conqueror keeps only the capital tile they
+   * actually took), so the map reopens as contestable land rather than handing a
+   * whole empire to one attacker. Returns the elimination event lines (newest
+   * first) for the event feed. Pure bookkeeping otherwise — no broadcast here.
+   */
+  private resolveCapitalCaptures(): string[] {
+    const lines: string[] = [];
+    for (const [playerId, capitalRef] of this.capitals) {
+      if (this.eliminated.has(playerId)) continue;
+      const conqueror = this.grid.ownerOf(capitalRef);
+      if (conqueror === playerId) continue; // Capital still held.
+
+      this.eliminated.add(playerId);
+      // Neutralise the fallen player's remaining territory (the capital tile is
+      // already owned by the conqueror, so it is excluded by ownership).
+      for (const ref of this.grid.tilesOf(playerId)) {
+        this.grid.claim(ref, NEUTRAL_PLAYER);
+      }
+
+      const fallenName = this.playerMeta.get(playerId)?.name ?? `Player ${playerId}`;
+      const conquerorName = conqueror === NEUTRAL_PLAYER
+        ? "Neutral forces"
+        : this.playerMeta.get(conqueror)?.name ?? `Player ${conqueror}`;
+      lines.unshift(`${conquerorName} captured ${fallenName}'s capital — ${fallenName} is eliminated!`);
+    }
+    return lines;
   }
 
   private validateAndBuildIntent(
@@ -416,6 +465,8 @@ export class RasterGameSession {
       recentEvents: this.recentEvents,
       crossings: this.lastCrossings,
       ownerDeltaBase64,
+      capitals: this.capitals,
+      eliminated: this.eliminated,
     });
     subscriber.send({ type: "SERVER_RASTER_SNAPSHOT", payload: snapshot });
     if (includeTerrain) {

@@ -25,6 +25,20 @@ export interface RasterPlayerInfo {
   troops: number;
   /** Number of capturable tiles currently owned. */
   tiles: number;
+  /**
+   * Tile column of the player's capital ("Hauptstadt"). The capital is the
+   * player's founding tile; losing it eliminates the player. `-1` when unknown
+   * (e.g. snapshots built without capital data, only in tests).
+   */
+  capitalX: number;
+  /** Tile row of the player's capital. `-1` when unknown. */
+  capitalY: number;
+  /**
+   * True once this player's capital has been captured. Eliminated players hold
+   * no tiles (all were turned neutral on capture) and are dropped from the
+   * active leaderboard / no longer draw a capital marker.
+   */
+  eliminated: boolean;
 }
 
 /**

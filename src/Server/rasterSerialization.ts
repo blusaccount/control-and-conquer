@@ -86,20 +86,32 @@ export interface BuildSnapshotInput {
    * the full owner raster. When omitted, the full raster is encoded and sent.
    */
   ownerDeltaBase64?: string;
+  /**
+   * Per-player capital ("Hauptstadt") tile, keyed by playerId. The capital's
+   * `(x, y)` is published in each player's snapshot row so the client can draw a
+   * capital marker. Omitted in tests that don't exercise capitals.
+   */
+  capitals?: Map<number, number>;
+  /** Players whose capital has been captured (drawn struck-through / no marker). */
+  eliminated?: Set<number>;
 }
 
 export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot => {
-  const { tick, mapName, map, grid, playerMeta, includeTerrain, terrainHash, terrainBase64, winnerPlayerId, recentEvents, crossings, ownerDeltaBase64 } = input;
+  const { tick, mapName, map, grid, playerMeta, includeTerrain, terrainHash, terrainBase64, winnerPlayerId, recentEvents, crossings, ownerDeltaBase64, capitals, eliminated } = input;
 
   const players: RasterPlayerInfo[] = [];
   for (const id of grid.players()) {
     const meta = playerMeta.get(id) ?? { name: `Player ${id}`, color: "#888" };
+    const capitalRef = capitals?.get(id);
     players.push({
       playerId: id,
       name: meta.name,
       color: meta.color,
       troops: Math.floor(grid.troopsOf(id)),
       tiles: grid.tileCountOf(id),
+      capitalX: capitalRef !== undefined ? map.x(capitalRef) : -1,
+      capitalY: capitalRef !== undefined ? map.y(capitalRef) : -1,
+      eliminated: eliminated?.has(id) ?? false,
     });
   }
 

@@ -62,6 +62,15 @@ interface RasterRuntime {
   view: View;
   /** In-flight boat animations. */
   boats: Boat[];
+  /** Living players' capitals, drawn as a marker over the base map. */
+  capitals: Capital[];
+}
+
+/** A player capital ("Hauptstadt") drawn as a cross marker on the map. */
+interface Capital {
+  tileX: number;
+  tileY: number;
+  color: string;
 }
 
 /** How long a single crossing animation lasts, in milliseconds. */
@@ -118,6 +127,7 @@ export const startRasterClient = (ui: UiElements): void => {
     baseImage: null,
     view: { scale: 1, x: 0, y: 0, initialized: false },
     boats: [],
+    capitals: [],
   };
 
   const socketProtocol = window.location.protocol === "https:" ? "wss" : "ws";
@@ -206,6 +216,11 @@ export const startRasterClient = (ui: UiElements): void => {
     const me = snapshot.players.find((p) => p.playerId === runtime.myPlayerId);
     runtime.pool = me?.troops ?? 0;
     runtime.myTiles = me?.tiles ?? 0;
+
+    // Capital markers: living players only, with a known capital tile.
+    runtime.capitals = snapshot.players
+      .filter((p) => !p.eliminated && p.capitalX >= 0 && p.capitalY >= 0)
+      .map((p) => ({ tileX: p.capitalX, tileY: p.capitalY, color: p.color }));
 
     spawnBoats(snapshot.crossings ?? []);
     renderSidebar();
@@ -308,9 +323,49 @@ export const startRasterClient = (ui: UiElements): void => {
       ctx.setTransform(scale, 0, 0, scale, -x * scale, -y * scale);
       ctx.drawImage(base, 0, 0);
       ctx.setTransform(1, 0, 0, 1, 0, 0);
+      drawCapitals(ctx, scale);
       drawBoats(now, ctx, scale);
     }
     requestAnimationFrame(renderFrame);
+  };
+
+  /**
+   * Draw each living player's capital as a cross in their colour with a white
+   * outline, in screen space so the marker stays legible at any zoom. The cross
+   * scales gently with zoom but is clamped so it never vanishes when zoomed out
+   * nor swamps the tile when zoomed in.
+   */
+  const drawCapitals = (ctx: CanvasRenderingContext2D, scale: number): void => {
+    if (runtime.capitals.length === 0) return;
+    const cw = ui.mapCanvas.width;
+    const ch = ui.mapCanvas.height;
+    // Half-length of each arm and stroke widths, in screen pixels.
+    const arm = clamp(scale * 0.9, 4, 9);
+    const outlineWidth = clamp(scale * 0.5, 3, 6);
+    const colorWidth = clamp(scale * 0.28, 1.5, 3.5);
+
+    for (const capital of runtime.capitals) {
+      const { x: cx, y: cy } = worldToScreen(capital.tileX + 0.5, capital.tileY + 0.5);
+      // Skip markers fully outside the viewport (cheap cull).
+      if (cx < -arm || cy < -arm || cx > cw + arm || cy > ch + arm) continue;
+
+      const stroke = (width: number, style: string): void => {
+        ctx.lineWidth = width;
+        ctx.strokeStyle = style;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(cx - arm, cy);
+        ctx.lineTo(cx + arm, cy);
+        ctx.moveTo(cx, cy - arm);
+        ctx.lineTo(cx, cy + arm);
+        ctx.stroke();
+      };
+
+      ctx.save();
+      stroke(outlineWidth, "rgba(255, 255, 255, 0.95)"); // white outline underneath
+      stroke(colorWidth, capital.color); // player-colour cross on top
+      ctx.restore();
+    }
   };
 
   const drawBoats = (now: number, ctx: CanvasRenderingContext2D, scale: number): void => {

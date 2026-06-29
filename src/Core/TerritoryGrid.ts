@@ -119,6 +119,16 @@ export class TerritoryGrid {
   }
 
   /**
+   * A snapshot array of every tile a player currently owns. Returns a fresh copy
+   * (not the live set), so callers can safely {@link claim} tiles away while
+   * iterating — used when an eliminated player's territory is turned neutral.
+   * Ascending `TileRef` order for determinism.
+   */
+  tilesOf(id: PlayerId): TileRef[] {
+    return [...this.standing(id).tiles].sort((a, b) => a - b);
+  }
+
+  /**
    * Assign a capturable tile to a player (or to {@link NEUTRAL_PLAYER}),
    * keeping per-player tile counts in sync. Throws if the tile is not
    * capturable terrain.
