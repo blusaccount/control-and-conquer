@@ -15,11 +15,18 @@ import type {
 } from "../Core/types.js";
 import { PERK_OFFER_INTERVAL_SECONDS, RASTER_MATCH_DURATION_SECONDS } from "../Core/rasterCombatConfig.js";
 import {
+  IDENTITY_MODIFIERS,
   modifiersForPerks,
   offerPerks,
   PERK_DEFINITIONS,
   type PerkId,
+  type PlayerModifiers,
 } from "../Core/perks.js";
+import {
+  classBonusStartingTiles,
+  classModifiers,
+  type PlayerClassId,
+} from "../Core/playerClasses.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import { buildRasterSnapshot, encodeOwnerDelta, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
 
@@ -160,6 +167,8 @@ export class RasterGameSession {
   private readonly chosenPerks = new Map<PlayerId, PerkId[]>();
   /** The outstanding perk offer per player (the set they may legally pick from). */
   private readonly pendingOffer = new Map<PlayerId, PerkId[]>();
+  /** Each player's class base modifiers; perks fold on top of these. */
+  private readonly baseModifiers = new Map<PlayerId, PlayerModifiers>();
   /** Number of perk rounds offered so far (drives the deterministic offer set). */
   private perkRound = 0;
 
@@ -262,7 +271,11 @@ export class RasterGameSession {
     return chosen;
   }
 
-  public subscribe(clientId: string, send: RasterMessageHandler): () => void {
+  public subscribe(
+    clientId: string,
+    send: RasterMessageHandler,
+    playerClass: PlayerClassId | null = null,
+  ): () => void {
     if (this.nextPlayerId > PLAYER_PALETTE.length) {
       throw new Error(`Raster session is full (max ${PLAYER_PALETTE.length} players).`);
     }
@@ -278,6 +291,15 @@ export class RasterGameSession {
     const spawn = this.spawnTiles[playerId - 1];
     this.grid.claim(spawn, playerId);
     this.capitals.set(playerId, spawn);
+
+    // Apply the chosen class: base modifiers (perks fold on top later) and any
+    // bonus starting tiles claimed outward from the spawn (the capital stays the
+    // spawn tile).
+    const base = classModifiers(playerClass);
+    this.baseModifiers.set(playerId, base);
+    this.grid.setModifiers(playerId, base);
+    this.grantStartingTiles(playerId, spawn, classBonusStartingTiles(playerClass));
+
     this.peakTiles.set(playerId, this.grid.tileCountOf(playerId));
     this.kills.set(playerId, 0);
     this.chosenPerks.set(playerId, []);
@@ -450,7 +472,8 @@ export class RasterGameSession {
     const chosen = this.chosenPerks.get(subscriber.playerId) ?? [];
     chosen.push(perkId);
     this.chosenPerks.set(subscriber.playerId, chosen);
-    this.grid.setModifiers(subscriber.playerId, modifiersForPerks(chosen));
+    const base = this.baseModifiers.get(subscriber.playerId) ?? IDENTITY_MODIFIERS;
+    this.grid.setModifiers(subscriber.playerId, modifiersForPerks(chosen, base));
 
     this.recentEvents = [
       `${this.nameOf(subscriber.playerId)} gained ${PERK_DEFINITIONS[perkId].name}.`,
@@ -460,6 +483,30 @@ export class RasterGameSession {
 
   private nameOf(id: PlayerId): string {
     return this.playerMeta.get(id)?.name ?? `Player ${id}`;
+  }
+
+  /**
+   * Claim up to `count` neutral capturable tiles outward from `spawn` for a
+   * player (the Imperialist's head start). A BFS over land takes the nearest
+   * tiles deterministically; the spawn/capital tile is left as-is.
+   */
+  private grantStartingTiles(playerId: PlayerId, spawn: TileRef, count: number): void {
+    if (count <= 0) return;
+    const visited = new Set<TileRef>([spawn]);
+    const queue: TileRef[] = [spawn];
+    let granted = 0;
+    for (let head = 0; head < queue.length && granted < count; head += 1) {
+      for (const n of this.map.neighbors(queue[head])) {
+        if (visited.has(n) || !this.grid.isCapturable(n)) continue;
+        visited.add(n);
+        if (this.grid.ownerOf(n) === NEUTRAL_PLAYER) {
+          this.grid.claim(n, playerId);
+          granted += 1;
+        }
+        queue.push(n);
+        if (granted >= count) break;
+      }
+    }
   }
 
   /** The player holding the most tiles, ties broken by lowest id; null if none. */

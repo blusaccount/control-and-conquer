@@ -2,6 +2,7 @@ import { RasterBotController, RASTER_BOT_PERSONALITIES } from "./RasterBotContro
 import { RasterGameSession, type RasterMessageHandler, type RasterGameSessionOptions } from "./RasterGameSession.js";
 import { RasterExpandIntent } from "../Core/types.js";
 import type { PerkId } from "../Core/perks.js";
+import type { PlayerClassId } from "../Core/playerClasses.js";
 
 /**
  * Most opponents a solo match can seat. The session palette holds 6 player
@@ -34,13 +35,14 @@ export class MatchRegistry {
     send: RasterMessageHandler,
     options: RasterGameSessionOptions = {},
     botCount: number = DEFAULT_RASTER_BOT_COUNT,
+    playerClass: PlayerClassId | null = null,
   ): () => void {
     this.matchSequence += 1;
     const matchId = `match-${this.matchSequence}-raster-solo`;
     const session = new RasterGameSession(options);
     this.activeMatches.set(matchId, session);
 
-    const unsubHuman = session.subscribe(clientId, send);
+    const unsubHuman = session.subscribe(clientId, send, playerClass);
     this.clientToSession.set(clientId, session);
 
     const seats = Math.max(0, Math.min(Math.floor(botCount) || 0, MAX_RASTER_BOTS));

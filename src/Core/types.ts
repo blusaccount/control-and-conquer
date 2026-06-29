@@ -13,7 +13,7 @@
 // directly: "expand my border toward (x, y) with N percent of my pool".
 // ---------------------------------------------------------------------------
 
-import type { PerkClientMessage, PerkServerMessage } from "./messages.js";
+import type { PerkClientMessage, PerkServerMessage, RasterJoinClientMessage } from "./messages.js";
 
 /** Per-player snapshot row for raster mode. */
 export interface RasterPlayerInfo {
@@ -181,6 +181,7 @@ export interface RasterMatchEndedPayload {
 /** Messages the client can send to the server. */
 export type RasterClientMessage =
   | { type: "CLIENT_RASTER_EXPAND"; payload: RasterExpandIntent }
+  | RasterJoinClientMessage
   | PerkClientMessage;
 
 /** Messages the server can send to the client. */

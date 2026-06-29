@@ -1,6 +1,7 @@
 import { RasterClientMessage, RasterExpandIntent } from "../Core/types.js";
-import { PerkChosenPayload } from "../Core/messages.js";
+import { PerkChosenPayload, RasterJoinPayload } from "../Core/messages.js";
 import { isPerkId } from "../Core/perks.js";
+import { isPlayerClassId } from "../Core/playerClasses.js";
 
 const parseRasterExpand = (payload: unknown): RasterExpandIntent => {
   if (typeof payload !== "object" || payload === null) {
@@ -17,6 +18,17 @@ const parseRasterExpand = (payload: unknown): RasterExpandIntent => {
     throw new Error("percent must be an integer 1..100.");
   }
   return { targetX: intent.targetX, targetY: intent.targetY, percent: intent.percent };
+};
+
+const parseRasterJoin = (payload: unknown): RasterJoinPayload => {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("CLIENT_RASTER_JOIN.payload must be an object.");
+  }
+  const { playerClass } = payload as Record<string, unknown>;
+  if (!isPlayerClassId(playerClass)) {
+    throw new Error("playerClass must be a known class id.");
+  }
+  return { playerClass };
 };
 
 const parsePerkChosen = (payload: unknown): PerkChosenPayload => {
@@ -37,6 +49,9 @@ export const validateCommand = (raw: unknown): RasterClientMessage => {
 
   const message = raw as Record<string, unknown>;
 
+  if (message.type === "CLIENT_RASTER_JOIN") {
+    return { type: "CLIENT_RASTER_JOIN", payload: parseRasterJoin(message.payload) };
+  }
   if (message.type === "CLIENT_RASTER_EXPAND") {
     return { type: "CLIENT_RASTER_EXPAND", payload: parseRasterExpand(message.payload) };
   }

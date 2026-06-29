@@ -14,7 +14,13 @@ import { paintRaster, paintTileInto } from "./rasterPaint.js";
 import { playerColor } from "./rasterPalette.js";
 import { loadRunHistory, recordRun, type RunRecord, type StorageLike } from "./runHistory.js";
 import { PERK_DEFINITIONS, type PerkId } from "../Core/perks.js";
+import type { PlayerClassId } from "../Core/playerClasses.js";
 import type { PerkOfferPayload } from "../Core/messages.js";
+
+/** Options for starting a raster match — currently just the chosen class. */
+export interface RasterClientOptions {
+  playerClass: PlayerClassId;
+}
 
 /**
  * Self-contained raster-mode client.
@@ -112,7 +118,7 @@ const decodeOwnerArray = (b64: string, expectedLength: number): Uint16Array => {
 const rgbaToCss = (c: { r: number; g: number; b: number }): string => `rgb(${c.r}, ${c.g}, ${c.b})`;
 
 /** Connect to the raster server, paint each snapshot, and wire click-to-expand. */
-export const startRasterClient = (ui: UiElements): void => {
+export const startRasterClient = (ui: UiElements, options: RasterClientOptions): void => {
   hideMenu(ui);
   ui.attackPercentOutput.textContent = `${ui.attackPercentInput.value}%`;
   ui.selectionInfo.textContent =
@@ -154,6 +160,14 @@ export const startRasterClient = (ui: UiElements): void => {
     socket.send(JSON.stringify(message));
   };
 
+  // Seat ourselves with the chosen class as soon as the socket is open.
+  socket.addEventListener("open", () => {
+    const join: RasterClientMessage = {
+      type: "CLIENT_RASTER_JOIN",
+      payload: { playerClass: options.playerClass },
+    };
+    socket.send(JSON.stringify(join));
+  });
   socket.addEventListener("message", (event) => {
     const message = JSON.parse(String(event.data)) as RasterServerMessage;
     handleMessage(message);

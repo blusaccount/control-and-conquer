@@ -7,6 +7,18 @@
 // ---------------------------------------------------------------------------
 
 import type { PerkId } from "./perks.js";
+import type { PlayerClassId } from "./playerClasses.js";
+
+/**
+ * Client → server: join a match with the chosen starter class. Sent once when
+ * the client connects; the server seats the player (with class bonuses) only
+ * after receiving it.
+ */
+export interface RasterJoinPayload {
+  playerClass: PlayerClassId;
+}
+
+export type RasterJoinClientMessage = { type: "CLIENT_RASTER_JOIN"; payload: RasterJoinPayload };
 
 /** Server → client: the perks a player may pick from this round. */
 export interface PerkOfferPayload {
