@@ -133,6 +133,46 @@ test("ports widen a player's sea-crossing range, bounded by the cap", () => {
   assert.ok(grid.seaRangeOf(1) <= base * 2, "reach is bounded even with many ports");
 });
 
+test("a port actually surfaces a shore the baseline reach can't target", () => {
+  // Two banks separated by 9 open-water tiles — wider than the base crossing
+  // range (6) but inside the port-extended cap (12). land 0,1 ; water 2..10 ;
+  // land 11,12. Tile 11 is the far shore (tile 12 is interior, no water neighbour).
+  const map = buildTerrainFromMask({
+    width: 13,
+    height: 1,
+    land: Uint8Array.from([1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]),
+    elevation: new Uint8Array(13),
+  });
+  const grid = new TerritoryGrid(map);
+  grid.addPlayer(1, 0);
+  grid.claim(0, 1);
+  grid.claim(1, 1);
+  const farShore = 11;
+
+  // Baseline (no port): the 9-tile crossing is out of reach, so a click on the
+  // far bank resolves to no landing — the boat assault is silently impossible.
+  assert.equal(
+    grid.resolveSeaLanding(1, farShore, grid.seaRangeOf(1)),
+    null,
+    "baseline reach (6) can't target a 9-tile crossing",
+  );
+
+  // Two ports push the reach past 9; now the same click finds the far shore and
+  // a transport ship can actually be dispatched there.
+  grid.placeBuilding(0, "port");
+  grid.placeBuilding(1, "port");
+  assert.ok(grid.seaRangeOf(1) >= 9, "two ports extend reach to at least 9 tiles");
+  assert.equal(
+    grid.resolveSeaLanding(1, farShore, grid.seaRangeOf(1)),
+    farShore,
+    "port-extended reach surfaces the far shore the baseline couldn't",
+  );
+  assert.ok(
+    grid.findSeaPath(1, farShore, grid.seaRangeOf(1)) !== null,
+    "and a ship can sail the route the extended reach opened up",
+  );
+});
+
 // --- RasterConflict: gold + city income ------------------------------------
 
 test("gold accrues each tick in proportion to tiles held", () => {

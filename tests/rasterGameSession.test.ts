@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { RasterGameSession } from "../src/Server/RasterGameSession.js";
+import { MAX_SEA_CROSSING_TILES } from "../src/Core/rasterCombatConfig.js";
 import type { RasterServerMessage, RasterSnapshot } from "../src/Core/types.js";
 
 const collect = (session: RasterGameSession, clientId: string): RasterServerMessage[] => {
@@ -33,7 +34,10 @@ const stageSeaTarget = (session: RasterGameSession): { x: number; y: number } =>
   for (let a = 0; a < map.size; a += 1) {
     const compA = grid.landComponentId(a);
     if (compA < 0) continue;
-    for (const b of grid.seaLinks.neighborsOf(a)) {
+    // Only consider links within a base player's reach: the crossing graph now
+    // spans the wider port/perk-extended range, but an un-upgraded player (and so
+    // this test) can only auto-target shores inside MAX_SEA_CROSSING_TILES.
+    for (const b of grid.seaLinks.neighborsWithin(a, MAX_SEA_CROSSING_TILES)) {
       const compB = grid.landComponentId(b);
       // b must be a different landmass from both the foothold and the spawn, so
       // the only way to reach it is by ship.

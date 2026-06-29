@@ -168,9 +168,10 @@ export class RasterBotController {
     const grid = this.session.peekGrid();
     const map = this.session.peekMap();
 
-    // Reinvest banked gold into a city independent of the troop decision below,
-    // so a maturing bot economy keeps compounding without stalling expansion.
-    this.maybeBuildCity(grid, map);
+    // Reinvest banked gold into structures independent of the troop decision
+    // below, so a maturing bot economy keeps compounding without stalling
+    // expansion.
+    this.maybeBuild(grid, map);
 
     if (grid.troopsOf(this.myPlayerId) < this.config.personality.minPool) return;
 
@@ -178,32 +179,50 @@ export class RasterBotController {
   }
 
   /**
-   * Queue a city build when the bot can afford its next one and has interior
-   * land to place it on. Picks the lowest-`TileRef` owned tile not already built
-   * on — deterministic, so replays stay identical.
+   * Reinvest banked gold into one structure this decision. A coastal bot that has
+   * not yet opened a sea lane buys a **port** first — amphibious reach is what
+   * keeps it from stranding on its home landmass on water-heavy maps (the same
+   * lever a human gets from the build menu) — then it compounds its economy with
+   * **cities**. At most one structure per call so the bot doesn't dump its whole
+   * treasury at once. Deterministic throughout (lowest-`TileRef` eligible tile).
    */
-  private maybeBuildCity(grid: TerritoryGrid, map: GameMap): void {
+  private maybeBuild(grid: TerritoryGrid, map: GameMap): void {
+    const me = this.myPlayerId;
+    if (me === null || !this.session) return;
+    if (grid.tileCountOf(me) < RasterBotController.MIN_TILES_TO_BUILD) return;
+    // One port opens the sea; further reach is a human/perk play, so the bot caps
+    // itself there and pours the rest into cities.
+    if (this.tryQueueBuild(grid, map, "port", (ref) => map.isShore(ref), 1)) return;
+    this.tryQueueBuild(grid, map, "city", () => true);
+  }
+
+  /**
+   * Queue a build of `type` on the lowest-`TileRef` owned, unbuilt, `eligible`
+   * tile when the bot can afford its next one and owns fewer than `cap` of the
+   * type. Returns whether an order was queued, so the caller can fall through to
+   * the next building choice. Deterministic, so replays stay identical.
+   */
+  private tryQueueBuild(
+    grid: TerritoryGrid,
+    map: GameMap,
+    type: "city" | "port",
+    eligible: (ref: TileRef) => boolean,
+    cap = Number.POSITIVE_INFINITY,
+  ): boolean {
     const me = this.myPlayerId;
     const session = this.session;
-    if (me === null || !session) return;
-    if (grid.tileCountOf(me) < RasterBotController.MIN_TILES_TO_BUILD) return;
-    const cost = buildingCost("city", grid.buildingCountOf(me, "city"));
-    if (grid.goldOf(me) < cost) return;
+    if (me === null || !session) return false;
+    const owned = grid.buildingCountOf(me, type);
+    if (owned >= cap) return false;
+    if (grid.goldOf(me) < buildingCost(type, owned)) return false;
 
-    let target: TileRef | null = null;
     for (const ref of grid.tilesOf(me)) {
-      if (!grid.hasBuilding(ref)) {
-        target = ref;
-        break;
+      if (!grid.hasBuilding(ref) && eligible(ref)) {
+        session.queueBuild(this.config.botId, { targetX: map.x(ref), targetY: map.y(ref), building: type });
+        return true;
       }
     }
-    if (target === null) return;
-
-    session.queueBuild(this.config.botId, {
-      targetX: map.x(target),
-      targetY: map.y(target),
-      building: "city",
-    });
+    return false;
   }
 
   /** Pick and queue one expand intent for this decision tick (or bank troops). */

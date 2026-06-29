@@ -784,25 +784,35 @@ export class RasterGameSession {
       return { kind: "rejected", reason: "INVALID_PERCENT", message: "Percent must be an integer 1..100." };
     }
 
+    const rawRef = this.map.ref(intent.targetX, intent.targetY);
+    const pool = this.grid.troopsOf(attacker);
+    const troops = Math.max(1, Math.floor((pool * intent.percent) / 100));
+    if (troops > pool) {
+      return { kind: "rejected", reason: "INSUFFICIENT_TROOPS", message: "Not enough troops in your pool." };
+    }
+
     // Snap a click that fell on un-ownable terrain (open water or impassable
     // rock) to the nearest land the player plausibly meant, so targeting works
     // by territory rather than by exact pixel — a tap just off a coastline or on
-    // a mountain pixel inside enemy land resolves to the obvious land. A click
-    // far out in empty space snaps to nothing and is rejected.
-    const ref = this.grid.nearestCapturable(this.map.ref(intent.targetX, intent.targetY));
+    // a mountain pixel inside enemy land resolves to the obvious land.
+    const ref = this.grid.nearestCapturable(rawRef);
     if (ref === null) {
+      // The click landed on open water (or rock) too far from any land to snap to
+      // — but the snap radius is much shorter than how far a boat can cross, so a
+      // tap mid-channel toward a far coast would otherwise die as "no land there".
+      // Before giving up, treat it as an amphibious order: if a transport ship can
+      // reach a shore near the click, sail there. Only a click with no reachable
+      // shore at all is finally rejected.
+      const landing = this.grid.resolveSeaLanding(attacker, rawRef, this.grid.seaRangeOf(attacker));
+      if (landing !== null) {
+        return { kind: "sea", intent: { attacker, dest: landing, troops } };
+      }
       return { kind: "rejected", reason: "INVALID_TILE", message: "No land near there to target." };
     }
 
     const target = this.grid.ownerOf(ref);
     if (target === attacker) {
       return { kind: "rejected", reason: "INVALID_TILE", message: "You already own that tile." };
-    }
-
-    const pool = this.grid.troopsOf(attacker);
-    const troops = Math.max(1, Math.floor((pool * intent.percent) / 100));
-    if (troops > pool) {
-      return { kind: "rejected", reason: "INSUFFICIENT_TROOPS", message: "Not enough troops in your pool." };
     }
 
     // Same landmass as the attacker → a contiguous land attack can march to it.

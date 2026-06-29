@@ -116,10 +116,16 @@ export class TerritoryGrid {
   constructor(map: GameMap) {
     this.map = map;
     this.owner = new Uint16Array(map.size);
-    // The reachability graph spans the base crossing range. A Sea God's extended
-    // reach is served by {@link findSeaPath}'s own range-parameterised BFS, so the
-    // graph (used for frontier discovery) stays at the baseline everyone shares.
-    this.seaLinks = SeaLinks.build(map, MAX_SEA_CROSSING_TILES);
+    // The reachability graph is precomputed once at the *widest* reach any player
+    // could ever project — base crossing range times {@link MAX_SEA_RANGE_MULTIPLIER}
+    // — so a port/perk-extended player's farther coasts are already present in the
+    // graph. {@link seaRangeOf} then filters {@link SeaLinks.neighborsWithin} back
+    // down per player, so a base player still only sees crossings within
+    // {@link MAX_SEA_CROSSING_TILES}. Building at the base range instead would
+    // silently cap every player's frontier discovery (and thus targetable shores)
+    // at the baseline, making ports — sold as "extends how far your ships cross" —
+    // do nothing.
+    this.seaLinks = SeaLinks.build(map, MAX_SEA_CROSSING_TILES * MAX_SEA_RANGE_MULTIPLIER);
     let capturable = 0;
     for (let ref = 0; ref < map.size; ref += 1) {
       if (map.isLand(ref) && !map.isImpassable(ref)) capturable += 1;
