@@ -16,6 +16,11 @@ import type { PlayerClassId } from "./playerClasses.js";
  */
 export interface RasterJoinPayload {
   playerClass: PlayerClassId;
+  /**
+   * Selected map-choice id (see `mapCatalog`). Optional on the wire: when
+   * absent (or unknown) the server falls back to its default map choice.
+   */
+  mapId?: string;
 }
 
 export type RasterJoinClientMessage = { type: "CLIENT_RASTER_JOIN"; payload: RasterJoinPayload };

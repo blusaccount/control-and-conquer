@@ -18,9 +18,11 @@ import { PERK_DEFINITIONS, type PerkId } from "../Core/perks.js";
 import type { PlayerClassId } from "../Core/playerClasses.js";
 import type { PerkOfferPayload } from "../Core/messages.js";
 
-/** Options for starting a raster match — currently just the chosen class. */
+/** Options for starting a raster match: the chosen class and map. */
 export interface RasterClientOptions {
   playerClass: PlayerClassId;
+  /** Selected map-choice id (see `mapCatalog`). */
+  mapId: string;
 }
 
 /**
@@ -193,7 +195,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   socket.addEventListener("open", () => {
     const join: RasterClientMessage = {
       type: "CLIENT_RASTER_JOIN",
-      payload: { playerClass: options.playerClass },
+      payload: { playerClass: options.playerClass, mapId: options.mapId },
     };
     socket.send(JSON.stringify(join));
   });

@@ -18,24 +18,28 @@ npm install
 npm run dev      # tsx watch — serves http://localhost:3000
 ```
 
-Then open <http://localhost:3000> and click **Play vs Bot** to drop into a
-free-for-all against a field of AI opponents.
+Then open <http://localhost:3000>, **pick a map and a starter class** in the
+menu, and drop into a free-for-all against a field of AI opponents.
 
-Select the active map with the `RASTER_MAP` env var. Two kinds of maps exist:
+## Maps
 
-- **Heightmap maps** — large, real-world maps downsampled from a committed
-  equirectangular topology raster. Currently `earth`. Their size is set with
-  `RASTER_MAP_SIZE` (target width in tiles; height follows the geography), so
-  the same source scales from a quick 256-wide game up to an OpenFront-scale
-  ~2 million-tile world:
+Players choose their map per-run from a shared catalogue (`src/Core/mapCatalog.ts`),
+so the menu and the server never drift on the available options:
 
-  ```bash
-  RASTER_MAP=earth RASTER_MAP_SIZE=2048 npm run dev   # ~1.6M tiles
-  RASTER_MAP=earth RASTER_MAP_SIZE=1024 npm run dev   # ~400k tiles (default)
-  ```
+| Choice | Source | Approx. tiles |
+|--------|--------|---------------|
+| **Earth — Standard** | `earth` heightmap @ 512 | ~100k |
+| **Earth — Large** (default) | `earth` heightmap @ 1024 | ~400k |
+| **Earth — Huge** | `earth` heightmap @ 2048 | ~1.6M |
+| **World — Classic** | `world` ASCII map | ~2.6k |
+| **Procedural** | seeded terrain generator | ~40k |
 
-- **Hand-authored ASCII maps** — small, stylised maps in `src/Core/realMaps.ts`:
-  `mediterranean` (default) and `world`, e.g. `RASTER_MAP=world npm run dev`.
+The Earth maps are downsampled from a committed equirectangular topology raster;
+the same source scales from a quick game up to an OpenFront-scale world. World is
+a small stylised six-continent sketch, and Procedural rolls a fresh continent.
+
+`RASTER_MAP` optionally overrides the **default** choice used when a client sends
+none — it must name a catalogue id, e.g. `RASTER_MAP=earth-huge npm run dev`.
 
 On large maps, drag to pan and scroll to zoom. Regenerate or replace the
 heightmap source with the build tool:
