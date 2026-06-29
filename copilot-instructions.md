@@ -13,48 +13,59 @@ Kommunikation: WebSockets (für Echtzeit-State-Updates zwischen Client und Serve
 Simulation: Streng deterministisch. Der Server berechnet die Ergebnisse, der Client rendert sie nur.
 
 3. Architektur-Richtlinien für den Agenten
-Bei der Code-Generierung musst du dich strikt an folgende Modul-Struktur halten:
 
-Modul A: Core/ (Deterministische Simulations-Engine)
-MapState.ts: Verwaltet die Provinzen, deren Besitzverhältnisse (Farben) und die Wirtschafts-Ressourcen-Generierung pro Sekunde (Supply-Logik).
+> **Ist-Zustand (2026-06):** Das Fundament wurde als **Pixel-Raster-Engine**
+> umgesetzt (nicht als Polygon-Provinzen). Die unten skizzierten Module
+> `MapState.ts`/`BattleEngine.ts`/`FactionData/` existieren so nicht — sie waren
+> der ursprüngliche Plan. Maßgeblich ist die reale Struktur unten. Die Vision
+> (OpenFront × Generals × Mechabellum, asymmetrische Nationen) bleibt das Ziel.
 
-BattleEngine.ts: Die Autobattler-Logik. Berechnet Runden-basiert oder in Ticks den Kampf zwischen zwei Einheiten-Arrays auf einer 2D-Grenzlinie. Kein Benutzer-Eingriff während des Kampfes erlaubt.
+Reale Modul-Struktur, an die du dich halten musst:
 
-Modul B: FactionData/ (C&C Generals Asymmetrie)
-Strikte Trennung von 3 Fraktionen via Enums/Interfaces:
+Modul A: Core/ (Deterministische Simulations-Engine, keine Server-/Client-Importe)
+- `terrainCodec.ts`: 1-Byte-pro-Tile-Encoding (Land/Wasser/Küste/Ozean/Magnitude).
+- `GameMap.ts`: unveränderliches Terrain-Raster + Nachbarschafts-Helfer (`TileRef`).
+- `terrainGenerator.ts` / `realMaps.ts` / `terrainBuilder.ts`: prozedurale und
+  hand-authored Karten über eine gemeinsame Finishing-Pipeline.
+- `seaLinks.ts`: vorberechnete amphibische Übersetz-Adjazenz.
+- `TerritoryGrid.ts`: veränderliche Besitz-/Truppen-Schicht über `GameMap`.
+- `RasterConflict.ts`: autonome Grenz-Expansions-Combat-Engine (Tick-basiert).
+- `rasterCombatConfig.ts`: Tuning-Konstanten der Simulation.
+- `types.ts`: Wire-Protokoll (Client-/Server-Messages, Snapshot).
 
-USA (High-Tech): Teure Einheiten, Schilde, Fokus auf Fernkampf/Luft-Äquivalente.
+Modul B: Server/
+- `index.ts`: HTTP-Statik + WebSocket + Fixed-Step-Tick-Loop.
+- `MatchRegistry.ts`: Solo-Match-Isolation (ein Client = eine Session + Bot-Feld, FFA; Anzahl via `RASTER_BOTS`).
+- `RasterGameSession.ts`: hält den Master-State, validiert Intents, broadcastet.
+- `RasterBotController.ts`: strategiebasierte serverseitige KI (Persönlichkeits-Presets; Neutral-Expansion, Gegner-Priorisierung, amphibische Übersetzungen; spielt über denselben Intent-Kanal wie ein Mensch).
+- `pngDecode.ts` / `heightmapMaps.ts`: dependency-freier PNG-Decoder + große,
+  reale Karten aus einer Heightmap-PNG (Downsampling über dieselbe Pipeline).
+- `validateCommand.ts` / `rasterSerialization.ts` (inkl. Owner-Delta-Encoding) /
+  `simulationConfig.ts`.
 
-China (Masse & Power): Bonus, wenn viele gleiche Einheiten nebeneinander stehen (Horde-Effekt).
+Modul C: Client/
+- `main.ts`/`dom.ts`: Bootstrap + DOM-Handles.
+- `rasterClient.ts`: WebSocket, Render-Schleife (Pan/Zoom-Kamera), Klick-zu-Expand,
+  Owner-Delta-Anwendung, Boot-Animation.
+- `rasterPaint.ts`/`rasterPalette.ts`: reines Terrain→Pixel-Mapping (testbar).
 
-GLA (Guerilla): Günstige, schnelle Einheiten; Tarnung auf der Weltkarte; "Tunnel"-Mechanik (schnelle Bewegung zwischen eigenen Provinzen).
+Geplante Fraktions-Asymmetrie (Generals), noch nicht implementiert:
+- USA (High-Tech): teurere, stärkere Expansion / Defensiv-Boni.
+- China (Masse): Bonus bei großer zusammenhängender Fläche (Horde-Effekt).
+- GLA (Guerilla): günstige, schnelle Expansion; Tunnel/Tarnung.
 
-Modul C: Server/ & Client/
-Server: Hält den Master-State. Validiert Käufe (Deployment) und Bewegungsbefehle.
+4. Entwicklungs-Phasen
 
-Client: Zeichnet die 2D-Weltkarte und schaltet bei einem Kampf in den "Zuschauer-Autobattler-Modus" (Render-Schleife der BattleEngine).
+Phase 1 — OpenFront-Fundament: ✅ erledigt als Raster-Engine (Terrain, Besitz,
+organisches Truppenwachstum, autonome Front-Expansion, amphibische Landungen,
+Solo-Bot, Victory-Condition).
 
-4. Schritt-für-Schritt Entwicklungs-Phasen (Inkrementeller Prompt-Plan)
-Copilot, arbeite diese Phasen strikt nacheinander ab. Gehe erst zur nächsten Phase über, wenn die vorherige vollständig getestet und lauffähig ist.
+Phase 2 — Mechabellum-Tiefe: offen. Idee: Einheiten-/Truppentypen mit
+unterschiedlichen Kostprofilen statt eines homogenen Pools.
 
-Phase 1: Die Minimal-Weltkarte (Das OpenFront-Fundament)
-Erstelle eine 2D-Grid-Struktur oder ein einfaches Polygon-System für 5 Provinzen.
-
-Implementiere eine Tick()-Funktion im Core, die jeder Provinz jede Sekunde "+10 Credits" einbringt.
-
-Erlaube dem Spieler, Credits auszugeben, um Einheiten in einer Provinz zu "speichern".
-
-Phase 2: Die Mechabellum-Kampfarena
-Wenn Einheiten von Provinz A nach Provinz B (Gegner) geschickt werden, triggere die BattleEngine.
-
-Erstelle eine einfache 2D-Kampflinie (X-Achse). Platzierte Einheiten bewegen sich automatisch aufeinander zu und feuern, sobald sie in Reichweite sind.
-
-Erste Einheiten-Typen: Infanterie (günstig, wenig HP) und Panzer (teuer, viel HP, Flächenschaden).
-
-Phase 3: Die Generals-Asymmetrie
-Füge die Fraktions-Eigenschaften hinzu. Wenn Fraktion "China" angreift, erhalte einen Schadensbonus basierend auf der Einheitenanzahl.
-
-Implementiere ein "Generals-Fähigkeiten"-Konto: Nach jedem gewonnenen Kampf steigt das Level des Spielers. Level 1 erlaubt das Platzieren einer statischen Mine in einer eigenen Provinz.
+Phase 3 — Generals-Asymmetrie: offen. Fraktions-Datenmodell als Modifikatoren
+auf Income, Capture-Kosten und Spezialfähigkeiten; pro gewonnenem Match steigt
+ein Meta-Level (Roguelite-Progression).
 
 5. Qualitäts- und Code-Regeln
 Keine Platzhalter: Generiere keine Funktionen mit // TODO: Implement here. Schreibe immer die funktionale Logik.

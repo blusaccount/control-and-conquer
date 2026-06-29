@@ -1,16 +1,16 @@
 # Multiplayer Authority Architecture
 
-This document describes the server-authoritative design used by Control & Conquer's
-multiplayer layer, the event flow between client and server, and the known
-limitations of the current MVP implementation.
+> Reflects the raster (OpenFront-style) engine on `main`. Earlier revisions of
+> this file described a polygon `MapState`/`BattleEngine` with purchase/move
+> commands; that engine has been removed.
 
 ---
 
 ## Guiding Principle
 
-**The server is the single source of truth for all game state.**  
-Clients never mutate game state locally; they only render the snapshot most
-recently received from the server and send intent-only commands.
+**The server is the single source of truth for all game state.**
+Clients never mutate game state locally; they render the most recent snapshot
+received from the server and send intent-only commands.
 
 ---
 
@@ -18,12 +18,13 @@ recently received from the server and send intent-only commands.
 
 | Component | File(s) | Responsibility |
 |-----------|---------|----------------|
-| **WebSocket server** | `src/Server/index.ts` | Accepts connections, parses messages, dispatches validated commands, broadcasts snapshots |
+| **WebSocket server** | `src/Server/index.ts` | Accepts connections, serves static assets, parses messages, runs the tick loop |
 | **Command validator** | `src/Server/validateCommand.ts` | Structural validation of raw incoming JSON before it reaches game logic |
-| **GameSession** | `src/Server/GameSession.ts` | Owns the authoritative `MapState`; exposes `handleCommand` and `tick` |
-| **MapState** | `src/Core/MapState.ts` | Applies commands with business-rule validation (ownership, credits, etc.); advances ticks |
-| **BattleEngine** | `src/Core/BattleEngine.ts` | Deterministic, self-contained combat resolution |
-| **Client** | `src/Client/main.ts` | Renders server snapshots; emits input events over WebSocket |
+| **MatchRegistry** | `src/Server/MatchRegistry.ts` | Drops each client into its own solo match vs a field of server-side bots (FFA, count via `RASTER_BOTS`); routes intents; ticks all sessions |
+| **RasterGameSession** | `src/Server/RasterGameSession.ts` | Owns the authoritative `GameMap` + `TerritoryGrid` + `RasterConflict`; validates intents into the engine's business rules; broadcasts snapshots |
+| **RasterConflict** | `src/Core/RasterConflict.ts` | Deterministic, self-contained territorial combat resolution |
+| **RasterBotController** | `src/Server/RasterBotController.ts` | Strategy-driven AI opponent (personality presets): grabs neutral land, prioritises beatable rivals, uses amphibious crossings; queues expand intents through the same channel as a human |
+| **Client** | `src/Client/rasterClient.ts` | Renders snapshots; emits click-to-expand intents over WebSocket |
 
 ---
 
@@ -32,72 +33,53 @@ recently received from the server and send intent-only commands.
 ```
 Client                              Server
   │                                   │
-  │  ── WebSocket connect ──────────► │  game.subscribe(socket → send snapshot)
-  │  ◄─ { type:"snapshot", … } ────── │  (initial state sent immediately)
+  │  ── WebSocket connect ──────────► │  MatchRegistry.joinRasterSolo
+  │  ◄─ PLAYER_ASSIGNED ───────────── │  assign id/colour, spawn tile
+  │  ◄─ SNAPSHOT (with terrain) ───── │  initial snapshot (terrain bytes once)
   │                                   │
-  │  User clicks "Purchase 2 inf"     │
-  │  ── { type:"purchase",           │
-  │       playerId, provinceId,       │
-  │       unitType, count } ────────► │  validateCommand(raw)       [shape check]
-  │                                   │  mapState.applyCommand(cmd) [business rules]
-  │  ◄─ { type:"snapshot", … } ────── │  broadcast to all subscribers
+  │  User clicks a tile               │
+  │  ── CLIENT_RASTER_EXPAND ───────► │  validateCommand(raw)   [shape check]
+  │     { targetX, targetY, percent } │  queueExpand            [buffered]
   │                                   │
-  │  ── { type:"move", … } ─────────► │  validateCommand → applyCommand → broadcast
-  │  ◄─ { type:"snapshot", … } ────── │
+  │            (server tick boundary) │  validate intent → AttackIntent
+  │                                   │  RasterConflict.processTick
+  │  ◄─ SNAPSHOT (owner delta) ─────  │  broadcast to subscribers
+  │  ◄─ ACTION_REJECTED (if invalid)  │  sent only to the offending client
   │                                   │
-  │  ── { type:"placeMine", … } ────► │  validateCommand → applyCommand → broadcast
-  │  ◄─ { type:"snapshot", … } ────── │
-  │                                   │
-  │  (server-side 1 s tick)           │
-  │  ◄─ { type:"snapshot", … } ────── │  game.tick() → income → broadcast
-  │                                   │
-  │  Bad command sent by client       │
-  │  ── { type:"nuke" } ────────────► │  validateCommand throws
-  │  ◄─ { type:"error", message } ─── │  error sent to that socket only
+  │  ◄─ MATCH_ENDED (on victory) ───  │  broadcast once
 ```
 
 ---
 
 ## Server Responsibilities
 
-1. **Structural validation** (`validateCommand`)  
-   Checks that the raw JSON object has the correct `type` discriminant and that
-   every required field is present with the right data type (non-empty string,
-   positive integer, known `UnitType`).  Any violation produces a `{ type: "error" }`
-   message sent back to the offending client; no state change occurs.
+1. **Structural validation** (`validateCommand`): the raw JSON must have a known
+   `type` discriminant and well-typed fields (integer tile coords ≥ 0, percent
+   1..100). Violations produce a `SERVER_RASTER_ACTION_REJECTED` with reason
+   `INVALID_MESSAGE_FORMAT`; no state change occurs.
 
-2. **Business-rule validation** (`MapState`)  
-   After structural validation the command is forwarded to `MapState.applyCommand`,
-   which enforces game rules:
-   - Province ownership (can only purchase/mine in your own province)
-   - Connectivity (move must be to a neighbouring province, unless GLA tunnel)
-   - Affordability (credits must cover unit cost)
-   - Mine prerequisites (general level ≥ 1 and unused mine charge)
-   Violations throw an `Error` that the server catches and relays as a `{ type: "error" }` message.
+2. **Business-rule validation** (`RasterGameSession.validateAndBuildIntent`):
+   the tile must be in bounds and capturable, not already owned by the attacker,
+   the attacker must have a frontier touching the target, and the committed
+   slice of the pool must be affordable. Failures yield a typed reject reason.
 
-3. **Authoritative state mutation**  
-   Only `MapState` methods (`purchase`, `move`, `placeMine`, `tick`) mutate game
-   state.  There is no code path by which a client can influence state other than
-   through these validated entry points.
+3. **Authoritative state mutation**: only `RasterConflict` (via the session's
+   tick) mutates ownership and troop pools. There is no path by which a client
+   can influence state except through validated, queued intents.
 
-4. **Broadcast** (`GameSession.broadcast`)  
-   After every state-changing operation a full `GameState` snapshot is sent to
-   every connected socket via `{ type: "snapshot", payload: GameState }`.
+4. **Broadcast**: after every tick the session sends a full `RasterSnapshot` to
+   each subscriber. Static terrain bytes are shipped only on the first snapshot
+   per client (keyed by `terrainHash`); subsequent snapshots omit them.
 
 ---
 
 ## Client Responsibilities
 
-- Render the most recently received `GameState` snapshot (read-only).
-- Translate UI gestures (button clicks, canvas clicks) into command objects and
-  send them over the WebSocket.
-- Display error messages returned by the server.
-- Maintain ephemeral UI-only state (selected province, battle animation timers)
-  that has no effect on game logic.
-
-The client holds **no authoritative state**.  Local variables (`state`,
-`selectedProvinceId`, `animatedBattleId`) are purely presentational and are
-overwritten on every server snapshot.
+- Render the most recent `RasterSnapshot` (terrain + ownership raster, boats).
+- Translate canvas clicks into `CLIENT_RASTER_EXPAND` intents.
+- Display reject/victory messages from the server.
+- Hold no authoritative state — local fields are purely presentational and are
+  overwritten on every snapshot.
 
 ---
 
@@ -105,10 +87,10 @@ overwritten on every server snapshot.
 
 | # | Limitation | Impact |
 |---|-----------|--------|
-| 1 | **No session / player identity** – The client sends its own `playerId` string with every command; the server trusts it. Any connected client can act as any player. | Any peer can issue commands on behalf of another player. |
-| 2 | **No reconnection / state recovery** – Clients that disconnect lose their subscription and must reload to receive a new snapshot. In-flight commands sent while disconnected are silently dropped. | Poor resilience in unstable network conditions. |
-| 3 | **Single shared game session** – There is one global `GameSession` instance; all connected clients participate in the same match. | No matchmaking, no multiple concurrent games. |
-| 4 | **Full snapshots only** – Every state change broadcasts the entire `GameState`. For a small map this is acceptable; for larger maps it will become bandwidth-inefficient. | Not suitable for maps with many provinces or large player counts. |
-| 5 | **No anti-cheat beyond basic validation** – Count ceilings, rate limiting, and action-frequency checks are not implemented. | Trivial programmatic exploits remain possible. |
+| 1 | **No player identity / auth** — the server trusts the socket; one socket = one solo match. | Fine for solo-vs-bot; real PvP needs identity. |
+| 2 | **No reconnection / resync** — a dropped socket ends the match; the terrain cache is keyed by `terrainHash` but there is no session resume. | Reloading starts a fresh match. |
+| 3 | **Solo matches only** — every client gets an isolated session vs one bot. There is no shared-session PvP or matchmaking yet. | No human-vs-human. |
+| 4 | **Full ownership raster every tick** — the owner array is re-sent each tick (terrain is sent once). Acceptable at current map sizes; delta encoding will matter for larger maps or many players. | Bandwidth scales with map size × tick rate. |
+| 5 | **No rate limiting beyond per-tick batching** — intents are buffered and applied at tick boundaries, but there is no per-client action-frequency cap. | Programmatic spam is throttled only by the tick cadence. |
 
-Items 1 and 3 are the highest-priority gaps for the next iteration.
+Items 1 and 3 are the highest-priority gaps before real multiplayer.

@@ -1,7 +1,7 @@
 /**
  * Resolved references to every DOM element the client drives, plus small DOM
  * helpers. Centralising element lookup keeps the "did the page load correctly"
- * guard in one place and gives render/input/net a typed handle to work against.
+ * guard in one place and gives the raster client a typed handle to work against.
  */
 export interface UiElements {
   mapCanvas: HTMLCanvasElement;
@@ -9,13 +9,16 @@ export interface UiElements {
   teamInfo: HTMLDivElement;
   attackPercentInput: HTMLInputElement;
   attackPercentOutput: HTMLOutputElement;
-  clearSelectionButton: HTMLButtonElement;
   selectionInfo: HTMLDivElement;
   statusMessage: HTMLDivElement;
   eventsPanel: HTMLDivElement;
   menuOverlay: HTMLDivElement;
+<<<<<<< HEAD
   playSoloButton: HTMLButtonElement;
   playMultiButton: HTMLButtonElement;
+=======
+  playButton: HTMLButtonElement;
+>>>>>>> origin/main
 }
 
 export type StatusKind = "info" | "error" | "victory";
@@ -25,26 +28,32 @@ export const getUiElements = (): UiElements => {
   const teamInfo = document.querySelector<HTMLDivElement>("#teamInfo");
   const attackPercentInput = document.querySelector<HTMLInputElement>("#attackPercentInput");
   const attackPercentOutput = document.querySelector<HTMLOutputElement>("#attackPercentOutput");
-  const clearSelectionButton = document.querySelector<HTMLButtonElement>("#clearSelectionButton");
   const selectionInfo = document.querySelector<HTMLDivElement>("#selectionInfo");
   const statusMessage = document.querySelector<HTMLDivElement>("#statusMessage");
   const eventsPanel = document.querySelector<HTMLDivElement>("#events");
   const menuOverlay = document.querySelector<HTMLDivElement>("#menuOverlay");
+<<<<<<< HEAD
   const playSoloButton = document.querySelector<HTMLButtonElement>("#playSoloButton");
   const playMultiButton = document.querySelector<HTMLButtonElement>("#playMultiButton");
+=======
+  const playButton = document.querySelector<HTMLButtonElement>("#playButton");
+>>>>>>> origin/main
 
   if (
     !mapCanvas ||
     !teamInfo ||
     !attackPercentInput ||
     !attackPercentOutput ||
-    !clearSelectionButton ||
     !selectionInfo ||
     !statusMessage ||
     !eventsPanel ||
     !menuOverlay ||
+<<<<<<< HEAD
     !playSoloButton ||
     !playMultiButton
+=======
+    !playButton
+>>>>>>> origin/main
   ) {
     throw new Error("UI failed to initialize.");
   }
@@ -60,13 +69,16 @@ export const getUiElements = (): UiElements => {
     teamInfo,
     attackPercentInput,
     attackPercentOutput,
-    clearSelectionButton,
     selectionInfo,
     statusMessage,
     eventsPanel,
     menuOverlay,
+<<<<<<< HEAD
     playSoloButton,
     playMultiButton,
+=======
+    playButton,
+>>>>>>> origin/main
   };
 };
 

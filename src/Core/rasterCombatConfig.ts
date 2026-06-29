@@ -41,3 +41,19 @@ export const DEFENDER_LOSS_PER_TILE = 1;
  * advance gradually (ring by ring) instead of teleporting across the map.
  */
 export const EXPANSION_SPEND_FRACTION = 0.25;
+
+/**
+ * Maximum width of open water (in tiles) a coastal tile can project an
+ * amphibious landing across. A player who owns a shoreline tile may expand onto
+ * an enemy/neutral shoreline tile on the far bank of a strait, lake or channel
+ * no wider than this — the openfront-style "boats" mechanic. Set to 0 to disable
+ * all water crossing (back to Phase 2 behaviour where water is a hard barrier).
+ */
+export const MAX_SEA_CROSSING_TILES = 6;
+
+/**
+ * Extra troop cost added when a captured tile is reached by an amphibious
+ * landing rather than a land border. Crossing water is meant to be possible but
+ * deliberately more expensive than pushing a contiguous land front.
+ */
+export const SEA_CROSSING_SURCHARGE = 8;
