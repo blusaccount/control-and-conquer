@@ -15,6 +15,7 @@ import { paintRaster, paintTileInto } from "./rasterPaint.js";
 import { playerColor } from "./rasterPalette.js";
 import { loadRunHistory, recordRun, type RunRecord, type StorageLike } from "./runHistory.js";
 import { computeNameAnchors, type NameAnchor } from "./nameLayout.js";
+import { MAX_POOL_PER_TILE } from "../Core/rasterCombatConfig.js";
 
 /** Options for starting a raster match: the chosen map. */
 export interface RasterClientOptions {
@@ -539,6 +540,27 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const cw = ui.mapCanvas.width;
     const ch = ui.mapCanvas.height;
 
+    // The crown marks the nation with the highest population limit (max troops);
+    // since the cap scales with territory, that's the player holding the most
+    // tiles. Mirrors OpenFront's crown marker.
+    let leaderId = -1;
+    let leaderTiles = -1;
+    for (const p of runtime.players) {
+      if (!p.eliminated && p.tiles > leaderTiles) {
+        leaderTiles = p.tiles;
+        leaderId = p.playerId;
+      }
+    }
+
+    const label = (text: string, sx: number, cy: number, px: number, weight: string): void => {
+      ctx.font = `${weight} ${px}px Inter, system-ui, sans-serif`;
+      ctx.lineWidth = Math.max(2, px * 0.14);
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.7)";
+      ctx.strokeText(text, sx, cy);
+      ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+      ctx.fillText(text, sx, cy);
+    };
+
     ctx.save();
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -552,12 +574,19 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       // Cheap viewport cull (names can be large, so pad generously).
       if (sx < -cw || sy < -ch || sx > cw * 2 || sy > ch * 2) continue;
 
-      ctx.font = `600 ${fontPx}px Inter, system-ui, sans-serif`;
-      ctx.lineWidth = Math.max(2, fontPx * 0.14);
-      ctx.strokeStyle = "rgba(0, 0, 0, 0.7)";
-      ctx.strokeText(player.name, sx, sy);
-      ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
-      ctx.fillText(player.name, sx, sy);
+      // Once the label is big enough, stack the troop count beneath the name and
+      // (for the leader) a crown above it — the OpenFront map readout.
+      const showDetail = fontPx >= 14;
+      const nameY = showDetail ? sy - fontPx * 0.26 : sy;
+      label(player.name, sx, nameY, fontPx, "600");
+      if (showDetail) {
+        label(formatCount(player.troops), sx, sy + fontPx * 0.52, fontPx * 0.62, "500");
+        if (player.playerId === leaderId) {
+          const crownPx = Math.max(13, fontPx * 0.7);
+          ctx.font = `${crownPx}px serif`;
+          ctx.fillText("\u{1F451}", sx, nameY - fontPx * 0.66); // 👑
+        }
+      }
     }
     ctx.restore();
   };
@@ -696,9 +725,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const pct = runtime.capturableTotal > 0
       ? Math.round((runtime.myTiles / runtime.capturableTotal) * 100)
       : 0;
+    const maxPool = runtime.myTiles * MAX_POOL_PER_TILE;
     ui.selectionInfo.innerHTML =
-      `<strong>Troop pool:</strong> ${formatCount(runtime.pool)}<br/>` +
-      `<strong>Tiles:</strong> ${formatCount(runtime.myTiles)} / ${formatCount(runtime.capturableTotal)} (${pct}%)<br/>` +
+      `<strong>Troops:</strong> ${formatCount(runtime.pool)} / ${formatCount(maxPool)}<br/>` +
+      `<strong>Territory:</strong> ${pct}% (${formatCount(runtime.myTiles)} tiles)<br/>` +
       `<strong>Ships at sea:</strong> ${runtime.myShips} / 3<br/>` +
       `<em>Click adjacent land to expand. Click any landmass across water to send a transport ship ` +
       `to its nearest reachable shore (one per click, max 3 at sea). Drag to pan, scroll to zoom.</em>`;
@@ -735,7 +765,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
           .filter(Boolean)
           .join(" ");
         const name = escapeHtml(p.name) + (isMe ? " (you)" : "");
-        const stats = `${formatCount(p.tiles)} · ${formatCount(p.troops)} (+${formatRate(p.troopsPerSecond)}/s)`;
+        const maxPool = p.tiles * MAX_POOL_PER_TILE;
+        const own = runtime.capturableTotal > 0 ? (p.tiles / runtime.capturableTotal) * 100 : 0;
+        const ownStr = own >= 10 ? String(Math.round(own)) : own.toFixed(1);
+        const stats =
+          `${ownStr}% · ${formatCount(p.troops)}/${formatCount(maxPool)} (+${formatRate(p.troopsPerSecond)}/s)`;
         return (
           `<div class="${rowClass}">` +
           `<span class="lb-dot" style="background:${escapeHtml(p.color)}"></span>` +

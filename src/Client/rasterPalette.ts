@@ -99,7 +99,7 @@ export const playerColor = (
 const WHITE: Rgba = { r: 255, g: 255, b: 255, a: 255 };
 
 /** How far a border tile's colour is pushed toward white from the owner hue. */
-const BORDER_LIGHTEN = 0.45;
+const BORDER_LIGHTEN = 0.62;
 
 /**
  * Bright outline colour for a player's territory edge. A crisp, lightened
