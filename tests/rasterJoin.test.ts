@@ -59,3 +59,16 @@ test("validateCommand accepts a well-formed CLIENT_RASTER_JOIN and rejects bad c
   assert.throws(() => validateCommand({ type: "CLIENT_RASTER_JOIN", payload: { playerClass: "warlord" } }));
   assert.throws(() => validateCommand({ type: "CLIENT_RASTER_JOIN", payload: {} }));
 });
+
+test("validateCommand accepts an optional map id and rejects an unknown one", () => {
+  const ok = validateCommand({
+    type: "CLIENT_RASTER_JOIN",
+    payload: { playerClass: "admiral", mapId: "earth-huge" },
+  });
+  assert.equal(ok.type, "CLIENT_RASTER_JOIN");
+  if (ok.type === "CLIENT_RASTER_JOIN") assert.equal(ok.payload.mapId, "earth-huge");
+  // Unknown / removed maps are refused so the server never builds a bogus map.
+  assert.throws(() =>
+    validateCommand({ type: "CLIENT_RASTER_JOIN", payload: { playerClass: "admiral", mapId: "mediterranean" } }),
+  );
+});

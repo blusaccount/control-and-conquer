@@ -2,6 +2,7 @@ import { RasterClientMessage, RasterExpandIntent } from "../Core/types.js";
 import { PerkChosenPayload, RasterJoinPayload } from "../Core/messages.js";
 import { isPerkId } from "../Core/perks.js";
 import { isPlayerClassId } from "../Core/playerClasses.js";
+import { isMapChoiceId } from "../Core/mapCatalog.js";
 
 const parseRasterExpand = (payload: unknown): RasterExpandIntent => {
   if (typeof payload !== "object" || payload === null) {
@@ -24,11 +25,14 @@ const parseRasterJoin = (payload: unknown): RasterJoinPayload => {
   if (typeof payload !== "object" || payload === null) {
     throw new Error("CLIENT_RASTER_JOIN.payload must be an object.");
   }
-  const { playerClass } = payload as Record<string, unknown>;
+  const { playerClass, mapId } = payload as Record<string, unknown>;
   if (!isPlayerClassId(playerClass)) {
     throw new Error("playerClass must be a known class id.");
   }
-  return { playerClass };
+  if (mapId !== undefined && !isMapChoiceId(mapId)) {
+    throw new Error("mapId must be a known map id.");
+  }
+  return mapId === undefined ? { playerClass } : { playerClass, mapId };
 };
 
 const parsePerkChosen = (payload: unknown): PerkChosenPayload => {

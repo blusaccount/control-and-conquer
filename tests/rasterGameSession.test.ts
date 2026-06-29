@@ -130,7 +130,7 @@ test("snapshots carry a ships array (empty when none are at sea)", () => {
 });
 
 test("clicking a sea-only target dispatches a transport ship that lands", () => {
-  const session = new RasterGameSession({ realMapId: "mediterranean", startingTroops: 200 });
+  const session = new RasterGameSession({ realMapId: "world", startingTroops: 200 });
   const messages = collect(session, "human");
   const target = stageSeaTarget(session);
 
@@ -151,7 +151,7 @@ test("clicking a sea-only target dispatches a transport ship that lands", () => 
 });
 
 test("a fourth simultaneous ship is rejected with TOO_MANY_SHIPS", () => {
-  const session = new RasterGameSession({ realMapId: "mediterranean", startingTroops: 200 });
+  const session = new RasterGameSession({ realMapId: "world", startingTroops: 200 });
   const messages = collect(session, "human");
   const target = stageSeaTarget(session);
 

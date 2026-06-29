@@ -48,13 +48,15 @@
   5-Bit-Magnitude (Elevation bzw. Wassertiefe, 31 = impassable Fels).
 - **Prozeduraler Generator** (`terrainGenerator.ts`): seed-deterministisches
   Fractal-Value-Noise → Land/Wasser-Maske → Speckle-Cleanup → Finishing-Pipeline.
-- **Hand-authored Real-Maps** (`realMaps.ts`): ASCII-Landmasken (Mediterranean,
-  World), gleiche Finishing-Pipeline (`terrainBuilder.ts`).
+- **Hand-authored Real-Maps** (`realMaps.ts`): ASCII-Landmasken (World), gleiche
+  Finishing-Pipeline (`terrainBuilder.ts`).
 - **Heightmap-Maps** (`heightmapMaps.ts` + `pngDecode.ts`): große, reale Karten,
   aus einer committeten Equirectangular-Topografie-PNG (`assets/maps/earth-topo.png`)
-  zur konfigurierten Gridgröße (`RASTER_MAP_SIZE`) heruntergesampelt — bis
-  OpenFront-Maßstab (~2 Mio. Tiles). Gleiche Finishing-Pipeline; Quelle
-  regenerierbar via `scripts/buildMap.ts`.
+  zur gewählten Gridgröße heruntergesampelt — bis OpenFront-Maßstab (~2 Mio.
+  Tiles). Gleiche Finishing-Pipeline; Quelle regenerierbar via `scripts/buildMap.ts`.
+- **Map-Auswahl** (`mapCatalog.ts`): Spieler wählen ihre Karte pro Run im Menü
+  (Earth in drei Größen, World, Procedural); der Server löst die Wahl in
+  Session-Optionen auf.
 - **Sea-Links** (`seaLinks.ts`): vorberechnete amphibische Adjazenz für schmale
   Gewässer.
 

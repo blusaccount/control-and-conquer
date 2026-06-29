@@ -90,55 +90,6 @@ export const buildRealMap = (def: RealMapDefinition): GameMap => {
 // ---------------------------------------------------------------------------
 
 /**
- * The Mediterranean basin: Europe to the north, North Africa to the south, with
- * Iberia, the Italian boot, the Balkans/Greece and Anatolia framing a central
- * sea dotted with islands. The Nile cuts north through Africa and a short river
- * notches western Europe; the Alps and Atlas add impassable highland. Island
- * chains keep every landmass within sea-crossing range, so a single player can
- * conquer the whole basin by hopping the straits.
- */
-const MEDITERRANEAN: RealMapDefinition = {
-  id: "mediterranean",
-  name: "Mediterranean",
-  width: 60,
-  height: 32,
-  rows: [
-    "          ########          ##############          ####",
-    "       ##############     ###################      ######",
-    "      #################  #######################   #######",
-    "  ##########################################################",
-    " #######################^^^#################################",
-    " #########   ##~#########^#################################",
-    "  #######     #~#########################################",
-    "   #####       ~######## ####  #########################",
-    "    ####        ######          ###  ###  ##############",
-    "    ###          ####            #    #    ###  #######",
-    "     ##           ##  ##                        ####",
-    "     #             # ####                        ##",
-    "                     ###",
-    "         ##          ###          ##",
-    "        ####          #          ####          ###",
-    "         ##                       ##          #####",
-    "                   ##                          ###",
-    "                  ####         ##",
-    "                   ##         ####        ###",
-    "                    #         ##         #####       ##",
-    "          ##                  #          ###        ####",
-    "                                                     ##",
-    "                         ##",
-    "       ###############   ##    #############",
-    "     ##########################################~########",
-    "   ############################################~##########",
-    "  #############################################~############",
-    "  #############################################~############",
-    "   ############################################~###########",
-    "    ########^^^################################~##########",
-    "      #######^#################################~########",
-    "        #######################################~######",
-  ],
-};
-
-/**
  * A stylised world map: the six continents in roughly their real positions,
  * separated by oceans far wider than the sea-crossing range. The Amazon,
  * Mississippi and Nile thread the continents and the Andes, Rockies and
@@ -190,13 +141,13 @@ const WORLD: RealMapDefinition = {
   ],
 };
 
-/** All registered real-world maps, keyed by id. */
+/** All registered real-world ASCII maps, keyed by id. */
 export const REAL_MAPS: ReadonlyMap<string, RealMapDefinition> = new Map(
-  [MEDITERRANEAN, WORLD].map((m) => [m.id, m]),
+  [WORLD].map((m) => [m.id, m]),
 );
 
 /** Default real map used when none is explicitly requested. */
-export const DEFAULT_REAL_MAP_ID = MEDITERRANEAN.id;
+export const DEFAULT_REAL_MAP_ID = WORLD.id;
 
 /** Look up a real map definition by id, or `undefined` if unknown. */
 export const getRealMap = (id: string): RealMapDefinition | undefined => REAL_MAPS.get(id);

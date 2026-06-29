@@ -6,8 +6,13 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { MatchRegistry, DEFAULT_RASTER_BOT_COUNT, MAX_RASTER_BOTS } from "./MatchRegistry.js";
 import { validateCommand } from "./validateCommand.js";
-import { DEFAULT_REAL_MAP_ID, getRealMap } from "../Core/realMaps.js";
-import { buildHeightmapGameMap, getHeightmapMap, HEIGHTMAP_MAP_IDS } from "./heightmapMaps.js";
+import { buildHeightmapGameMap, getHeightmapMap } from "./heightmapMaps.js";
+import {
+  DEFAULT_MAP_CHOICE_ID,
+  getMapChoice,
+  MAP_CHOICES,
+  type MapChoice,
+} from "../Core/mapCatalog.js";
 import {
   DRIFT_WARN_MS,
   MAX_CATCH_UP_TICKS,
@@ -21,25 +26,31 @@ const publicDir = join(rootDir, "public");
 const assetDir = join(rootDir, "dist");
 const port = Number(process.env.PORT ?? 3000);
 
-// The active map is selected via RASTER_MAP, defaulting to the Mediterranean.
-// Ids resolve as heightmap maps (e.g. "earth") or hand-authored ASCII maps
-// (e.g. "mediterranean"); unknown ids fall back to the default. Heightmap maps
-// honour RASTER_MAP_SIZE (target width in tiles).
-const requestedMapId = process.env.RASTER_MAP ?? DEFAULT_REAL_MAP_ID;
-const isKnownMap = (id: string): boolean => Boolean(getHeightmapMap(id) ?? getRealMap(id));
-const activeMapId = isKnownMap(requestedMapId) ? requestedMapId : DEFAULT_REAL_MAP_ID;
-const rasterMapSize = Number(process.env.RASTER_MAP_SIZE ?? 0) || 0;
-if (activeMapId !== requestedMapId) {
-  console.warn(`Unknown map "${requestedMapId}". Falling back to "${DEFAULT_REAL_MAP_ID}".`);
+// Players pick their map per-run from the shared catalogue (see `mapCatalog`),
+// sent in the join payload. RASTER_MAP optionally overrides the *default* choice
+// used when a client sends none — it must name a catalogue id (e.g. "earth-huge").
+const requestedDefaultMap = process.env.RASTER_MAP ?? DEFAULT_MAP_CHOICE_ID;
+const defaultMapChoice: MapChoice =
+  getMapChoice(requestedDefaultMap) ?? getMapChoice(DEFAULT_MAP_CHOICE_ID)!;
+if (defaultMapChoice.id !== requestedDefaultMap) {
+  console.warn(`Unknown map "${requestedDefaultMap}". Falling back to "${DEFAULT_MAP_CHOICE_ID}".`);
 }
 
+/** Resolve a (possibly absent/unknown) client map id to a catalogue choice. */
+const resolveMapChoice = (mapId: string | undefined): MapChoice =>
+  (mapId ? getMapChoice(mapId) : undefined) ?? defaultMapChoice;
+
 // Heightmap maps take a few hundred ms to downsample from the source raster.
-// Pre-warm the active one (cached by size) at boot so the first connection
-// doesn't pay that cost mid-handshake.
-const activeHeightmap = getHeightmapMap(activeMapId);
-if (activeHeightmap) {
-  const built = buildHeightmapGameMap(activeHeightmap, rasterMapSize || undefined);
-  console.log(`Pre-built heightmap map "${activeMapId}" at ${built.width}x${built.height} (${built.size} tiles).`);
+// Pre-warm the default one (cached by size) at boot so a first connection that
+// accepts the default doesn't pay that cost mid-handshake.
+const defaultHeightmap = defaultMapChoice.options.realMapId
+  ? getHeightmapMap(defaultMapChoice.options.realMapId)
+  : undefined;
+if (defaultHeightmap) {
+  const built = buildHeightmapGameMap(defaultHeightmap, defaultMapChoice.options.mapSize);
+  console.log(
+    `Pre-built default map "${defaultMapChoice.id}" at ${built.width}x${built.height} (${built.size} tiles).`,
+  );
 }
 // Number of AI opponents seated in each solo match. Defaults to a small FFA;
 // clamp to the seats a session can fill and fall back on a bad value.
@@ -122,10 +133,11 @@ wss.on("connection", (socket) => {
       const message = validateCommand(parsed);
       if (message.type === "CLIENT_RASTER_JOIN") {
         if (!unsubscribe) {
+          const choice = resolveMapChoice(message.payload.mapId);
           unsubscribe = registry.joinRasterSolo(
             clientId,
             send,
-            { realMapId: activeMapId, mapSize: rasterMapSize },
+            { ...choice.options },
             botCount,
             message.payload.playerClass,
           );
@@ -155,8 +167,7 @@ wss.on("connection", (socket) => {
 
 server.listen(port, () => {
   console.log(`Control & Conquer listening on http://localhost:${port}`);
-  const sizeNote = getHeightmapMap(activeMapId) && rasterMapSize ? ` (size ${rasterMapSize})` : "";
-  console.log(`Active map: "${activeMapId}"${sizeNote}. Heightmap maps: ${HEIGHTMAP_MAP_IDS.join(", ")}.`);
+  console.log(`Default map: "${defaultMapChoice.id}". Selectable maps: ${MAP_CHOICES.map((m) => m.id).join(", ")}.`);
   console.log(`Seating ${botCount} AI opponent(s) per solo match.`);
   console.log(`Simulation loop running at ${SIMULATION_TICK_RATE} TPS.`);
 });
