@@ -226,6 +226,17 @@
         font-size: 12px;
         color: #6b7280;
       }
+
+      #minimapCanvas {
+        width: 100%;
+        height: auto;
+        background: #0b1220;
+        border: 1px solid #293447;
+        border-radius: 8px;
+        display: block;
+        cursor: pointer;
+        image-rendering: pixelated;
+      }
     </style>
   </head>
   <body>
@@ -272,6 +283,11 @@
         <section>
           <h2>Recent Events</h2>
           <div id="events"></div>
+        </section>
+
+        <section>
+          <h2>Minimap</h2>
+          <canvas id="minimapCanvas" width="120" height="80" title="Click to jump the camera"></canvas>
         </section>
       </aside>
 

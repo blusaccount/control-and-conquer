@@ -6,6 +6,8 @@
 export interface UiElements {
   mapCanvas: HTMLCanvasElement;
   mapContext: CanvasRenderingContext2D;
+  minimapCanvas: HTMLCanvasElement;
+  minimapContext: CanvasRenderingContext2D;
   teamInfo: HTMLDivElement;
   attackPercentInput: HTMLInputElement;
   attackPercentOutput: HTMLOutputElement;
@@ -21,6 +23,7 @@ export type StatusKind = "info" | "error" | "victory";
 
 export const getUiElements = (): UiElements => {
   const mapCanvas = document.querySelector<HTMLCanvasElement>("#mapCanvas");
+  const minimapCanvas = document.querySelector<HTMLCanvasElement>("#minimapCanvas");
   const teamInfo = document.querySelector<HTMLDivElement>("#teamInfo");
   const attackPercentInput = document.querySelector<HTMLInputElement>("#attackPercentInput");
   const attackPercentOutput = document.querySelector<HTMLOutputElement>("#attackPercentOutput");
@@ -33,6 +36,7 @@ export const getUiElements = (): UiElements => {
 
   if (
     !mapCanvas ||
+    !minimapCanvas ||
     !teamInfo ||
     !attackPercentInput ||
     !attackPercentOutput ||
@@ -47,13 +51,16 @@ export const getUiElements = (): UiElements => {
   }
 
   const mapContext = mapCanvas.getContext("2d");
-  if (!mapContext) {
+  const minimapContext = minimapCanvas.getContext("2d");
+  if (!mapContext || !minimapContext) {
     throw new Error("Canvas context unavailable.");
   }
 
   return {
     mapCanvas,
     mapContext,
+    minimapCanvas,
+    minimapContext,
     teamInfo,
     attackPercentInput,
     attackPercentOutput,

@@ -331,7 +331,53 @@ export const startRasterClient = (ui: UiElements): void => {
       drawCapitals(ctx, scale);
       drawBoats(now, ctx, scale);
     }
+    drawMinimap();
     requestAnimationFrame(renderFrame);
+  };
+
+  /**
+   * The transform that fits the whole map into the minimap canvas while keeping
+   * its aspect ratio (letterboxed). Shared by the minimap renderer and its
+   * click-to-jump handler so both agree on where each tile lands. `null` until a
+   * map exists.
+   */
+  const minimapTransform = (): { scale: number; offX: number; offY: number } | null => {
+    const map = runtime.map;
+    if (!map) return null;
+    const mw = ui.minimapCanvas.width;
+    const mh = ui.minimapCanvas.height;
+    const scale = Math.min(mw / map.width, mh / map.height);
+    return { scale, offX: (mw - map.width * scale) / 2, offY: (mh - map.height * scale) / 2 };
+  };
+
+  /**
+   * Draw the whole map into the minimap by downscaling the offscreen base raster
+   * (so it carries the identical terrain + ownership palette), then overlay a
+   * green rectangle marking the main view's current viewport.
+   */
+  const drawMinimap = (): void => {
+    const ctx = ui.minimapContext;
+    const mw = ui.minimapCanvas.width;
+    const mh = ui.minimapCanvas.height;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, mw, mh);
+
+    const map = runtime.map;
+    const base = runtime.base;
+    const t = minimapTransform();
+    if (!map || !base || !t) return;
+
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(base, 0, 0, map.width, map.height, t.offX, t.offY, map.width * t.scale, map.height * t.scale);
+
+    // Viewport rectangle: the tile span currently shown on the main canvas.
+    const viewW = ui.mapCanvas.width / runtime.view.scale;
+    const viewH = ui.mapCanvas.height / runtime.view.scale;
+    const rx = t.offX + runtime.view.x * t.scale;
+    const ry = t.offY + runtime.view.y * t.scale;
+    ctx.strokeStyle = "rgba(34, 197, 94, 0.95)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(rx + 0.5, ry + 0.5, Math.max(1, viewW * t.scale - 1), Math.max(1, viewH * t.scale - 1));
   };
 
   /**
@@ -547,6 +593,39 @@ export const startRasterClient = (ui: UiElements): void => {
     },
     { passive: false },
   );
+
+  // Click (or drag) the minimap to jump the main camera so the clicked point
+  // becomes the centre of the viewport.
+  const jumpToMinimap = (event: { clientX: number; clientY: number }): void => {
+    const map = runtime.map;
+    const t = minimapTransform();
+    if (!map || !t) return;
+    const bounds = ui.minimapCanvas.getBoundingClientRect();
+    const px = ((event.clientX - bounds.left) * ui.minimapCanvas.width) / bounds.width;
+    const py = ((event.clientY - bounds.top) * ui.minimapCanvas.height) / bounds.height;
+    const tileX = (px - t.offX) / t.scale;
+    const tileY = (py - t.offY) / t.scale;
+    const viewW = ui.mapCanvas.width / runtime.view.scale;
+    const viewH = ui.mapCanvas.height / runtime.view.scale;
+    runtime.view.x = tileX - viewW / 2;
+    runtime.view.y = tileY - viewH / 2;
+    clampView();
+  };
+
+  let minimapDragging = false;
+  ui.minimapCanvas.addEventListener("pointerdown", (event) => {
+    minimapDragging = true;
+    ui.minimapCanvas.setPointerCapture(event.pointerId);
+    jumpToMinimap(event);
+  });
+  ui.minimapCanvas.addEventListener("pointermove", (event) => {
+    if (minimapDragging) jumpToMinimap(event);
+  });
+  const endMinimapDrag = (): void => {
+    minimapDragging = false;
+  };
+  ui.minimapCanvas.addEventListener("pointerup", endMinimapDrag);
+  ui.minimapCanvas.addEventListener("pointercancel", endMinimapDrag);
 
   ui.attackPercentInput.addEventListener("input", () => {
     ui.attackPercentOutput.textContent = `${ui.attackPercentInput.value}%`;
