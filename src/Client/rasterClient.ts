@@ -14,6 +14,7 @@ import { hideMenu, setStatus, type UiElements } from "./dom.js";
 import { paintRaster, paintTileInto } from "./rasterPaint.js";
 import { playerColor } from "./rasterPalette.js";
 import { loadRunHistory, recordRun, type RunRecord, type StorageLike } from "./runHistory.js";
+import { computeNameAnchors, type NameAnchor } from "./nameLayout.js";
 
 /** Options for starting a raster match: the chosen map. */
 export interface RasterClientOptions {
@@ -98,6 +99,10 @@ interface RasterRuntime {
   landings: Landing[];
   /** Living players' capitals, drawn as a marker over the base map. */
   capitals: Capital[];
+  /** Nation-name labels, centred in each player's territory mass. */
+  nameAnchors: NameAnchor[];
+  /** performance.now() of the last name-anchor recompute (throttled). */
+  lastNameComputeMs: number;
 }
 
 /** A player capital ("Hauptstadt") drawn as a cross marker on the map. */
@@ -115,6 +120,16 @@ const SHIP_EASE = 0.25;
 
 /** Hard zoom-in ceiling, in screen pixels per tile. */
 const MAX_TILE_SCALE = 16;
+
+/**
+ * How often the nation-name anchors are recomputed, in ms. Label positions
+ * drift slowly as territory shifts, so twice a second is plenty and keeps the
+ * (full-raster) recompute off the per-frame path.
+ */
+const NAME_RECOMPUTE_MS = 500;
+
+/** Below this on-screen font size (px) a nation name is too small to draw. */
+const MIN_NAME_FONT_PX = 9;
 
 const clamp = (value: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, value));
 
@@ -169,6 +184,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     shipGeneration: 0,
     landings: [],
     capitals: [],
+    nameAnchors: [],
+    lastNameComputeMs: Number.NEGATIVE_INFINITY,
   };
 
   const socketProtocol = window.location.protocol === "https:" ? "wss" : "ws";
@@ -483,12 +500,66 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ctx.setTransform(scale, 0, 0, scale, -x * scale, -y * scale);
       ctx.drawImage(base, 0, 0);
       ctx.setTransform(1, 0, 0, 1, 0, 0);
+      recomputeNames(now);
+      drawNames(ctx, scale);
       drawCapitals(ctx, scale);
       drawShips(ctx, scale);
       drawLandings(now, ctx, scale);
     }
     drawMinimap();
     requestAnimationFrame(renderFrame);
+  };
+
+  /**
+   * Recompute each nation's name anchor (throttled). Operates on the live owner
+   * raster for every player still holding land, so labels track territory as it
+   * changes hands without paying the cost every frame.
+   */
+  const recomputeNames = (now: number): void => {
+    if (now - runtime.lastNameComputeMs < NAME_RECOMPUTE_MS) return;
+    const map = runtime.map;
+    const owner = runtime.owner;
+    if (!map || !owner) return;
+    runtime.lastNameComputeMs = now;
+
+    const players = runtime.players
+      .filter((p) => !p.eliminated && p.tiles > 0)
+      .map((p) => ({ playerId: p.playerId, nameLength: p.name.length }));
+    runtime.nameAnchors = computeNameAnchors(map.width, map.height, owner, players);
+  };
+
+  /**
+   * Draw each nation's name centred in its territory mass. The font is sized in
+   * tile units (so the name grows with the land held, OpenFront-style) and drawn
+   * in screen space with a dark outline for legibility over any terrain colour.
+   * Names that would render too small at the current zoom are skipped.
+   */
+  const drawNames = (ctx: CanvasRenderingContext2D, scale: number): void => {
+    if (runtime.nameAnchors.length === 0) return;
+    const cw = ui.mapCanvas.width;
+    const ch = ui.mapCanvas.height;
+
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
+    for (const anchor of runtime.nameAnchors) {
+      const fontPx = anchor.size * scale;
+      if (fontPx < MIN_NAME_FONT_PX) continue;
+      const player = runtime.players.find((p) => p.playerId === anchor.playerId);
+      if (!player) continue;
+      const { x: sx, y: sy } = worldToScreen(anchor.x + 0.5, anchor.y + 0.5);
+      // Cheap viewport cull (names can be large, so pad generously).
+      if (sx < -cw || sy < -ch || sx > cw * 2 || sy > ch * 2) continue;
+
+      ctx.font = `600 ${fontPx}px Inter, system-ui, sans-serif`;
+      ctx.lineWidth = Math.max(2, fontPx * 0.14);
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.7)";
+      ctx.strokeText(player.name, sx, sy);
+      ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+      ctx.fillText(player.name, sx, sy);
+    }
+    ctx.restore();
   };
 
   /**
