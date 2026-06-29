@@ -141,6 +141,44 @@ test("frontier priority captures easy low ground before high ground", () => {
   assert.equal(grid.ownerOf(0), 1, "the high ground is eventually captured too");
 });
 
+test("a front blocked against a player refunds troops minus the retreat malus", () => {
+  // 2x1: player 1 (tile 0) attacks player 2 (tile 1) with too few troops to
+  // afford the enemy tile (flat enemy cost = 1 + 2 surcharge = 3). The assault
+  // makes no progress and recoils, losing 25% of the committed force.
+  const grid = new TerritoryGrid(flatLand(2, 1));
+  grid.addPlayer(1, 2);
+  grid.addPlayer(2, 10);
+  grid.claim(0, 1);
+  grid.claim(1, 2);
+  const conflict = new RasterConflict(grid);
+
+  assert.equal(conflict.launchAttack({ attacker: 1, target: 2, troops: 2 }), null);
+  assert.equal(grid.troopsOf(1), 0, "committed troops leave the pool");
+  conflict.processTick();
+
+  assert.equal(grid.tileCountOf(2), 1, "the defended tile is not taken");
+  assert.equal(grid.troopsOf(1), 1.5, "2 committed troops return as 1.5 (25% malus)");
+  assert.equal(conflict.activeAttackCount, 0, "the blocked attack ends");
+});
+
+test("a front blocked against neutral land refunds troops in full", () => {
+  // tile 1 is a steep neutral peak (mag 30 -> cost 4); 3 committed can't take it.
+  // Retreating from neutral land (TerraNullius) is free — full refund, no malus.
+  const terrain = new Uint8Array(2);
+  terrain[0] = encodeTile({ land: true, shoreline: false, ocean: false, magnitude: 0 });
+  terrain[1] = encodeTile({ land: true, shoreline: false, ocean: false, magnitude: 30 });
+  const grid = new TerritoryGrid(new GameMap(2, 1, terrain));
+  grid.addPlayer(1, 3);
+  grid.claim(0, 1);
+  const conflict = new RasterConflict(grid);
+
+  assert.equal(conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 3 }), null);
+  conflict.processTick();
+
+  assert.equal(grid.ownerOf(1), NEUTRAL_PLAYER, "the peak is not taken");
+  assert.equal(grid.troopsOf(1), 3, "all 3 troops return — neutral retreat is free");
+});
+
 test("a finished match ignores further intents", () => {
   const grid = new TerritoryGrid(flatLand(2, 1));
   grid.addPlayer(1, 5);

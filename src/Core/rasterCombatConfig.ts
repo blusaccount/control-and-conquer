@@ -44,6 +44,16 @@ export const troopsPerSecond = (
  */
 export const RASTER_MATCH_DURATION_SECONDS = 600;
 
+/**
+ * Fraction of leftover committed troops lost when an attack against a *player*
+ * ends without overrunning them — the front gets blocked, the target slips out
+ * of reach, or an amphibious landing is repelled. Mirrors OpenFront's
+ * `malusForRetreat`: pulling back from an enemy costs you, so a committed
+ * assault is a real gamble. Retreating from neutral land (TerraNullius) is free,
+ * so this never applies to neutral targets.
+ */
+export const RETREAT_MALUS_FRACTION = 0.25;
+
 /** Base troop cost to claim a flat (elevation 0) neutral tile. */
 export const NEUTRAL_CAPTURE_COST = 1;
 

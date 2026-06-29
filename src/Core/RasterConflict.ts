@@ -13,6 +13,7 @@ import {
   MAX_POOL_PER_TILE,
   MAX_TRANSPORT_SHIPS_PER_PLAYER,
   NEUTRAL_CAPTURE_COST,
+  RETREAT_MALUS_FRACTION,
   SEA_CROSSING_SURCHARGE,
   SHIP_TILES_PER_TICK,
 } from "./rasterCombatConfig.js";
@@ -256,6 +257,18 @@ export class RasterConflict {
   }
 
   /**
+   * Return leftover committed troops to an attacker's pool. Pulling back from a
+   * *player* costs {@link RETREAT_MALUS_FRACTION} of the survivors (the
+   * OpenFront retreat malus); falling back from neutral land is free. Used
+   * wherever an attack or landing ends without taking its objective.
+   */
+  private refundRetreat(attacker: PlayerId, troops: number, target: PlayerId): void {
+    if (troops <= 0) return;
+    const kept = target === NEUTRAL_PLAYER ? troops : troops * (1 - RETREAT_MALUS_FRACTION);
+    this.grid.addTroops(attacker, kept);
+  }
+
+  /**
    * Capture priority of a single frontier tile (lower = taken sooner). Easy, low
    * ground enclosed by the attacker's own territory is grabbed first so fronts
    * advance as smooth bulges rather than ragged spikes — the organic feel of
@@ -372,9 +385,10 @@ export class RasterConflict {
 
       const cost = this.beachheadCost(dest, ship.attacker, owner);
       if (ship.troops < cost) {
-        // Too few troops to force a landing — the assault is repelled and the
-        // survivors fall back into the pool rather than vanishing.
-        this.grid.addTroops(ship.attacker, ship.troops);
+        // Too few troops to force a landing — the assault is repelled. Survivors
+        // fall back into the pool, taxed by the retreat malus if they recoiled off
+        // a defended (player-held) shore; a failed neutral landing is free.
+        this.refundRetreat(ship.attacker, ship.troops, owner);
         continue;
       }
 
@@ -411,8 +425,9 @@ export class RasterConflict {
       const frontier = this.orderedFrontier(attack.attacker, attack.target);
 
       // No reachable target tiles: the front is blocked or the target is gone.
+      // Pulling back from a player is taxed (retreat malus); neutral is free.
       if (frontier.length === 0) {
-        this.grid.addTroops(attack.attacker, attack.committed);
+        this.refundRetreat(attack.attacker, attack.committed, attack.target);
         continue;
       }
 
@@ -445,9 +460,15 @@ export class RasterConflict {
         spent += cost;
       }
 
-      // End the attack (refunding leftovers) once it can no longer afford even
-      // the cheapest neutral tile; otherwise carry it to the next tick.
-      if (attack.committed < NEUTRAL_CAPTURE_COST) {
+      // Decide the attack's fate. The frontier was non-empty (handled above), so
+      // `spent === 0` means nothing on it was affordable — the front is blocked by
+      // terrain/defence cost, a retreat that taxes player refunds (and can't
+      // stall, since otherwise it would carry the same troops forever). Capturing
+      // something then winding down below the cheapest tile is a natural finish,
+      // whose sub-1 remainder is returned whole.
+      if (spent === 0) {
+        this.refundRetreat(attack.attacker, attack.committed, attack.target);
+      } else if (attack.committed < NEUTRAL_CAPTURE_COST) {
         this.grid.addTroops(attack.attacker, attack.committed);
       } else {
         survivors.push(attack);
