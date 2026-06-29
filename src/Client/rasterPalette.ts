@@ -95,6 +95,22 @@ export const playerColor = (
   return { ...palette[index] };
 };
 
+/** Pure white, the target a border colour is lightened toward. */
+const WHITE: Rgba = { r: 255, g: 255, b: 255, a: 255 };
+
+/** How far a border tile's colour is pushed toward white from the owner hue. */
+const BORDER_LIGHTEN = 0.45;
+
+/**
+ * Bright outline colour for a player's territory edge. A crisp, lightened
+ * version of the owner colour at full saturation (no terrain blend), so nation
+ * borders read as clean lines over the relief — OpenFront's territory outline.
+ */
+export const borderColor = (
+  id: PlayerId,
+  palette: readonly Rgba[] = DEFAULT_PLAYER_PALETTE,
+): Rgba => lerpColor(playerColor(id, palette), WHITE, BORDER_LIGHTEN);
+
 /** How strongly an owner's colour washes over the underlying terrain relief. */
 const OWNERSHIP_MIX = 0.55;
 

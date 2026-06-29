@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { GameMap } from "../src/Core/GameMap.js";
 import { encodeTile } from "../src/Core/terrainCodec.js";
-import { createPixelBuffer, paintRaster } from "../src/Client/rasterPaint.js";
-import { terrainColor, tileColor } from "../src/Client/rasterPalette.js";
+import { createPixelBuffer, isBorderTile, paintRaster, paintTileInto } from "../src/Client/rasterPaint.js";
+import { borderColor, terrainColor, tileColor } from "../src/Client/rasterPalette.js";
 
 const land = (elevation: number): number =>
   encodeTile({ land: true, shoreline: false, ocean: false, magnitude: elevation });
@@ -43,9 +43,46 @@ test("paintRaster writes terrain and ownership in row-major order", () => {
 
   assert.deepEqual(pixelAt(pixels, 0), expect(terrainColor(terrain[0])));
   assert.deepEqual(pixelAt(pixels, 1), expect(tileColor(terrain[1], 0)));
-  assert.deepEqual(pixelAt(pixels, 2), expect(tileColor(terrain[2], 1)));
+  // Tile 2 is owned and sits on its owner's edge (neutral neighbour), so it is
+  // painted as a bright border rather than the interior ownership blend.
+  assert.deepEqual(pixelAt(pixels, 2), expect(borderColor(1)));
   // Owned tile differs from the same neutral terrain.
   assert.notDeepEqual(pixelAt(pixels, 1), pixelAt(pixels, 2));
+});
+
+test("borders: interior tiles blend terrain, edge tiles get the outline", () => {
+  // 5x1 line owned entirely by player 1, flanked by neutral land at both ends.
+  // The two end tiles touch neutral ground -> borders; the middle tile is fully
+  // enclosed by its own colour -> interior blend.
+  const terrain = new Uint8Array(5).fill(land(0));
+  const map = new GameMap(5, 1, terrain);
+  const owner = new Uint16Array([0, 1, 1, 1, 0]);
+  const pixels = createPixelBuffer(map);
+  paintRaster(map, owner, pixels);
+
+  assert.ok(!isBorderTile(map, owner, 2), "the enclosed middle tile is interior");
+  assert.ok(isBorderTile(map, owner, 1) && isBorderTile(map, owner, 3), "the flanks are borders");
+  assert.deepEqual(pixelAt(pixels, 2), expect(tileColor(land(0), 1)), "interior keeps the blend");
+  assert.deepEqual(pixelAt(pixels, 1), expect(borderColor(1)), "edge gets the outline");
+});
+
+test("repainting a single tile via paintTileInto matches a full raster repaint", () => {
+  // A delta repaint must reproduce what a from-scratch paint would draw, border
+  // logic included, when the changed tile and its neighbours are all redrawn.
+  const terrain = new Uint8Array(3).fill(land(0));
+  const map = new GameMap(3, 1, terrain);
+  const owner = new Uint16Array([1, 0, 0]);
+
+  const full = createPixelBuffer(map);
+  const incremental = createPixelBuffer(map);
+  paintRaster(map, owner, incremental); // initial state
+
+  // Tile 1 is captured by player 1; repaint it and its neighbours (0 and 2).
+  owner[1] = 1;
+  for (const ref of [0, 1, 2]) paintTileInto(map, owner, ref, incremental);
+  paintRaster(map, owner, full);
+
+  assert.deepEqual([...incremental], [...full]);
 });
 
 test("paintRaster rejects a mismatched pixel buffer or owner array", () => {

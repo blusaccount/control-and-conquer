@@ -1,10 +1,40 @@
 import type { GameMap } from "../Core/GameMap.js";
-import type { PlayerId } from "../Core/TerritoryGrid.js";
-import { DEFAULT_PLAYER_PALETTE, tileColor, type Rgba } from "./rasterPalette.js";
+import { NEUTRAL_PLAYER, type PlayerId } from "../Core/TerritoryGrid.js";
+import { borderColor, DEFAULT_PLAYER_PALETTE, tileColor, type Rgba } from "./rasterPalette.js";
 
 /** Allocate an RGBA pixel buffer (one pixel per tile) for a map. */
 export const createPixelBuffer = (map: GameMap): Uint8ClampedArray =>
   new Uint8ClampedArray(map.size * 4);
+
+/**
+ * True when `ref` is an owned tile sitting on its owner's territory edge — at
+ * least one 4-neighbour belongs to someone else (another player, neutral land,
+ * or water). Border tiles are drawn as a bright outline so each nation reads as
+ * a clean shape over the terrain. Neutral/water tiles are never borders.
+ */
+export const isBorderTile = (
+  map: GameMap,
+  owner: ArrayLike<PlayerId>,
+  ref: number,
+): boolean => {
+  const id = owner[ref];
+  if (id === NEUTRAL_PLAYER) return false;
+  for (const n of map.neighbors(ref)) {
+    if (owner[n] !== id) return true;
+  }
+  return false;
+};
+
+/** On-screen colour for a tile: a bright border outline on owned edges, else the terrain+ownership blend. */
+const colorForTile = (
+  map: GameMap,
+  owner: ArrayLike<PlayerId>,
+  ref: number,
+  palette: readonly Rgba[],
+): Rgba =>
+  isBorderTile(map, owner, ref)
+    ? borderColor(owner[ref], palette)
+    : tileColor(map.tile(ref), owner[ref], palette);
 
 /**
  * Paint a single tile's terrain + ownership colour into an RGBA buffer. Used
@@ -19,7 +49,7 @@ export const paintTileInto = (
   pixels: Uint8ClampedArray,
   palette: readonly Rgba[] = DEFAULT_PLAYER_PALETTE,
 ): void => {
-  const color = tileColor(map.tile(ref), owner[ref], palette);
+  const color = colorForTile(map, owner, ref, palette);
   const offset = ref * 4;
   pixels[offset] = color.r;
   pixels[offset + 1] = color.g;
@@ -49,7 +79,7 @@ export const paintRaster = (
     throw new Error(`Owner array length ${owner.length} does not match map.size ${map.size}.`);
   }
   for (let ref = 0; ref < map.size; ref += 1) {
-    const color = tileColor(map.tile(ref), owner[ref], palette);
+    const color = colorForTile(map, owner, ref, palette);
     const offset = ref * 4;
     pixels[offset] = color.r;
     pixels[offset + 1] = color.g;
