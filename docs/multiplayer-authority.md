@@ -20,10 +20,10 @@ received from the server and send intent-only commands.
 |-----------|---------|----------------|
 | **WebSocket server** | `src/Server/index.ts` | Accepts connections, serves static assets, parses messages, runs the tick loop |
 | **Command validator** | `src/Server/validateCommand.ts` | Structural validation of raw incoming JSON before it reaches game logic |
-| **MatchRegistry** | `src/Server/MatchRegistry.ts` | Drops each client into its own solo match vs a server-side bot; routes intents; ticks all sessions |
+| **MatchRegistry** | `src/Server/MatchRegistry.ts` | Drops each client into its own solo match vs a field of server-side bots (FFA, count via `RASTER_BOTS`); routes intents; ticks all sessions |
 | **RasterGameSession** | `src/Server/RasterGameSession.ts` | Owns the authoritative `GameMap` + `TerritoryGrid` + `RasterConflict`; validates intents into the engine's business rules; broadcasts snapshots |
 | **RasterConflict** | `src/Core/RasterConflict.ts` | Deterministic, self-contained territorial combat resolution |
-| **RasterBotController** | `src/Server/RasterBotController.ts` | Server-side opponent that consumes snapshots and queues expand intents like a human |
+| **RasterBotController** | `src/Server/RasterBotController.ts` | Strategy-driven AI opponent (personality presets): grabs neutral land, prioritises beatable rivals, uses amphibious crossings; queues expand intents through the same channel as a human |
 | **Client** | `src/Client/rasterClient.ts` | Renders snapshots; emits click-to-expand intents over WebSocket |
 
 ---

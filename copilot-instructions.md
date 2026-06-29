@@ -35,9 +35,9 @@ Modul A: Core/ (Deterministische Simulations-Engine, keine Server-/Client-Import
 
 Modul B: Server/
 - `index.ts`: HTTP-Statik + WebSocket + Fixed-Step-Tick-Loop.
-- `MatchRegistry.ts`: Solo-Match-Isolation (ein Client = eine Session + Bot).
+- `MatchRegistry.ts`: Solo-Match-Isolation (ein Client = eine Session + Bot-Feld, FFA; Anzahl via `RASTER_BOTS`).
 - `RasterGameSession.ts`: hält den Master-State, validiert Intents, broadcastet.
-- `RasterBotController.ts`: serverseitiger Gegner (konsumiert Snapshots wie ein Mensch).
+- `RasterBotController.ts`: strategiebasierte serverseitige KI (Persönlichkeits-Presets; Neutral-Expansion, Gegner-Priorisierung, amphibische Übersetzungen; spielt über denselben Intent-Kanal wie ein Mensch).
 - `validateCommand.ts` / `rasterSerialization.ts` / `simulationConfig.ts`.
 
 Modul C: Client/
