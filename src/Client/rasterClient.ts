@@ -4,6 +4,7 @@ import type {
   RasterClientMessage,
   RasterCrossing,
   RasterPlayerAssignedPayload,
+  RasterPlayerInfo,
   RasterServerMessage,
   RasterSnapshot,
 } from "../Core/types.js";
@@ -51,6 +52,8 @@ interface RasterRuntime {
   pool: number;
   myTiles: number;
   capturableTotal: number;
+  /** Full player standings from the latest snapshot, for the leaderboard. */
+  players: RasterPlayerInfo[];
   recentEvents: string[];
   matchEnded: boolean;
   winnerPlayerId: number | null;
@@ -120,6 +123,7 @@ export const startRasterClient = (ui: UiElements): void => {
     pool: 0,
     myTiles: 0,
     capturableTotal: 0,
+    players: [],
     recentEvents: [],
     matchEnded: false,
     winnerPlayerId: null,
@@ -212,6 +216,7 @@ export const startRasterClient = (ui: UiElements): void => {
 
     runtime.capturableTotal = snapshot.capturableCount;
     runtime.recentEvents = snapshot.recentEvents;
+    runtime.players = snapshot.players;
 
     const me = snapshot.players.find((p) => p.playerId === runtime.myPlayerId);
     runtime.pool = me?.troops ?? 0;
@@ -422,6 +427,45 @@ export const startRasterClient = (ui: UiElements): void => {
     ui.eventsPanel.innerHTML = runtime.recentEvents
       .map((ev) => `<div class="event">${escapeHtml(ev)}</div>`)
       .join("");
+
+    renderLeaderboard();
+  };
+
+  /**
+   * Live standings: every active (non-eliminated) player, sorted by tiles held
+   * descending. Each row shows a colour dot, name, tile count and pool with its
+   * growth rate. Your own row is highlighted, and turns green while you hold the
+   * lead ("du gewinnst").
+   */
+  const renderLeaderboard = (): void => {
+    const active = runtime.players
+      .filter((p) => !p.eliminated)
+      .sort((a, b) => b.tiles - a.tiles || a.playerId - b.playerId);
+
+    if (active.length === 0) {
+      ui.leaderboard.innerHTML = `<div class="lb-empty">No active players.</div>`;
+      return;
+    }
+
+    const leaderId = active[0].playerId;
+    ui.leaderboard.innerHTML = active
+      .map((p) => {
+        const isMe = p.playerId === runtime.myPlayerId;
+        const isLeader = p.playerId === leaderId;
+        const rowClass = ["lb-row", isMe ? "me" : "", isLeader ? "leader" : ""]
+          .filter(Boolean)
+          .join(" ");
+        const name = escapeHtml(p.name) + (isMe ? " (you)" : "");
+        const stats = `${p.tiles} · ${p.troops} (+${formatRate(p.troopsPerSecond)}/s)`;
+        return (
+          `<div class="${rowClass}">` +
+          `<span class="lb-dot" style="background:${escapeHtml(p.color)}"></span>` +
+          `<span class="lb-name">${name}</span>` +
+          `<span class="lb-stats">${stats}</span>` +
+          `</div>`
+        );
+      })
+      .join("");
   };
 
   // ---- Input -----------------------------------------------------------
@@ -510,6 +554,12 @@ export const startRasterClient = (ui: UiElements): void => {
 
   requestAnimationFrame(renderFrame);
 };
+
+/**
+ * Format a troops-per-second rate compactly: whole numbers once it's large
+ * enough, otherwise one decimal so small early-game rates don't read as "+0/s".
+ */
+const formatRate = (rate: number): string => (rate >= 10 ? String(Math.round(rate)) : rate.toFixed(1));
 
 const escapeHtml = (input: string): string =>
   input.replace(/[&<>"']/g, (ch) => {

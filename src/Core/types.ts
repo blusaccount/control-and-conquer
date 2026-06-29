@@ -26,6 +26,12 @@ export interface RasterPlayerInfo {
   /** Number of capturable tiles currently owned. */
   tiles: number;
   /**
+   * Troops generated per second at the current territory size — what the
+   * leaderboard renders as "(+N/s)". Server-computed from tile count so every
+   * client shows the same figure.
+   */
+  troopsPerSecond: number;
+  /**
    * Tile column of the player's capital ("Hauptstadt"). The capital is the
    * player's founding tile; losing it eliminates the player. `-1` when unknown
    * (e.g. snapshots built without capital data, only in tests).

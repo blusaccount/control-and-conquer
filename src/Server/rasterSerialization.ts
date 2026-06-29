@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import type { GameMap } from "../Core/GameMap.js";
 import type { TerritoryGrid } from "../Core/TerritoryGrid.js";
+import { troopsPerSecond } from "../Core/rasterCombatConfig.js";
 import type { RasterCrossing, RasterPlayerInfo, RasterSnapshot } from "../Core/types.js";
 
 /**
@@ -103,12 +104,14 @@ export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
   for (const id of grid.players()) {
     const meta = playerMeta.get(id) ?? { name: `Player ${id}`, color: "#888" };
     const capitalRef = capitals?.get(id);
+    const tiles = grid.tileCountOf(id);
     players.push({
       playerId: id,
       name: meta.name,
       color: meta.color,
       troops: Math.floor(grid.troopsOf(id)),
-      tiles: grid.tileCountOf(id),
+      tiles,
+      troopsPerSecond: troopsPerSecond(tiles),
       capitalX: capitalRef !== undefined ? map.x(capitalRef) : -1,
       capitalY: capitalRef !== undefined ? map.y(capitalRef) : -1,
       eliminated: eliminated?.has(id) ?? false,

@@ -23,6 +23,18 @@ export const INCOME_PER_TILE_PER_TICK = 0.02;
 /** Troop pool ceiling, scaled by territory size, to keep numbers bounded. */
 export const MAX_POOL_PER_TILE = 50;
 
+/**
+ * Display growth rate, in troops per second per owned tile, shown in the
+ * leaderboard as "(+N/s)". This is the player-facing figure that Phase 2 perks
+ * (e.g. Wachstumstreiber) scale, kept separate from the engine's per-tick
+ * {@link INCOME_PER_TILE_PER_TICK} so the displayed rate can be tuned
+ * independently of the raw simulation income.
+ */
+export const TROOPS_PER_SECOND_PER_TILE = 0.05;
+
+/** Troops generated per second by a player holding `tiles` tiles. */
+export const troopsPerSecond = (tiles: number): number => tiles * TROOPS_PER_SECOND_PER_TILE;
+
 /** Base troop cost to claim a flat (elevation 0) neutral tile. */
 export const NEUTRAL_CAPTURE_COST = 1;
 

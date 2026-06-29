@@ -12,6 +12,7 @@ export interface UiElements {
   selectionInfo: HTMLDivElement;
   statusMessage: HTMLDivElement;
   eventsPanel: HTMLDivElement;
+  leaderboard: HTMLDivElement;
   menuOverlay: HTMLDivElement;
   playButton: HTMLButtonElement;
 }
@@ -26,6 +27,7 @@ export const getUiElements = (): UiElements => {
   const selectionInfo = document.querySelector<HTMLDivElement>("#selectionInfo");
   const statusMessage = document.querySelector<HTMLDivElement>("#statusMessage");
   const eventsPanel = document.querySelector<HTMLDivElement>("#events");
+  const leaderboard = document.querySelector<HTMLDivElement>("#leaderboard");
   const menuOverlay = document.querySelector<HTMLDivElement>("#menuOverlay");
   const playButton = document.querySelector<HTMLButtonElement>("#playButton");
 
@@ -37,6 +39,7 @@ export const getUiElements = (): UiElements => {
     !selectionInfo ||
     !statusMessage ||
     !eventsPanel ||
+    !leaderboard ||
     !menuOverlay ||
     !playButton
   ) {
@@ -57,6 +60,7 @@ export const getUiElements = (): UiElements => {
     selectionInfo,
     statusMessage,
     eventsPanel,
+    leaderboard,
     menuOverlay,
     playButton,
   };
