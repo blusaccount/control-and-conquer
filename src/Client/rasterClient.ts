@@ -128,6 +128,21 @@ const SHIP_EASE = 0.25;
 const MAX_TILE_SCALE = 16;
 
 /**
+ * Empty margin kept around the map, expressed as a fraction of the larger map
+ * dimension, with absolute bounds in tiles. The camera treats this border as
+ * navigable space so that small islands flush against the map edge can still be
+ * centred, zoomed and clicked comfortably instead of being pinned to the very
+ * edge of the canvas. It also guarantees a little slack to drag at fit-zoom.
+ */
+const MAP_PADDING_FRACTION = 0.06;
+const MIN_MAP_PADDING = 8;
+const MAX_MAP_PADDING = 80;
+
+/** The navigable border around a map, in tiles (see `MAP_PADDING_FRACTION`). */
+const mapPadding = (width: number, height: number): number =>
+  clamp(Math.round(Math.max(width, height) * MAP_PADDING_FRACTION), MIN_MAP_PADDING, MAX_MAP_PADDING);
+
+/**
  * How often the nation-name anchors are recomputed, in ms. Label positions
  * drift slowly as territory shifts, so twice a second is plenty and keeps the
  * (full-raster) recompute off the per-frame path.
@@ -480,24 +495,33 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   const initView = (): void => {
     const map = runtime.map;
     if (!map) return;
-    const fit = Math.min(ui.mapCanvas.width / map.width, ui.mapCanvas.height / map.height);
+    const pad = mapPadding(map.width, map.height);
+    const fit = Math.min(ui.mapCanvas.width / (map.width + 2 * pad), ui.mapCanvas.height / (map.height + 2 * pad));
     runtime.view.scale = fit;
     runtime.view.initialized = true;
     clampView();
   };
 
-  /** Clamp zoom to [fit, MAX] and pan so the camera stays over the map. */
+  /**
+   * Clamp zoom to [fit, MAX] and pan so the camera stays over the map plus its
+   * navigable border. The padding (see `mapPadding`) is included in the fit so
+   * the map never touches the canvas edge, and panning may run from `-pad` to
+   * `width + pad - viewW`, letting edge tiles be brought to centre.
+   */
   const clampView = (): void => {
     const map = runtime.map;
     if (!map) return;
     const cw = ui.mapCanvas.width;
     const ch = ui.mapCanvas.height;
-    const fit = Math.min(cw / map.width, ch / map.height);
+    const pad = mapPadding(map.width, map.height);
+    const paddedW = map.width + 2 * pad;
+    const paddedH = map.height + 2 * pad;
+    const fit = Math.min(cw / paddedW, ch / paddedH);
     runtime.view.scale = clamp(runtime.view.scale, fit, Math.max(fit, MAX_TILE_SCALE));
     const viewW = cw / runtime.view.scale;
     const viewH = ch / runtime.view.scale;
-    runtime.view.x = map.width <= viewW ? (map.width - viewW) / 2 : clamp(runtime.view.x, 0, map.width - viewW);
-    runtime.view.y = map.height <= viewH ? (map.height - viewH) / 2 : clamp(runtime.view.y, 0, map.height - viewH);
+    runtime.view.x = paddedW <= viewW ? (map.width - viewW) / 2 : clamp(runtime.view.x, -pad, map.width + pad - viewW);
+    runtime.view.y = paddedH <= viewH ? (map.height - viewH) / 2 : clamp(runtime.view.y, -pad, map.height + pad - viewH);
   };
 
   /**
@@ -643,8 +667,15 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     if (!map) return null;
     const mw = ui.minimapCanvas.width;
     const mh = ui.minimapCanvas.height;
-    const scale = Math.min(mw / map.width, mh / map.height);
-    return { scale, offX: (mw - map.width * scale) / 2, offY: (mh - map.height * scale) / 2 };
+    const pad = mapPadding(map.width, map.height);
+    const paddedW = map.width + 2 * pad;
+    const paddedH = map.height + 2 * pad;
+    const scale = Math.min(mw / paddedW, mh / paddedH);
+    // offX/offY are the minimap-pixel position of tile (0,0); the padded border
+    // is letterboxed around it so the viewport rectangle stays inside the frame.
+    const offX = (mw - paddedW * scale) / 2 + pad * scale;
+    const offY = (mh - paddedH * scale) / 2 + pad * scale;
+    return { scale, offX, offY };
   };
 
   /**
