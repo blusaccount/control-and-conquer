@@ -194,33 +194,33 @@ const rejections = (messages: RasterServerMessage[]): string[] =>
     .map((m) => (m.type === "SERVER_RASTER_ACTION_REJECTED" ? m.payload.reason : ""));
 
 /**
- * Seat a human on a procedural session and hand them a non-capital owned tile to
- * build on (a neutral neighbour of the capital, claimed to them). Returns the
- * collected messages, the build tile, and the capital tile.
+ * Seat a human on a procedural session and hand them a second owned tile to
+ * build on (a neutral neighbour of their founding tile, claimed to them).
+ * Returns the collected messages, the build tile, and the founding tile.
  */
 const stageBuilder = (
   seed: number,
-): { session: RasterGameSession; messages: RasterServerMessage[]; build: { x: number; y: number }; capital: { x: number; y: number } } => {
+): { session: RasterGameSession; messages: RasterServerMessage[]; build: { x: number; y: number }; origin: { x: number; y: number } } => {
   const session = new RasterGameSession({ width: 40, height: 28, seed });
   const messages: RasterServerMessage[] = [];
   session.subscribe("human", (m) => messages.push(m));
   const grid = session.peekGrid();
   const map = session.peekMap();
-  let capitalRef = -1;
-  for (let ref = 0; ref < grid.owner.length; ref += 1) if (grid.ownerOf(ref) === 1) { capitalRef = ref; break; }
-  assert.ok(capitalRef >= 0, "the human must be seated");
-  // Find a neutral, capturable neighbour of the capital and give it to player 1.
+  let originRef = -1;
+  for (let ref = 0; ref < grid.owner.length; ref += 1) if (grid.ownerOf(ref) === 1) { originRef = ref; break; }
+  assert.ok(originRef >= 0, "the human must be seated");
+  // Find a neutral, capturable neighbour of the founding tile and give it to player 1.
   let buildRef = -1;
-  for (const n of map.neighbors(capitalRef)) {
+  for (const n of map.neighbors(originRef)) {
     if (grid.isCapturable(n) && grid.ownerOf(n) === 0) { buildRef = n; break; }
   }
-  assert.ok(buildRef >= 0, "the capital must have an open neighbour to claim");
+  assert.ok(buildRef >= 0, "the founding tile must have an open neighbour to claim");
   grid.claim(buildRef, 1);
   return {
     session,
     messages,
     build: { x: map.x(buildRef), y: map.y(buildRef) },
-    capital: { x: map.x(capitalRef), y: map.y(capitalRef) },
+    origin: { x: map.x(originRef), y: map.y(originRef) },
   };
 };
 
@@ -269,12 +269,13 @@ test("building on a tile you don't own is rejected", () => {
   assert.ok(rejections(messages).includes("NOT_BUILDABLE"));
 });
 
-test("building on the capital seat is rejected", () => {
-  const { session, messages, capital } = stageBuilder(14);
+test("building on the founding tile is allowed (no capital restriction)", () => {
+  const { session, messages, origin } = stageBuilder(14);
   session.peekGrid().setGold(1, 500);
-  session.queueBuild("human", { targetX: capital.x, targetY: capital.y, building: "fort" });
+  session.queueBuild("human", { targetX: origin.x, targetY: origin.y, building: "fort" });
   session.tick();
-  assert.ok(rejections(messages).includes("NOT_BUILDABLE"));
+  assert.ok(!rejections(messages).includes("NOT_BUILDABLE"), "the founding tile is just normal owned land now");
+  assert.equal(session.peekGrid().buildingCountOf(1, "fort"), 1, "the fort is placed on the founding tile");
 });
 
 test("a second building on the same tile is rejected as occupied", () => {

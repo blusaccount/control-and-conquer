@@ -182,3 +182,59 @@ test("sessions with identical seed produce identical terrain bytes", () => {
     }
   }
 });
+
+const firstSnapshot = (messages: RasterServerMessage[]): RasterSnapshot => {
+  for (const m of messages) if (m.type === "SERVER_RASTER_SNAPSHOT") return m.payload;
+  throw new Error("no snapshot seen");
+};
+
+test("headless subscribers get no ownership raster (the bot bandwidth saving)", () => {
+  const session = new RasterGameSession({ width: 24, height: 16, seed: 3 });
+  const human: RasterServerMessage[] = [];
+  const bot: RasterServerMessage[] = [];
+  session.subscribe("human", (m) => human.push(m), true, true);
+  session.subscribe("bot", (m) => bot.push(m), true, false);
+
+  const humanSnap = firstSnapshot(human);
+  const botSnap = firstSnapshot(bot);
+
+  // The real client is seeded with the full terrain + owner raster...
+  assert.ok(humanSnap.terrainBase64 !== undefined, "human gets terrain bytes");
+  assert.ok(humanSnap.ownerBase64 !== undefined, "human gets the full owner raster");
+
+  // ...while the headless bot, which reads engine state directly, gets neither
+  // the terrain bytes nor any ownership encoding (the per-tick cost we cut).
+  assert.equal(botSnap.terrainBase64, undefined, "bot gets no terrain bytes");
+  assert.equal(botSnap.ownerBase64, undefined, "bot gets no full owner raster");
+  assert.equal(botSnap.ownerDeltaBase64, undefined, "bot gets no owner delta");
+  // It still receives the player standings it needs to make decisions.
+  assert.ok(botSnap.players.length >= 1, "bot still sees player standings");
+});
+
+test("the snapshot reports an active attack front with the troops fighting on it", () => {
+  const session = new RasterGameSession({ width: 32, height: 24, seed: 9 });
+  const messages: RasterServerMessage[] = [];
+  session.subscribe("human", (m) => messages.push(m), true, true); // auto-spawn on land
+  const grid = session.peekGrid();
+  const map = session.peekMap();
+  grid.setTroops(1, 60);
+
+  // Push into a neutral capturable neighbour of our founding tile.
+  let target = -1;
+  for (const ref of grid.tilesOf(1)) {
+    for (const n of map.neighbors(ref)) {
+      if (grid.isCapturable(n) && grid.ownerOf(n) === 0) { target = n; break; }
+    }
+    if (target >= 0) break;
+  }
+  assert.ok(target >= 0, "the spawn should border neutral land");
+  session.queueExpand("human", { targetX: map.x(target), targetY: map.y(target), percent: 80 });
+  session.tick();
+
+  const snap = lastSnapshot(messages);
+  const front = snap.fronts.find((f) => f.playerId === 1);
+  assert.ok(front, "the player's own front is reported");
+  assert.equal(front!.targetId, 0, "it pushes into neutral land");
+  assert.ok(front!.troops > 0, "the troops fighting on the front are reported");
+  assert.ok(front!.x >= 0 && front!.x < snap.width, "the front anchor is a real tile");
+});

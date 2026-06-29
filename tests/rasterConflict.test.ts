@@ -297,3 +297,24 @@ test("simulation is deterministic for identical setup and intents", () => {
   }
   assert.deepEqual(Array.from(a.grid.owner), Array.from(b.grid.owner));
 });
+
+test("activeFronts reports each land attack with its committed troops and an anchor", () => {
+  const grid = new TerritoryGrid(flatLand(8, 1));
+  grid.addPlayer(1, 40);
+  grid.claim(0, 1); // player 1 holds the left end
+  const conflict = new RasterConflict(grid);
+
+  // No attacks yet -> no fronts.
+  assert.equal(conflict.activeFronts().length, 0);
+
+  assert.equal(conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 30 }), null);
+  conflict.processTick(); // advance once so the front has an anchor
+
+  const fronts = conflict.activeFronts();
+  assert.equal(fronts.length, 1, "the one active expansion is reported as a front");
+  assert.equal(fronts[0].attacker, 1);
+  assert.equal(fronts[0].target, NEUTRAL_PLAYER);
+  assert.ok(fronts[0].troops > 0, "committed troops still on the front are reported");
+  // The anchor is a real tile on the contested strip (not the -1 placeholder).
+  assert.ok(fronts[0].tile >= 0 && fronts[0].tile < grid.map.size);
+});

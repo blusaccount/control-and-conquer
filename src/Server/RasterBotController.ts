@@ -104,8 +104,6 @@ export class RasterBotController {
   private myPlayerId: PlayerId | null = null;
   private lastDecisionTick = Number.NEGATIVE_INFINITY;
   private session: RasterGameSession | null = null;
-  /** This bot's capital tile (read off snapshots), kept off the build list. */
-  private myCapital: TileRef | null = null;
 
   /**
    * The bot reinvests in a city once it holds at least this much land — early
@@ -118,11 +116,13 @@ export class RasterBotController {
 
   public attach(session: RasterGameSession): () => void {
     this.session = session;
-    const unsubscribe = session.subscribe(this.config.botId, (message) => this.onMessage(message));
+    // Subscribe headless (wantsRaster=false): the bot reads engine state via
+    // peekGrid and never decodes the wire ownership, so the session skips the
+    // costly per-tick owner encoding for it.
+    const unsubscribe = session.subscribe(this.config.botId, (message) => this.onMessage(message), true, false);
     return () => {
       this.session = null;
       this.myPlayerId = null;
-      this.myCapital = null;
       this.lastDecisionTick = Number.NEGATIVE_INFINITY;
       unsubscribe();
     };
@@ -165,11 +165,6 @@ export class RasterBotController {
     const grid = this.session.peekGrid();
     const map = this.session.peekMap();
 
-    // Track our capital so we never try to build over it (the server would
-    // reject it, and the seat is reserved as a fortified centre).
-    const me = snapshot.players.find((p) => p.playerId === this.myPlayerId);
-    this.myCapital = me && me.capitalX >= 0 ? map.ref(me.capitalX, me.capitalY) : null;
-
     // Reinvest banked gold into a city independent of the troop decision below,
     // so a maturing bot economy keeps compounding without stalling expansion.
     this.maybeBuildCity(grid, map);
@@ -181,8 +176,8 @@ export class RasterBotController {
 
   /**
    * Queue a city build when the bot can afford its next one and has interior
-   * land to place it on. Picks the lowest-`TileRef` owned tile that is neither
-   * the capital nor already built on — deterministic, so replays stay identical.
+   * land to place it on. Picks the lowest-`TileRef` owned tile not already built
+   * on — deterministic, so replays stay identical.
    */
   private maybeBuildCity(grid: TerritoryGrid, map: GameMap): void {
     const me = this.myPlayerId;
@@ -194,7 +189,7 @@ export class RasterBotController {
 
     let target: TileRef | null = null;
     for (const ref of grid.tilesOf(me)) {
-      if (ref !== this.myCapital && !grid.hasBuilding(ref)) {
+      if (!grid.hasBuilding(ref)) {
         target = ref;
         break;
       }

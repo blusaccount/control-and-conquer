@@ -1,6 +1,7 @@
 import { GameMap } from "../Core/GameMap.js";
 import type { PlayerId } from "../Core/TerritoryGrid.js";
 import type {
+  RasterAttackFront,
   RasterBuilding,
   RasterClientMessage,
   RasterCrossing,
@@ -13,7 +14,7 @@ import type {
 } from "../Core/types.js";
 import { hideMenu, setStatus, type UiElements } from "./dom.js";
 import { paintRaster, paintTileInto } from "./rasterPaint.js";
-import { playerColor, playerEmoji } from "./rasterPalette.js";
+import { borderColor, playerColor, playerEmoji } from "./rasterPalette.js";
 import { loadRunHistory, recordRun, type RunRecord, type StorageLike } from "./runHistory.js";
 import { computeNameAnchors, type NameAnchor } from "./nameLayout.js";
 import { MAX_POOL_PER_TILE } from "../Core/rasterCombatConfig.js";
@@ -65,6 +66,21 @@ interface Landing {
   y: number;
   color: string;
   /** performance.now() timestamp when the landing started animating. */
+  start: number;
+}
+
+/**
+ * A short-lived glow over a tile that just changed hands, in the conqueror's
+ * (brightened) colour. Painted as a fading wash over the base raster so an
+ * advancing front reads as a bright wave sweeping across the land — OpenFront's
+ * conquest ripple — rather than tiles silently snapping to a new colour.
+ */
+interface CaptureFlash {
+  /** Tile index (a `TileRef`) the flash sits on. */
+  ref: number;
+  /** Pre-brightened CSS colour of the capturing player. */
+  css: string;
+  /** performance.now() timestamp when the flash started. */
   start: number;
 }
 
@@ -121,8 +137,13 @@ interface RasterRuntime {
   shipGeneration: number;
   /** In-flight landing flashes. */
   landings: Landing[];
-  /** Living players' capitals, drawn as a marker over the base map. */
-  capitals: Capital[];
+  /** Active attack fronts this snapshot, drawn as on-map troop-count labels. */
+  fronts: RasterAttackFront[];
+  /** Recently-captured tiles still glowing, for the conquest-ripple animation. */
+  captureFlashes: CaptureFlash[];
+  /** Tile the local player picked to spawn on, for the start-of-run auto-zoom. */
+  spawnX: number;
+  spawnY: number;
   /** Nation-name labels, centred in each player's territory mass. */
   nameAnchors: NameAnchor[];
   /** performance.now() of the last name-anchor recompute (throttled). */
@@ -131,15 +152,36 @@ interface RasterRuntime {
   spawned: boolean;
 }
 
-/** A player capital ("Hauptstadt") drawn as a cross marker on the map. */
-interface Capital {
-  tileX: number;
-  tileY: number;
-  color: string;
-}
-
 /** How long a landing flash lasts, in milliseconds. */
 const LANDING_DURATION_MS = 700;
+
+/** How long a freshly-captured tile glows before settling, in milliseconds. */
+const CAPTURE_FLASH_MS = 520;
+
+/** Peak opacity of the conquest-ripple glow (fades to 0 over its lifetime). */
+const CAPTURE_FLASH_ALPHA = 0.65;
+
+/**
+ * Hard cap on glowing tiles tracked at once. A huge multi-front war can flip
+ * thousands of tiles a tick; past this we keep the most recent and drop the
+ * rest so the per-frame glow pass stays bounded.
+ */
+const MAX_CAPTURE_FLASHES = 4000;
+
+/**
+ * Zoom (screen pixels per tile) at or above which the base raster is drawn with
+ * bilinear smoothing and crisp vector borders are overlaid — together they shed
+ * the blocky, pixelated look when zoomed in. Below it, nearest-neighbour keeps
+ * the far-out map sharp and cheap.
+ */
+const SMOOTH_ZOOM_SCALE = 2.5;
+
+/**
+ * Skip the crisp border overlay when more than this many tiles are on screen:
+ * at that point the camera is far enough out that individual borders are sub-
+ * pixel anyway, and scanning every visible tile per frame would cost too much.
+ */
+const BORDER_OVERLAY_TILE_BUDGET = 90000;
 
 /** Per-frame easing fraction the drawn ship position moves toward its target. */
 const SHIP_EASE = 0.25;
@@ -200,6 +242,43 @@ const decodeOwnerArray = (b64: string, expectedLength: number): Uint16Array => {
 
 const rgbaToCss = (c: { r: number; g: number; b: number }): string => `rgb(${c.r}, ${c.g}, ${c.b})`;
 
+/**
+ * A brightened CSS colour for a capturing player's conquest-ripple glow: their
+ * nation colour pushed toward white so the freshly-taken tile flares before it
+ * settles into the ownership wash. Memoised by player id since it is computed
+ * once per captured tile on the snapshot path.
+ */
+const flashCssCache = new Map<PlayerId, string>();
+const flashCss = (id: PlayerId): string => {
+  let css = flashCssCache.get(id);
+  if (css === undefined) {
+    const c = playerColor(id);
+    const lift = (ch: number): number => Math.round(ch + (255 - ch) * 0.55);
+    css = `rgb(${lift(c.r)}, ${lift(c.g)}, ${lift(c.b)})`;
+    flashCssCache.set(id, css);
+  }
+  return css;
+};
+
+/** Trace a rounded-rectangle path (for the on-map front labels' pill). */
+const traceRoundRect = (
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+): void => {
+  const radius = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + w, y, x + w, y + h, radius);
+  ctx.arcTo(x + w, y + h, x, y + h, radius);
+  ctx.arcTo(x, y + h, x, y, radius);
+  ctx.arcTo(x, y, x + w, y, radius);
+  ctx.closePath();
+};
+
 /** Connect to the raster server, paint each snapshot, and wire click-to-expand. */
 export const startRasterClient = (ui: UiElements, options: RasterClientOptions): void => {
   hideMenu(ui);
@@ -235,7 +314,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     ships: new Map(),
     shipGeneration: 0,
     landings: [],
-    capitals: [],
+    fronts: [],
+    captureFlashes: [],
+    spawnX: -1,
+    spawnY: -1,
     nameAnchors: [],
     lastNameComputeMs: Number.NEGATIVE_INFINITY,
     spawned: false,
@@ -253,6 +335,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   const sendSelectSpawn = (x: number, y: number): void => {
+    // Remember where we asked to spawn so the start-of-run auto-zoom can centre
+    // on it (there is no capital tile to read back from the snapshot anymore).
+    runtime.spawnX = x;
+    runtime.spawnY = y;
     const message: RasterClientMessage = { type: "CLIENT_RASTER_SELECT_SPAWN", payload: { x, y } };
     socket.send(JSON.stringify(message));
   };
@@ -491,17 +577,14 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.buildings = snapshot.buildings ?? [];
 
     // The first snapshot in which we hold land marks the end of the spawn phase:
-    // zoom the camera in on our new capital so the run starts focused on home.
-    if (!runtime.spawned && me && me.tiles > 0 && me.capitalX >= 0) {
+    // zoom the camera in on the tile we founded on so the run starts at home.
+    if (!runtime.spawned && me && me.tiles > 0 && runtime.spawnX >= 0) {
       runtime.spawned = true;
-      centerOnTile(me.capitalX, me.capitalY, SPAWN_ZOOM_TILES);
-      setStatus(ui, `Founded at (${me.capitalX}, ${me.capitalY}).`);
+      centerOnTile(runtime.spawnX, runtime.spawnY, SPAWN_ZOOM_TILES);
+      setStatus(ui, `Founded at (${runtime.spawnX}, ${runtime.spawnY}).`);
     }
 
-    // Capital markers: living players only, with a known capital tile.
-    runtime.capitals = snapshot.players
-      .filter((p) => !p.eliminated && p.capitalX >= 0 && p.capitalY >= 0)
-      .map((p) => ({ tileX: p.capitalX, tileY: p.capitalY, color: p.color }));
+    runtime.fronts = snapshot.fronts ?? [];
 
     const ships = snapshot.ships ?? [];
     runtime.myShips = ships.reduce((n, s) => (s.playerId === runtime.myPlayerId ? n + 1 : n), 0);
@@ -536,6 +619,9 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     if (!map || !owner || !target) return;
     paintRaster(map, owner, target.image.data, undefined, runtime.myPlayerId ?? -1);
     target.base.getContext("2d")?.putImageData(target.image, 0, 0);
+    // A full repaint means we have no per-tile change set to glow (first
+    // snapshot, or a high-churn full resend); drop any stale flashes.
+    runtime.captureFlashes.length = 0;
   };
 
   /** Apply a packed owner delta to the owner array and repaint touched tiles. */
@@ -552,15 +638,25 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     // depends on its neighbours, so changing one tile can flip the look of the
     // tiles around it. We collect each changed tile and its neighbours and
     // repaint that union once all owners are up to date.
+    const now = performance.now();
     const dirty = new Set<number>();
     for (let k = 0; k < records; k += 1) {
       const index = view.getUint32(k * 6, true);
       const newOwner = view.getUint16(k * 6 + 4, true);
       if (index < owner.length) {
+        const prevOwner = owner[index];
         owner[index] = newOwner;
         dirty.add(index);
         for (const n of map.neighbors(index)) dirty.add(n);
+        // Glow only on a genuine capture by a real player (skip collapses back to
+        // neutral), so the wash reads as an advancing front rather than churn.
+        if (newOwner !== 0 && newOwner !== prevOwner) {
+          runtime.captureFlashes.push({ ref: index, css: flashCss(newOwner), start: now });
+        }
       }
+    }
+    if (runtime.captureFlashes.length > MAX_CAPTURE_FLASHES) {
+      runtime.captureFlashes.splice(0, runtime.captureFlashes.length - MAX_CAPTURE_FLASHES);
     }
     const highlight = runtime.myPlayerId ?? -1;
     for (const ref of dirty) paintTileInto(map, owner, ref, target.image.data, undefined, highlight);
@@ -654,23 +750,60 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const { scale, x, y } = runtime.view;
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.imageSmoothingEnabled = false;
     ctx.clearRect(0, 0, cw, ch);
     if (map && base) {
-      // Draw the base raster under the camera transform (nearest-neighbour), then
-      // overlay ships in screen space so their markers keep a constant size.
+      // Draw the base raster under the camera transform. When zoomed in, bilinear
+      // smoothing sheds the blocky pixel-grid look; far out, nearest-neighbour
+      // keeps the map crisp. Crisp vector borders are overlaid separately so the
+      // smoothing never blurs nation outlines away.
+      const smooth = scale >= SMOOTH_ZOOM_SCALE;
+      ctx.imageSmoothingEnabled = smooth;
       ctx.setTransform(scale, 0, 0, scale, -x * scale, -y * scale);
       ctx.drawImage(base, 0, 0);
+      drawCaptureFlashes(now, ctx);
       ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.imageSmoothingEnabled = true;
+      drawBorders(ctx, scale);
       recomputeNames(now);
       drawNames(ctx, scale);
       drawBuildings(ctx, scale);
-      drawCapitals(ctx, scale);
       drawShips(ctx, scale);
       drawLandings(now, ctx, scale);
+      drawFronts(ctx, scale);
     }
     drawMinimap();
     requestAnimationFrame(renderFrame);
+  };
+
+  /**
+   * Wash a brief, fading glow over every tile captured in the last few hundred
+   * ms, in the conqueror's brightened colour. Drawn in world space (tile units)
+   * under the camera transform so the glow lands exactly on its tiles, turning an
+   * advancing front into a visible wave of conquest. Expired flashes are pruned
+   * here so the list stays bounded between snapshots.
+   */
+  const drawCaptureFlashes = (now: number, ctx: CanvasRenderingContext2D): void => {
+    const map = runtime.map;
+    if (!map || runtime.captureFlashes.length === 0) return;
+    const left = runtime.view.x;
+    const top = runtime.view.y;
+    const right = left + ui.mapCanvas.width / runtime.view.scale;
+    const bottom = top + ui.mapCanvas.height / runtime.view.scale;
+    const survivors: CaptureFlash[] = [];
+    ctx.save();
+    for (const flash of runtime.captureFlashes) {
+      const t = (now - flash.start) / CAPTURE_FLASH_MS;
+      if (t >= 1) continue;
+      survivors.push(flash);
+      const tx = map.x(flash.ref);
+      const ty = map.y(flash.ref);
+      if (tx < left - 1 || ty < top - 1 || tx > right || ty > bottom) continue;
+      ctx.globalAlpha = (1 - t) * CAPTURE_FLASH_ALPHA;
+      ctx.fillStyle = flash.css;
+      ctx.fillRect(tx, ty, 1, 1);
+    }
+    ctx.restore();
+    runtime.captureFlashes = survivors;
   };
 
   /**
@@ -832,42 +965,123 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   /**
-   * Draw each living player's capital as a cross in their colour with a white
-   * outline, in screen space so the marker stays legible at any zoom. The cross
-   * scales gently with zoom but is clamped so it never vanishes when zoomed out
-   * nor swamps the tile when zoomed in.
+   * Overlay crisp, anti-aliased nation borders along the actual tile edges in
+   * the viewport. Because the base raster is drawn with smoothing when zoomed in
+   * (which softens the baked outline into a glow), this thin vector line on top
+   * keeps borders sharp — smooth *and* crisp, OpenFront-style. Each boundary
+   * edge is traced once and batched by colour so we stroke a handful of paths,
+   * not thousands of segments. Only runs when zoomed in enough that borders read
+   * and the visible-tile count stays within budget.
    */
-  const drawCapitals = (ctx: CanvasRenderingContext2D, scale: number): void => {
-    if (runtime.capitals.length === 0) return;
+  const drawBorders = (ctx: CanvasRenderingContext2D, scale: number): void => {
+    const map = runtime.map;
+    const owner = runtime.owner;
+    if (!map || !owner || scale < SMOOTH_ZOOM_SCALE) return;
+    const view = runtime.view;
+    const x0 = Math.max(0, Math.floor(view.x));
+    const y0 = Math.max(0, Math.floor(view.y));
+    const x1 = Math.min(map.width - 1, Math.ceil(view.x + ui.mapCanvas.width / scale));
+    const y1 = Math.min(map.height - 1, Math.ceil(view.y + ui.mapCanvas.height / scale));
+    if (x1 < x0 || y1 < y0) return;
+    if ((x1 - x0 + 1) * (y1 - y0 + 1) > BORDER_OVERLAY_TILE_BUDGET) return;
+
+    const me = runtime.myPlayerId ?? -1;
+    const meKey = "me";
+    const cssCache = new Map<number, string>();
+    const ownerCss = (id: number): string => {
+      let css = cssCache.get(id);
+      if (!css) {
+        css = rgbaToCss(borderColor(id));
+        cssCache.set(id, css);
+      }
+      return css;
+    };
+    // One Path2D per stroke colour; the local player's edges go in their own
+    // (white, slightly thicker) path so "me" reads at a glance.
+    const paths = new Map<string, Path2D>();
+    const pathFor = (key: string): Path2D => {
+      let p = paths.get(key);
+      if (!p) {
+        p = new Path2D();
+        paths.set(key, p);
+      }
+      return p;
+    };
+    const edge = (a: number, b: number, ax: number, ay: number, bx: number, by: number): void => {
+      if (a === b || (a === 0 && b === 0)) return;
+      const key = a === me || b === me ? meKey : ownerCss(a !== 0 ? a : b);
+      const p = pathFor(key);
+      p.moveTo((ax - view.x) * scale, (ay - view.y) * scale);
+      p.lineTo((bx - view.x) * scale, (by - view.y) * scale);
+    };
+
+    const width = map.width;
+    for (let ty = y0; ty <= y1; ty += 1) {
+      for (let tx = x0; tx <= x1; tx += 1) {
+        const ref = ty * width + tx;
+        const a = owner[ref];
+        if (tx + 1 < width) {
+          // Vertical edge between this tile and its right neighbour.
+          edge(a, owner[ref + 1], tx + 1, ty, tx + 1, ty + 1);
+        }
+        if (ty + 1 < map.height) {
+          // Horizontal edge between this tile and the one below.
+          edge(a, owner[ref + width], tx, ty + 1, tx + 1, ty + 1);
+        }
+      }
+    }
+
+    ctx.save();
+    ctx.lineCap = "round";
+    for (const [key, path] of paths) {
+      if (key === meKey) continue;
+      ctx.strokeStyle = key;
+      ctx.lineWidth = 1.4;
+      ctx.stroke(path);
+    }
+    const mePath = paths.get(meKey);
+    if (mePath) {
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
+      ctx.lineWidth = 2.2;
+      ctx.stroke(mePath);
+    }
+    ctx.restore();
+  };
+
+  /**
+   * Draw a troop-count label on each active attack front, so it is visible at a
+   * glance which border is being fought over and with how many troops. Rendered
+   * in screen space as a rounded pill in the attacker's colour with the count in
+   * white — OpenFront's on-map combat readout.
+   */
+  const drawFronts = (ctx: CanvasRenderingContext2D, scale: number): void => {
+    if (runtime.fronts.length === 0) return;
     const cw = ui.mapCanvas.width;
     const ch = ui.mapCanvas.height;
-    // Half-length of each arm and stroke widths, in screen pixels.
-    const arm = clamp(scale * 0.9, 4, 9);
-    const outlineWidth = clamp(scale * 0.5, 3, 6);
-    const colorWidth = clamp(scale * 0.28, 1.5, 3.5);
-
-    for (const capital of runtime.capitals) {
-      const { x: cx, y: cy } = worldToScreen(capital.tileX + 0.5, capital.tileY + 0.5);
-      // Skip markers fully outside the viewport (cheap cull).
-      if (cx < -arm || cy < -arm || cx > cw + arm || cy > ch + arm) continue;
-
-      const stroke = (width: number, style: string): void => {
-        ctx.lineWidth = width;
-        ctx.strokeStyle = style;
-        ctx.lineCap = "round";
-        ctx.beginPath();
-        ctx.moveTo(cx - arm, cy);
-        ctx.lineTo(cx + arm, cy);
-        ctx.moveTo(cx, cy - arm);
-        ctx.lineTo(cx, cy + arm);
-        ctx.stroke();
-      };
-
-      ctx.save();
-      stroke(outlineWidth, "rgba(255, 255, 255, 0.95)"); // white outline underneath
-      stroke(colorWidth, capital.color); // player-colour cross on top
-      ctx.restore();
+    const px = clamp(scale * 0.85, 11, 17);
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = `700 ${px}px Inter, system-ui, sans-serif`;
+    for (const front of runtime.fronts) {
+      if (front.troops <= 0) continue;
+      const { x: sx, y: sy } = worldToScreen(front.x + 0.5, front.y + 0.5);
+      if (sx < -90 || sy < -40 || sx > cw + 90 || sy > ch + 40) continue;
+      const text = `⚔ ${formatCount(front.troops)}`;
+      const w = ctx.measureText(text).width + px;
+      const h = px * 1.5;
+      const rx = sx - w / 2;
+      const ry = sy - h / 2;
+      ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
+      traceRoundRect(ctx, rx - 1.5, ry - 1.5, w + 3, h + 3, (h + 3) / 2);
+      ctx.fill();
+      ctx.fillStyle = rgbaToCss(playerColor(front.playerId));
+      traceRoundRect(ctx, rx, ry, w, h, h / 2);
+      ctx.fill();
+      ctx.fillStyle = "#fff";
+      ctx.fillText(text, sx, sy + 0.5);
     }
+    ctx.restore();
   };
 
   // Ease each ship's drawn position toward its latest server position, then draw

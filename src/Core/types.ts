@@ -48,17 +48,10 @@ export interface RasterPlayerInfo {
    */
   troopsPerSecond: number;
   /**
-   * Tile column of the player's capital ("Hauptstadt"). The capital is the
-   * player's founding tile; losing it eliminates the player. `-1` when unknown
-   * (e.g. snapshots built without capital data, only in tests).
-   */
-  capitalX: number;
-  /** Tile row of the player's capital. `-1` when unknown. */
-  capitalY: number;
-  /**
-   * True once this player's capital has been captured. Eliminated players hold
-   * no tiles (all were turned neutral on capture) and are dropped from the
-   * active leaderboard / no longer draw a capital marker.
+   * True once this player has been wiped off the map — their last tile captured.
+   * A nation is beaten only when its *entire* territory has been taken (there is
+   * no capital shortcut); eliminated players hold no tiles and are dropped from
+   * the active leaderboard.
    */
   eliminated: boolean;
 }
@@ -88,6 +81,20 @@ export interface RasterShip {
   x: number;
   y: number;
   troops: number;
+}
+
+/**
+ * An active land attack this snapshot: `troops` of `playerId` are pushing the
+ * front against `targetId` (0 = neutral land), centred on tile (`x`,`y`). The
+ * client draws the troop count at this point so it is visible at which border
+ * how many troops are fighting — OpenFront's on-map attack readout.
+ */
+export interface RasterAttackFront {
+  playerId: number;
+  targetId: number;
+  troops: number;
+  x: number;
+  y: number;
 }
 
 /**
@@ -148,6 +155,11 @@ export interface RasterSnapshot {
   ships: RasterShip[];
   /** Structures placed on the map (empty when none have been built). */
   buildings: RasterBuilding[];
+  /**
+   * Active land-attack fronts this tick (empty when nobody is pushing a border).
+   * Drives the on-map troop-count labels so contested borders read at a glance.
+   */
+  fronts: RasterAttackFront[];
 }
 
 /** Reasons the server can reject a raster expand or build intent. */
@@ -159,7 +171,7 @@ export type RasterRejectReason =
   | "INSUFFICIENT_TROOPS"
   | "TOO_MANY_SHIPS"
   | "MATCH_ENDED"
-  /** The clicked tile isn't owned by the builder, or is their capital seat. */
+  /** The clicked tile isn't owned by the builder. */
   | "NOT_BUILDABLE"
   /** A building already stands on the clicked tile. */
   | "TILE_OCCUPIED"
@@ -219,11 +231,11 @@ export interface RasterRunStats {
   peakTiles: number;
   /** Tiles held at the final tick. */
   finalTiles: number;
-  /** Opponents this player eliminated by capturing their capital. */
+  /** Opponents this player eliminated by capturing all their territory. */
   kills: number;
   /** Ticks the player survived (until eliminated, else the full match). */
   survivedTicks: number;
-  /** True if the player's capital was captured before the match ended. */
+  /** True if this player was wiped off the map before the match ended. */
   eliminated: boolean;
   /** True if this player is the declared winner. */
   won: boolean;

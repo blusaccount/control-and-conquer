@@ -331,6 +331,17 @@ export class TerritoryGrid {
   }
 
   /**
+   * Some tile this player currently owns (set-iteration order; O(1)), or
+   * `undefined` when they hold none. Cheap enough to call every tick — used to
+   * sample a player's last ground so the conqueror who takes their final tile
+   * can be credited when the player is wiped off the map.
+   */
+  anyTileOf(id: PlayerId): TileRef | undefined {
+    for (const ref of this.standing(id).tiles) return ref;
+    return undefined;
+  }
+
+  /**
    * A snapshot array of every tile a player currently owns. Returns a fresh copy
    * (not the live set), so callers can safely {@link claim} tiles away while
    * iterating — used when an eliminated player's territory is turned neutral.
