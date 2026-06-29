@@ -1,7 +1,43 @@
 import { RasterBuildIntent, RasterClientMessage, RasterExpandIntent } from "../Core/types.js";
-import { isRasterDifficulty, RasterJoinPayload, RasterSpawnPayload } from "../Core/messages.js";
+import {
+  isRasterDifficulty,
+  RasterAllyBreakPayload,
+  RasterAllyProposePayload,
+  RasterAllyRespondPayload,
+  RasterJoinPayload,
+  RasterSpawnPayload,
+} from "../Core/messages.js";
 import { isMapChoiceId } from "../Core/mapCatalog.js";
 import { isBuildingType } from "../Core/buildings.js";
+
+/** Validate a diplomacy counterparty id: a positive integer player id. */
+const parseTargetId = (payload: unknown, label: string): number => {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error(`${label}.payload must be an object.`);
+  }
+  const { targetId } = payload as Record<string, unknown>;
+  if (typeof targetId !== "number" || !Number.isInteger(targetId) || targetId < 1) {
+    throw new Error("targetId must be a positive integer player id.");
+  }
+  return targetId;
+};
+
+const parseAllyPropose = (payload: unknown): RasterAllyProposePayload => ({
+  targetId: parseTargetId(payload, "CLIENT_RASTER_ALLY_PROPOSE"),
+});
+
+const parseAllyBreak = (payload: unknown): RasterAllyBreakPayload => ({
+  targetId: parseTargetId(payload, "CLIENT_RASTER_ALLY_BREAK"),
+});
+
+const parseAllyRespond = (payload: unknown): RasterAllyRespondPayload => {
+  const targetId = parseTargetId(payload, "CLIENT_RASTER_ALLY_RESPOND");
+  const { accept } = payload as Record<string, unknown>;
+  if (typeof accept !== "boolean") {
+    throw new Error("accept must be a boolean.");
+  }
+  return { targetId, accept };
+};
 
 const parseRasterExpand = (payload: unknown): RasterExpandIntent => {
   if (typeof payload !== "object" || payload === null) {
@@ -86,6 +122,15 @@ export const validateCommand = (raw: unknown): RasterClientMessage => {
   }
   if (message.type === "CLIENT_RASTER_SELECT_SPAWN") {
     return { type: "CLIENT_RASTER_SELECT_SPAWN", payload: parseRasterSpawn(message.payload) };
+  }
+  if (message.type === "CLIENT_RASTER_ALLY_PROPOSE") {
+    return { type: "CLIENT_RASTER_ALLY_PROPOSE", payload: parseAllyPropose(message.payload) };
+  }
+  if (message.type === "CLIENT_RASTER_ALLY_RESPOND") {
+    return { type: "CLIENT_RASTER_ALLY_RESPOND", payload: parseAllyRespond(message.payload) };
+  }
+  if (message.type === "CLIENT_RASTER_ALLY_BREAK") {
+    return { type: "CLIENT_RASTER_ALLY_BREAK", payload: parseAllyBreak(message.payload) };
   }
   throw new Error(`Unknown message type: ${String(message.type)}.`);
 };

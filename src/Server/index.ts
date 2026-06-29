@@ -152,6 +152,12 @@ wss.on("connection", (socket) => {
         registry.queueRasterExpand(clientId, message.payload);
       } else if (message.type === "CLIENT_RASTER_BUILD") {
         registry.queueRasterBuild(clientId, message.payload);
+      } else if (message.type === "CLIENT_RASTER_ALLY_PROPOSE") {
+        registry.proposeRasterAlliance(clientId, message.payload.targetId);
+      } else if (message.type === "CLIENT_RASTER_ALLY_RESPOND") {
+        registry.respondRasterAlliance(clientId, message.payload.targetId, message.payload.accept);
+      } else if (message.type === "CLIENT_RASTER_ALLY_BREAK") {
+        registry.breakRasterAlliance(clientId, message.payload.targetId);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown command error.";

@@ -1,6 +1,8 @@
 import { GameMap } from "../Core/GameMap.js";
 import type { PlayerId } from "../Core/TerritoryGrid.js";
 import type {
+  RasterAlliancePair,
+  RasterAllianceRequest,
   RasterAttackFront,
   RasterBuilding,
   RasterClientMessage,
@@ -147,6 +149,10 @@ interface RasterRuntime {
   landings: Landing[];
   /** Active attack fronts this snapshot, drawn as on-map troop-count labels. */
   fronts: RasterAttackFront[];
+  /** Active alliances as [lowId, highId] pairs, mirrored from the snapshot. */
+  alliances: RasterAlliancePair[];
+  /** Pending alliance proposals (directed from→to), mirrored from the snapshot. */
+  allianceRequests: RasterAllianceRequest[];
   /** Recently-captured tiles still glowing, for the conquest-ripple animation. */
   captureFlashes: CaptureFlash[];
   /** Tile the local player picked to spawn on, for the start-of-run auto-zoom. */
@@ -330,6 +336,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     shipGeneration: 0,
     landings: [],
     fronts: [],
+    alliances: [],
+    allianceRequests: [],
     captureFlashes: [],
     spawnX: -1,
     spawnY: -1,
@@ -365,6 +373,21 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       type: "CLIENT_RASTER_BUILD",
       payload: { targetX, targetY, building },
     };
+    socket.send(JSON.stringify(message));
+  };
+
+  const sendAllyPropose = (targetId: number): void => {
+    const message: RasterClientMessage = { type: "CLIENT_RASTER_ALLY_PROPOSE", payload: { targetId } };
+    socket.send(JSON.stringify(message));
+  };
+
+  const sendAllyRespond = (targetId: number, accept: boolean): void => {
+    const message: RasterClientMessage = { type: "CLIENT_RASTER_ALLY_RESPOND", payload: { targetId, accept } };
+    socket.send(JSON.stringify(message));
+  };
+
+  const sendAllyBreak = (targetId: number): void => {
+    const message: RasterClientMessage = { type: "CLIENT_RASTER_ALLY_BREAK", payload: { targetId } };
     socket.send(JSON.stringify(message));
   };
 
@@ -587,6 +610,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.capturableTotal = snapshot.capturableCount;
     runtime.recentEvents = snapshot.recentEvents;
     runtime.players = snapshot.players;
+    runtime.alliances = snapshot.alliances ?? [];
+    runtime.allianceRequests = snapshot.allianceRequests ?? [];
     runtime.phase = snapshot.phase;
     runtime.spawnRemainingSeconds = snapshot.spawnRemainingSeconds;
     updateStartBanner();
@@ -1299,13 +1324,22 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       return;
     }
 
+    const rel = diplomacyState();
+    const diplomacyLine =
+      rel.incoming.size > 0
+        ? `<strong>🤝 ${rel.incoming.size} alliance offer${rel.incoming.size === 1 ? "" : "s"}</strong> — accept or decline in the leaderboard.<br/>`
+        : rel.allies.size > 0
+          ? `<strong>🤝 Allied with ${rel.allies.size} nation${rel.allies.size === 1 ? "" : "s"}.</strong> Allies can't attack each other.<br/>`
+          : "";
+
     ui.selectionInfo.innerHTML =
       `<strong>Orders</strong><br/>` +
+      diplomacyLine +
       `<strong>Ships at sea:</strong> ${runtime.myShips} / 3<br/>` +
       `<em>Click adjacent land to expand. Click any landmass across water to send a transport ship ` +
       `to its nearest reachable shore (one per click, max 3 at sea). Drag to pan, scroll to zoom.</em><br/>` +
-      `<em>Keep a healthy troop reserve: a well-garrisoned nation is far costlier to capture, so ` +
-      `banking troops — and forts on the border — is your defence.</em>`;
+      `<em>Use the leaderboard's <strong>Ally</strong> buttons to propose alliances — allied nations can't ` +
+      `attack each other until the pact is broken.</em>`;
 
     ui.eventsPanel.innerHTML = runtime.recentEvents
       .map((ev) => `<div class="event">${escapeHtml(ev)}</div>`)
@@ -1315,10 +1349,61 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   /**
+   * Resolve, for the local player, who is an ally, who has an alliance offer out
+   * to us, and who we have offered. Derived fresh from the snapshot's alliance +
+   * proposal lists so the leaderboard can label each rival and pick the right
+   * diplomacy action button.
+   */
+  const diplomacyState = (): { allies: Set<number>; incoming: Set<number>; outgoing: Set<number> } => {
+    const me = runtime.myPlayerId;
+    const allies = new Set<number>();
+    const incoming = new Set<number>();
+    const outgoing = new Set<number>();
+    if (me !== null) {
+      for (const [a, b] of runtime.alliances) {
+        if (a === me) allies.add(b);
+        else if (b === me) allies.add(a);
+      }
+      for (const r of runtime.allianceRequests) {
+        if (r.to === me) incoming.add(r.from);
+        else if (r.from === me) outgoing.add(r.to);
+      }
+    }
+    return { allies, incoming, outgoing };
+  };
+
+  /**
+   * The diplomacy action button(s) for a rival row: break an existing pact,
+   * accept/decline an incoming offer, mark an outgoing offer as sent, or propose
+   * a fresh alliance. Empty while we can't act (pre-game, match over, our own row).
+   */
+  const diplomacyActions = (
+    id: number,
+    rel: { allies: Set<number>; incoming: Set<number>; outgoing: Set<number> },
+    canDiplo: boolean,
+  ): string => {
+    if (!canDiplo) return "";
+    if (rel.allies.has(id)) {
+      return `<button class="lb-act break" data-ally-break="${id}" title="Break alliance">Break</button>`;
+    }
+    if (rel.incoming.has(id)) {
+      return (
+        `<button class="lb-act accept" data-ally-accept="${id}" title="Accept alliance">✓</button>` +
+        `<button class="lb-act decline" data-ally-decline="${id}" title="Decline alliance">✕</button>`
+      );
+    }
+    if (rel.outgoing.has(id)) {
+      return `<button class="lb-act pending" disabled title="Offer pending">Sent</button>`;
+    }
+    return `<button class="lb-act ally" data-ally-propose="${id}" title="Propose alliance">Ally</button>`;
+  };
+
+  /**
    * Live standings: every active (non-eliminated) player, sorted by tiles held
    * descending. Each row shows a colour dot, name, tile count and pool with its
-   * growth rate. Your own row is highlighted, and turns green while you hold the
-   * lead ("du gewinnst").
+   * growth rate, plus a diplomacy action against each rival. Your own row is
+   * highlighted, and turns green while you hold the lead ("du gewinnst"); allies
+   * are flagged with a 🤝.
    */
   const renderLeaderboard = (): void => {
     const active = runtime.players
@@ -1330,26 +1415,32 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       return;
     }
 
+    const rel = diplomacyState();
+    const canDiplo = runtime.spawned && runtime.phase === "playing" && !runtime.matchEnded && runtime.myPlayerId !== null;
     const leaderId = active[0].playerId;
     ui.leaderboard.innerHTML = active
       .map((p) => {
         const isMe = p.playerId === runtime.myPlayerId;
         const isLeader = p.playerId === leaderId;
-        const rowClass = ["lb-row", isMe ? "me" : "", isLeader ? "leader" : ""]
+        const isAlly = rel.allies.has(p.playerId);
+        const rowClass = ["lb-row", isMe ? "me" : "", isLeader ? "leader" : "", isAlly ? "ally" : ""]
           .filter(Boolean)
           .join(" ");
-        const name = `${playerEmoji(p.playerId)} ${escapeHtml(p.name)}` + (isMe ? " (you)" : "");
+        const allyMark = isAlly ? "🤝 " : "";
+        const name = `${allyMark}${playerEmoji(p.playerId)} ${escapeHtml(p.name)}` + (isMe ? " (you)" : "");
         const maxPool = p.tiles * MAX_POOL_PER_TILE;
         const own = runtime.capturableTotal > 0 ? (p.tiles / runtime.capturableTotal) * 100 : 0;
         const ownStr = own >= 10 ? String(Math.round(own)) : own.toFixed(1);
         const stats =
           `${ownStr}% · ${formatCount(p.troops)}/${formatCount(maxPool)} (+${formatRate(p.troopsPerSecond)}/s)` +
           ` · ${formatCount(p.gold)}g`;
+        const actions = isMe ? "" : diplomacyActions(p.playerId, rel, canDiplo);
         return (
           `<div class="${rowClass}">` +
           `<span class="lb-dot" style="background:${escapeHtml(p.color)}"></span>` +
           `<span class="lb-name">${name}</span>` +
           `<span class="lb-stats">${stats}</span>` +
+          (actions ? `<span class="lb-acts">${actions}</span>` : "") +
           `</div>`
         );
       })
@@ -1495,6 +1586,34 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
 
   ui.attackPercentInput.addEventListener("input", () => {
     ui.attackPercentOutput.textContent = `${ui.attackPercentInput.value}%`;
+  });
+
+  // Diplomacy: one delegated handler for the leaderboard's per-rival alliance
+  // buttons (the rows are rebuilt every snapshot, so a delegated listener stays
+  // valid across re-renders). Each button carries the counterparty's player id.
+  ui.leaderboard.addEventListener("click", (event) => {
+    const node = event.target as HTMLElement | null;
+    const btn = node?.closest<HTMLButtonElement>(
+      "button[data-ally-propose], button[data-ally-accept], button[data-ally-decline], button[data-ally-break]",
+    );
+    if (!btn || btn.disabled) return;
+    const propose = btn.getAttribute("data-ally-propose");
+    const accept = btn.getAttribute("data-ally-accept");
+    const decline = btn.getAttribute("data-ally-decline");
+    const broke = btn.getAttribute("data-ally-break");
+    if (propose !== null) {
+      sendAllyPropose(Number(propose));
+      setStatus(ui, "Alliance offer sent.");
+    } else if (accept !== null) {
+      sendAllyRespond(Number(accept), true);
+      setStatus(ui, "Alliance accepted.");
+    } else if (decline !== null) {
+      sendAllyRespond(Number(decline), false);
+      setStatus(ui, "Alliance offer declined.");
+    } else if (broke !== null) {
+      sendAllyBreak(Number(broke));
+      setStatus(ui, "Alliance broken.");
+    }
   });
 
   // Lay out the build menu once and seed its initial (disabled, pre-spawn) state.

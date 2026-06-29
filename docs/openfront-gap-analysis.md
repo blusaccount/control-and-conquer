@@ -1,7 +1,10 @@
 # OpenFront-ähnliche Roadmap: Repository Audit + Gap-Analyse
 
-> **Letztes Update:** 2026-06-29 (Economy & Gebäude: Gold als zweite Ressource +
-> Bau-Schicht — Städte, Häfen, Forts, Fabriken; auto-verlegte Schienen + Züge).
+> **Letztes Update:** 2026-06-29 (Diplomatie: Allianzen mit beidseitiger
+> Zustimmung — Vorschlag/Annahme/Bruch; Verbündete können sich nicht angreifen;
+> Bots reagieren persönlichkeitsbasiert. Davor: Economy & Gebäude — Gold als
+> zweite Ressource + Bau-Schicht — Städte, Häfen, Forts, Fabriken; auto-verlegte
+> Schienen + Züge).
 > Dieses Dokument spiegelt den Ist-Zustand auf `main` nach dem Umbau auf die
 > Pixel-Raster-Engine (commit „Rebuild as OpenFront-style raster game"). Die
 > ältere Polygon-/`MapState`-Engine existiert nicht mehr.
@@ -75,6 +78,34 @@
 - **Bots reinvestieren** Gold ab einer Mindestgröße in Städte (`maybeBuildCity`),
   deterministisch wie alle Bot-Entscheidungen.
 
+### Diplomatie / Allianzen (`alliances.ts`, `RasterGameSession`, `RasterConflict`)
+- **Allianz-Datenmodell** (`src/Core/alliances.ts`, `AllianceRegistry`): symmetrische
+  Bündnisse + gerichtete, schwebende Vorschläge zwischen Spielern. Deterministisch und
+  framework-frei wie der Rest von `Core` (keine RNG, aufsteigende Id-Ordnung).
+- **Beidseitige Zustimmung:** ein Spieler **schlägt vor** (`propose`), der Empfänger
+  **nimmt an / lehnt ab** (`accept`/`decline`). Ein kreuzender Gegenvorschlag besiegelt
+  das Bündnis sofort. Jede Seite kann jederzeit **brechen** (`break`) — ein Verrat ohne
+  Zeitlimit (v1 hat keine Ablauf-Mechanik). Eliminierte Nationen verlassen den
+  Diplomatie-Graph (`removePlayer`).
+- **Nichtangriffspakt im Kampf** (`RasterConflict`): `launchAttack`/`launchShip` weisen
+  ein Ziel zurück, das ein **Verbündeter** hält (`ALLIED`). Entsteht ein Bündnis *während*
+  ein Angriff/Schiff schon unterwegs ist, **bricht die Offensive ab** und die Truppen
+  kehren vollständig zurück (ein Frieden, kein Verlust — kein Retreat-Malus). Die Engine
+  bekommt die Diplomatie als `AllianceView` injiziert (Default `NO_ALLIANCES`, also kein
+  Effekt — bestehende Tests/Aufrufer unverändert).
+- **Protokoll:** `CLIENT_RASTER_ALLY_PROPOSE` / `_RESPOND` / `_BREAK` (validiert in
+  `validateCommand`); der Snapshot trägt `alliances` (kanonische `[low,high]`-Paare) und
+  `allianceRequests` (gerichtete offene Vorschläge), die der Client für eingehende/
+  ausgehende Angebote filtert.
+- **Bots** (`RasterBotController`): greifen Verbündete nie an (aus der Zielwahl gefiltert),
+  **beantworten** offene Vorschläge persönlichkeitsbasiert (defensive nehmen an;
+  aggressive nur ein Angebot von einem mindestens ebenbürtigen Partner), **suchen** als
+  defensive Nation Frieden mit einem klar stärkeren Grenz-Rivalen und **verraten** (nur die
+  rücksichtslosen) ein Bündnis, das sie sonst komplett einkesselt. Alles deterministisch.
+- **Client-UI:** das Leaderboard zeigt pro Rivale eine Aktion (Ally / Annehmen / Ablehnen /
+  Brechen) und markiert Verbündete mit 🤝; das Orders-Panel weist auf eingehende Angebote
+  hin.
+
 ### Networking / Multiplayer
 - WebSocket + autoritativer Server (`ws`, `src/Server/index.ts`).
 - **Solo-Match-Isolation** via `MatchRegistry`: jeder Client bekommt eine eigene
@@ -138,6 +169,7 @@
 
 | Bereich | Status | Priorität |
 |---|---|---|
+| Diplomatie / Allianzen (Vorschlag/Annahme/Bruch, Nichtangriffspakt) | **erledigt** — beidseitige Allianzen; Verbündete können sich nicht angreifen; persönlichkeitsbasierte Bot-Diplomatie (`alliances.ts`) | — |
 | Spielbare Nationen / Fraktions-Fähigkeiten (Generals-Asymmetrie) | offen | P1 |
 | Roguelite-Meta-Loop (Runs, Upgrades zwischen Matches) | offen | P1 |
 | Echtes PvP (geteilte Session, Matchmaking, Player-Identity) | offen | P1 |

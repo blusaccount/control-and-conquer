@@ -144,6 +144,18 @@ export class MatchRegistry {
     this.clientToSession.get(clientId)?.selectSpawn(clientId, x, y);
   }
 
+  public proposeRasterAlliance(clientId: string, targetId: number): void {
+    this.clientToSession.get(clientId)?.proposeAlliance(clientId, targetId);
+  }
+
+  public respondRasterAlliance(clientId: string, targetId: number, accept: boolean): void {
+    this.clientToSession.get(clientId)?.respondAlliance(clientId, targetId, accept);
+  }
+
+  public breakRasterAlliance(clientId: string, targetId: number): void {
+    this.clientToSession.get(clientId)?.breakAlliance(clientId, targetId);
+  }
+
   public tickAll(): void {
     for (const session of this.activeMatches.values()) {
       session.tick();

@@ -1,5 +1,6 @@
 import type { TileRef } from "./GameMap.js";
 import { NEUTRAL_PLAYER, type PlayerId, type TerritoryGrid } from "./TerritoryGrid.js";
+import { NO_ALLIANCES, type AllianceView } from "./alliances.js";
 import {
   CITY_GOLD_PER_TICK,
   CITY_TROOP_INCOME_PER_TICK,
@@ -65,7 +66,9 @@ export type AttackRejectReason =
   | "INVALID_TROOP_COUNT"
   | "INSUFFICIENT_TROOPS"
   | "NO_FRONTIER"
-  | "TOO_MANY_SHIPS";
+  | "TOO_MANY_SHIPS"
+  /** The target is a current ally — allied players can't attack each other. */
+  | "ALLIED";
 
 /**
  * A single amphibious landing resolved this tick: a player captured tile `to`
@@ -161,6 +164,12 @@ interface TransportShip {
  */
 export class RasterConflict {
   private readonly grid: TerritoryGrid;
+  /**
+   * Diplomacy lookup consulted before any attack lands: allied players can't
+   * take each other's tiles. Defaults to {@link NO_ALLIANCES} (nobody allied),
+   * so callers and tests that don't care about diplomacy are unaffected.
+   */
+  private readonly allies: AllianceView;
   private readonly attacks: RasterAttack[] = [];
   /** Transport ships currently at sea, in launch order. */
   private readonly ships: TransportShip[] = [];
@@ -176,8 +185,9 @@ export class RasterConflict {
   private tickCount = 0;
   private winnerId: PlayerId | null = null;
 
-  constructor(grid: TerritoryGrid) {
+  constructor(grid: TerritoryGrid, allies: AllianceView = NO_ALLIANCES) {
     this.grid = grid;
+    this.allies = allies;
     this.rails = new RailSystem(grid);
   }
 
@@ -253,6 +263,9 @@ export class RasterConflict {
     if (!this.grid.hasPlayer(attacker)) return "UNKNOWN_PLAYER";
     if (target === attacker) return "INVALID_TARGET";
     if (target !== NEUTRAL_PLAYER && !this.grid.hasPlayer(target)) return "INVALID_TARGET";
+    // A standing alliance is a non-aggression pact: you can't push a front into
+    // an ally's land. Breaking the alliance first reopens the option.
+    if (target !== NEUTRAL_PLAYER && this.allies.areAllied(attacker, target)) return "ALLIED";
     if (!Number.isInteger(troops) || troops <= 0) return "INVALID_TROOP_COUNT";
     if (troops > this.grid.troopsOf(attacker)) return "INSUFFICIENT_TROOPS";
     // A land attack pushes a contiguous front; it never crosses water (that is
@@ -285,6 +298,9 @@ export class RasterConflict {
 
     if (!this.grid.hasPlayer(attacker)) return "UNKNOWN_PLAYER";
     if (!this.grid.isCapturable(dest) || this.grid.ownerOf(dest) === attacker) return "INVALID_TARGET";
+    // You can't make an amphibious assault on an ally's shore either.
+    const destOwner = this.grid.ownerOf(dest);
+    if (destOwner !== NEUTRAL_PLAYER && this.allies.areAllied(attacker, destOwner)) return "ALLIED";
     if (!Number.isInteger(troops) || troops <= 0) return "INVALID_TROOP_COUNT";
     if (troops > this.grid.troopsOf(attacker)) return "INSUFFICIENT_TROOPS";
     if (this.shipCountOf(attacker) >= this.grid.maxShipsOf(attacker)) return "TOO_MANY_SHIPS";
@@ -544,6 +560,12 @@ export class RasterConflict {
         this.grid.addTroops(ship.attacker, ship.troops);
         continue;
       }
+      if (owner !== NEUTRAL_PLAYER && this.allies.areAllied(ship.attacker, owner)) {
+        // The destination became an ally's shore mid-voyage — the landing is
+        // called off and the troops disembark home rather than storming a friend.
+        this.grid.addTroops(ship.attacker, ship.troops);
+        continue;
+      }
 
       const cost = this.beachheadCost(dest, ship.attacker, owner, ship.troops);
       if (ship.troops < cost) {
@@ -631,6 +653,14 @@ export class RasterConflict {
     }
 
     for (const attack of this.attacks) {
+      // An alliance forged while the front was already pushing turns it into
+      // friendly ground — the assault stands down and its troops come home in
+      // full (a peace, not a defeat, so no retreat malus).
+      if (attack.target !== NEUTRAL_PLAYER && this.allies.areAllied(attack.attacker, attack.target)) {
+        this.grid.addTroops(attack.attacker, attack.committed);
+        continue;
+      }
+
       const frontier = this.orderedFrontier(attack.attacker, attack.target, attack.toward);
 
       // No reachable target tiles: the front is blocked or the target is gone.
