@@ -98,6 +98,25 @@ test("a ship too small to pay the beachhead cost is repelled and refunds its tro
   assert.ok(SEA_CROSSING_SURCHARGE > 0);
 });
 
+test("a landing repelled off a player-held shore loses the retreat malus", () => {
+  // owned 0,1 | water 2 | player-2 shore 3,4. A one-troop assault can't pay the
+  // beachhead cost and recoils off a *defended* coast, so it returns taxed (75%).
+  const grid = new TerritoryGrid(rowMap("## ##"));
+  grid.addPlayer(1, 1);
+  grid.addPlayer(2, 5);
+  grid.claim(0, 1);
+  grid.claim(1, 1);
+  grid.claim(3, 2);
+  grid.claim(4, 2);
+  const conflict = new RasterConflict(grid);
+
+  assert.equal(conflict.launchShip({ attacker: 1, dest: 3, troops: 1 }), null);
+  for (let i = 0; i < 10; i += 1) conflict.processTick();
+
+  assert.equal(grid.ownerOf(3), 2, "the defended shore holds");
+  assert.equal(grid.troopsOf(1), 0.75, "1 troop returns as 0.75 (25% malus off a player shore)");
+});
+
 test("a player may have at most three transport ships at sea", () => {
   // owned 0,1 | water 2,3,4 | islet 5 | water 6,7,8 | islet 9. Tile 5 is a lone
   // islet (no land neighbours), so a landing there can't spread inland — keeping

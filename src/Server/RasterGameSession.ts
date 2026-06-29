@@ -295,6 +295,9 @@ export class RasterGameSession {
     const spawn = this.spawnTiles[playerId - 1];
     this.grid.claim(spawn, playerId);
     this.capitals.set(playerId, spawn);
+    // The capital is a fortified seat: it raises the cost to capture ground around
+    // it (an OpenFront-style defense post), so a heartland is harder to overrun.
+    this.grid.addDefensePost(spawn);
 
     // Apply the chosen class: base modifiers (perks fold on top later) and any
     // bonus starting tiles claimed outward from the spawn (the capital stays the
@@ -586,6 +589,8 @@ export class RasterGameSession {
 
       this.eliminated.add(playerId);
       this.eliminationTick.set(playerId, this.conflict.tick);
+      // The fallen capital is no longer a fortified seat — drop its defense aura.
+      this.grid.removeDefensePost(capitalRef);
       // Credit the conqueror with a kill (capital captured) for their run stats.
       if (conqueror !== NEUTRAL_PLAYER) {
         this.kills.set(conqueror, (this.kills.get(conqueror) ?? 0) + 1);

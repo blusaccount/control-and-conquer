@@ -438,14 +438,21 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const bytes = decodeBase64ToBytes(deltaBase64);
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const records = Math.floor(bytes.length / 6);
+    // First apply every ownership change, then repaint: a tile's border status
+    // depends on its neighbours, so changing one tile can flip the look of the
+    // tiles around it. We collect each changed tile and its neighbours and
+    // repaint that union once all owners are up to date.
+    const dirty = new Set<number>();
     for (let k = 0; k < records; k += 1) {
       const index = view.getUint32(k * 6, true);
       const newOwner = view.getUint16(k * 6 + 4, true);
       if (index < owner.length) {
         owner[index] = newOwner;
-        paintTileInto(map, owner, index, target.image.data);
+        dirty.add(index);
+        for (const n of map.neighbors(index)) dirty.add(n);
       }
     }
+    for (const ref of dirty) paintTileInto(map, owner, ref, target.image.data);
     target.base.getContext("2d")?.putImageData(target.image, 0, 0);
   };
 

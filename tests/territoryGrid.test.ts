@@ -201,3 +201,37 @@ test("frontierOf matches a brute-force scan over a real generated map", () => {
     }
   }
 });
+
+test("defenseFactorAt peaks on a post and falls off linearly to its radius", () => {
+  // 11x1 flat land; a post at tile 5 with radius 4, strength 3.
+  const grid = new TerritoryGrid(flatLand(11, 1));
+  grid.addDefensePost(5, 4, 3);
+  assert.equal(grid.defensePostCount, 1);
+
+  assert.equal(grid.defenseFactorAt(5), 3, "peak strength on the post itself");
+  assert.equal(grid.defenseFactorAt(7), 2, "halfway out (dist 2/4) is halfway between 3 and 1");
+  assert.equal(grid.defenseFactorAt(9), 1, "at the radius edge the aura is spent");
+  assert.equal(grid.defenseFactorAt(0), 1, "well beyond the radius there is no effect");
+
+  assert.ok(grid.hasDefensePost(5));
+  assert.ok(grid.removeDefensePost(5));
+  assert.equal(grid.defenseFactorAt(5), 1, "removing the post clears its aura");
+  assert.equal(grid.defensePostCount, 0);
+});
+
+test("the strongest covering post wins where auras overlap (no stacking)", () => {
+  const grid = new TerritoryGrid(flatLand(11, 1));
+  grid.addDefensePost(4, 4, 2);
+  grid.addDefensePost(6, 4, 3);
+  // Tile 5 sits in both auras: post 6 (dist 1, strength 3) -> 1 + 2*(1-1/4) = 2.5
+  // dominates post 4 (dist 1, strength 2) -> 1.75. Auras do not add up.
+  assert.equal(grid.defenseFactorAt(5), 2.5);
+});
+
+test("addDefensePost rejects non-capturable terrain and bad parameters", () => {
+  const grid = new TerritoryGrid(new GameMap(2, 1, new Uint8Array([WATER, ROCK])));
+  assert.throws(() => grid.addDefensePost(0), /cannot hold a defense post/);
+  const land = new TerritoryGrid(flatLand(3, 1));
+  assert.throws(() => land.addDefensePost(1, -1), /radius/);
+  assert.throws(() => land.addDefensePost(1, 2, 0.5), /strength/);
+});

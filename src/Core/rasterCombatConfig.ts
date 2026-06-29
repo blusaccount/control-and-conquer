@@ -44,6 +44,16 @@ export const troopsPerSecond = (
  */
 export const RASTER_MATCH_DURATION_SECONDS = 600;
 
+/**
+ * Fraction of leftover committed troops lost when an attack against a *player*
+ * ends without overrunning them — the front gets blocked, the target slips out
+ * of reach, or an amphibious landing is repelled. Mirrors OpenFront's
+ * `malusForRetreat`: pulling back from an enemy costs you, so a committed
+ * assault is a real gamble. Retreating from neutral land (TerraNullius) is free,
+ * so this never applies to neutral targets.
+ */
+export const RETREAT_MALUS_FRACTION = 0.25;
+
 /** Base troop cost to claim a flat (elevation 0) neutral tile. */
 export const NEUTRAL_CAPTURE_COST = 1;
 
@@ -53,8 +63,60 @@ export const ENEMY_CAPTURE_SURCHARGE = 2;
 /** Additional troop cost per unit of land elevation (higher ground is harder). */
 export const ELEVATION_COST_PER_LEVEL = 0.1;
 
-/** Troops the defender loses from their pool for each tile captured from them. */
+/**
+ * Defense-post aura. A defense post is a fortified location (e.g. a player's
+ * capital) that makes capturing ground around it dearer, mirroring OpenFront's
+ * defense posts that multiply attacker losses within a tile range. Capture cost
+ * inside the aura is scaled up to {@link DEFENSE_POST_STRENGTH}× at the post
+ * itself, falling off linearly to 1× at {@link DEFENSE_POST_RADIUS} tiles
+ * (Chebyshev distance). Beyond the radius a post has no effect.
+ */
+export const DEFENSE_POST_RADIUS = 6;
+export const DEFENSE_POST_STRENGTH = 3;
+
+/**
+ * Floor on the troops a defender loses from their pool for each tile captured
+ * from them. The actual bleed is *density-based* (see {@link defenderLossPerTile}):
+ * a defender loses troops proportional to how thinly its pool is spread over its
+ * territory, mirroring OpenFront's `defender.troops() / defender.numTilesOwned()`.
+ * This floor guarantees a captured tile always costs the defender at least this
+ * much, so a troop-starved blob still bleeds as it is dismantled.
+ */
 export const DEFENDER_LOSS_PER_TILE = 1;
+
+/**
+ * Density-based troops a defender loses when one of its tiles is captured: its
+ * current pool spread over the tiles it holds, floored at {@link DEFENDER_LOSS_PER_TILE}.
+ * A dense defender (many troops, little land) bleeds hard per tile lost; a vast,
+ * thinly-garrisoned empire barely notices each tile — the OpenFront feel where
+ * over-extension is punished. `troops`/`tiles` are the defender's *current* pool
+ * and tile count, so the bleed naturally eases as the empire shrinks.
+ */
+export const defenderLossPerTile = (troops: number, tiles: number): number => {
+  if (tiles <= 0) return DEFENDER_LOSS_PER_TILE;
+  return Math.max(DEFENDER_LOSS_PER_TILE, troops / tiles);
+};
+
+/**
+ * Frontier ordering weights. A land attack captures the tiles of its frontier
+ * in *priority* order rather than raw tile order, so fronts grow organically —
+ * eating the easy, enclosed ground first the way OpenFront's conquest queue
+ * does. Each frontier tile gets a priority (lower = captured sooner):
+ *
+ *   priority = max(FRONTIER_PRIORITY_FLOOR,
+ *                  1 + magnitude * FRONTIER_MAGNITUDE_WEIGHT
+ *                    - ownedNeighbours * FRONTIER_SURROUND_WEIGHT) * jitter
+ *
+ * High ground (`magnitude`) is pushed later; a tile hugged by many of the
+ * attacker's own tiles (a pocket/bay) is pulled earlier so borders smooth out
+ * instead of leaving ragged islands. `jitter` is a deterministic per-tile/-tick
+ * wobble (no RNG, so replays stay stable) that only breaks ties between
+ * otherwise-equal tiles — its span is kept small so terrain dominates order.
+ */
+export const FRONTIER_MAGNITUDE_WEIGHT = 0.5;
+export const FRONTIER_SURROUND_WEIGHT = 0.25;
+export const FRONTIER_PRIORITY_FLOOR = 0.05;
+export const FRONTIER_JITTER_SPAN = 0.5;
 
 /**
  * Fraction of an attack's remaining committed troops that may be spent in a

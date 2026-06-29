@@ -1,14 +1,19 @@
 import type { TileRef } from "./GameMap.js";
 import { NEUTRAL_PLAYER, type PlayerId, type TerritoryGrid } from "./TerritoryGrid.js";
 import {
-  DEFENDER_LOSS_PER_TILE,
+  defenderLossPerTile,
   ELEVATION_COST_PER_LEVEL,
   ENEMY_CAPTURE_SURCHARGE,
   EXPANSION_SPEND_FRACTION,
+  FRONTIER_JITTER_SPAN,
+  FRONTIER_MAGNITUDE_WEIGHT,
+  FRONTIER_PRIORITY_FLOOR,
+  FRONTIER_SURROUND_WEIGHT,
   INCOME_PER_TILE_PER_TICK,
   MAX_POOL_PER_TILE,
   MAX_TRANSPORT_SHIPS_PER_PLAYER,
   NEUTRAL_CAPTURE_COST,
+  RETREAT_MALUS_FRACTION,
   SEA_CROSSING_SURCHARGE,
   SHIP_TILES_PER_TICK,
 } from "./rasterCombatConfig.js";
@@ -248,7 +253,68 @@ export class RasterConflict {
     let cost = base + elevationCost;
     // The defender's Fortress Wall raises the cost to capture their tiles.
     if (target !== NEUTRAL_PLAYER) cost *= this.grid.modifiersOf(target).defense;
+    // A nearby defense post (e.g. a capital) fortifies the ground around it,
+    // raising the cost to take any tile inside its aura.
+    cost *= this.grid.defenseFactorAt(ref);
     return Math.ceil(cost);
+  }
+
+  /**
+   * Return leftover committed troops to an attacker's pool. Pulling back from a
+   * *player* costs {@link RETREAT_MALUS_FRACTION} of the survivors (the
+   * OpenFront retreat malus); falling back from neutral land is free. Used
+   * wherever an attack or landing ends without taking its objective.
+   */
+  private refundRetreat(attacker: PlayerId, troops: number, target: PlayerId): void {
+    if (troops <= 0) return;
+    const kept = target === NEUTRAL_PLAYER ? troops : troops * (1 - RETREAT_MALUS_FRACTION);
+    this.grid.addTroops(attacker, kept);
+  }
+
+  /**
+   * Capture priority of a single frontier tile (lower = taken sooner). Easy, low
+   * ground enclosed by the attacker's own territory is grabbed first so fronts
+   * advance as smooth bulges rather than ragged spikes — the organic feel of
+   * OpenFront's conquest queue. The `jitter` is a deterministic hash of tile and
+   * tick (no RNG, so replays stay identical), used only to break ties.
+   */
+  private tilePriority(attacker: PlayerId, ref: TileRef): number {
+    let ownedNeighbours = 0;
+    for (const n of this.grid.map.neighbors(ref)) {
+      if (this.grid.ownerOf(n) === attacker) ownedNeighbours += 1;
+    }
+    const base = Math.max(
+      FRONTIER_PRIORITY_FLOOR,
+      1 + this.grid.map.magnitude(ref) * FRONTIER_MAGNITUDE_WEIGHT - ownedNeighbours * FRONTIER_SURROUND_WEIGHT,
+    );
+    // Deterministic [0,1) wobble from a cheap integer hash of (ref, tick).
+    const hash = ((ref * 2654435761 + this.tickCount * 40503) >>> 0) / 0x100000000;
+    return base * (1 + hash * FRONTIER_JITTER_SPAN);
+  }
+
+  /**
+   * The attacker's land frontier against `target`, ordered by capture priority
+   * for this tick. A fresh array (the grid's frontier is not mutated).
+   */
+  private orderedFrontier(attacker: PlayerId, target: PlayerId): TileRef[] {
+    // Score each tile once, then sort — priority is fixed for the tick, so we
+    // avoid recomputing it on every comparison.
+    const scored = this.grid
+      .landFrontierOf(attacker, target)
+      .map((ref) => ({ ref, p: this.tilePriority(attacker, ref) }));
+    scored.sort((a, b) => a.p - b.p || a.ref - b.ref);
+    return scored.map((s) => s.ref);
+  }
+
+  /**
+   * Troops a `target` player loses when one of their tiles is captured: a
+   * density-based bleed (pool ÷ territory) blunted by their Fortress Wall
+   * defence. Snapshotted by callers once per tick so capturing many tiles in
+   * one advance doesn't compound the bleed mid-tick.
+   */
+  private defenderLossFor(target: PlayerId): number {
+    const density = defenderLossPerTile(this.grid.troopsOf(target), this.grid.tileCountOf(target));
+    return density / this.grid.modifiersOf(target).defense;
   }
 
   /**
@@ -322,13 +388,14 @@ export class RasterConflict {
 
       const cost = this.beachheadCost(dest, ship.attacker, owner);
       if (ship.troops < cost) {
-        // Too few troops to force a landing — the assault is repelled and the
-        // survivors fall back into the pool rather than vanishing.
-        this.grid.addTroops(ship.attacker, ship.troops);
+        // Too few troops to force a landing — the assault is repelled. Survivors
+        // fall back into the pool, taxed by the retreat malus if they recoiled off
+        // a defended (player-held) shore; a failed neutral landing is free.
+        this.refundRetreat(ship.attacker, ship.troops, owner);
         continue;
       }
 
-      if (owner !== NEUTRAL_PLAYER) this.grid.addTroops(owner, -DEFENDER_LOSS_PER_TILE);
+      if (owner !== NEUTRAL_PLAYER) this.grid.addTroops(owner, -this.defenderLossFor(owner));
       this.grid.claim(dest, ship.attacker);
       const remaining = ship.troops - cost;
       if (remaining >= NEUTRAL_CAPTURE_COST) {
@@ -358,11 +425,12 @@ export class RasterConflict {
     const survivors: RasterAttack[] = [];
 
     for (const attack of this.attacks) {
-      const frontier = this.grid.landFrontierOf(attack.attacker, attack.target);
+      const frontier = this.orderedFrontier(attack.attacker, attack.target);
 
       // No reachable target tiles: the front is blocked or the target is gone.
+      // Pulling back from a player is taxed (retreat malus); neutral is free.
       if (frontier.length === 0) {
-        this.grid.addTroops(attack.attacker, attack.committed);
+        this.refundRetreat(attack.attacker, attack.committed, attack.target);
         continue;
       }
 
@@ -372,26 +440,38 @@ export class RasterConflict {
       const expansionSpeed = this.grid.modifiersOf(attack.attacker).expansionSpeed;
       const budget = Math.max(NEUTRAL_CAPTURE_COST, attack.committed * EXPANSION_SPEND_FRACTION * expansionSpeed);
       let spent = 0;
+      // Snapshot the defender's per-tile bleed once for the tick: capturing many
+      // tiles this advance shouldn't compound the density loss mid-front.
+      const defenderLoss = attack.target !== NEUTRAL_PLAYER ? this.defenderLossFor(attack.target) : 0;
 
       for (const ref of frontier) {
         // A tile may have been captured already if a player relinquished it; skip
         // anything no longer owned by the target.
         if (this.grid.ownerOf(ref) !== attack.target) continue;
         const cost = this.captureCost(ref, attack.target);
-        if (attack.committed < cost || spent + cost > budget) continue;
+        if (attack.committed < cost) continue;
+        // The first affordable tile (highest priority) is always taken so a front
+        // never deadlocks on ground that costs more than one tick's budget; later
+        // tiles this tick must fit the remaining budget, keeping advance gradual.
+        if (spent > 0 && spent + cost > budget) continue;
 
         if (attack.target !== NEUTRAL_PLAYER) {
-          // Fortress Wall also blunts the defender's troop bleed per tile lost.
-          this.grid.addTroops(attack.target, -DEFENDER_LOSS_PER_TILE / this.grid.modifiersOf(attack.target).defense);
+          this.grid.addTroops(attack.target, -defenderLoss);
         }
         this.grid.claim(ref, attack.attacker);
         attack.committed -= cost;
         spent += cost;
       }
 
-      // End the attack (refunding leftovers) once it can no longer afford even
-      // the cheapest neutral tile; otherwise carry it to the next tick.
-      if (attack.committed < NEUTRAL_CAPTURE_COST) {
+      // Decide the attack's fate. The frontier was non-empty (handled above), so
+      // `spent === 0` means nothing on it was affordable — the front is blocked by
+      // terrain/defence cost, a retreat that taxes player refunds (and can't
+      // stall, since otherwise it would carry the same troops forever). Capturing
+      // something then winding down below the cheapest tile is a natural finish,
+      // whose sub-1 remainder is returned whole.
+      if (spent === 0) {
+        this.refundRetreat(attack.attacker, attack.committed, attack.target);
+      } else if (attack.committed < NEUTRAL_CAPTURE_COST) {
         this.grid.addTroops(attack.attacker, attack.committed);
       } else {
         survivors.push(attack);
