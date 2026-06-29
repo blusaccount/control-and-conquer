@@ -546,6 +546,23 @@ export class RasterConflict {
   private advanceAttacks(): void {
     const survivors: RasterAttack[] = [];
 
+    // Per-defender garrison resistance for this tick. A defender's pool resists
+    // the *combined* assault against it, not each front independently: sum every
+    // front's committed force per target, then snapshot one strength factor per
+    // defender from that total. So a nation attacked on several borders can't
+    // defend each at full strength — every extra front dilutes the factor (more
+    // committed force in the denominator) — and the value is stable for the whole
+    // tick regardless of the order fronts are processed in.
+    const committedAgainst = new Map<PlayerId, number>();
+    for (const a of this.attacks) {
+      if (a.target === NEUTRAL_PLAYER) continue;
+      committedAgainst.set(a.target, (committedAgainst.get(a.target) ?? 0) + a.committed);
+    }
+    const strengthByDefender = new Map<PlayerId, number>();
+    for (const [target, committed] of committedAgainst) {
+      strengthByDefender.set(target, defenderStrengthFactor(this.grid.troopsOf(target), committed));
+    }
+
     for (const attack of this.attacks) {
       const frontier = this.orderedFrontier(attack.attacker, attack.target);
 
@@ -570,13 +587,12 @@ export class RasterConflict {
       // Snapshot the defender's per-tile bleed once for the tick: capturing many
       // tiles this advance shouldn't compound the density loss mid-front.
       const defenderLoss = attack.target !== NEUTRAL_PLAYER ? this.defenderLossFor(attack.target) : 0;
-      // Snapshot the defender-strength multiplier once for the tick too, from the
-      // garrison's pool against this front's committed force. A strongly-held
-      // nation makes every tile dearer, so an under-committed assault stalls —
-      // this is what lets a defender repel an attack by holding troops.
-      const strengthFactor = attack.target !== NEUTRAL_PLAYER
-        ? defenderStrengthFactor(this.grid.troopsOf(attack.target), attack.committed)
-        : 1;
+      // The defender-strength multiplier for this front, snapshotted above from
+      // the garrison's pool against the *combined* committed force pressing this
+      // defender. A strongly-held nation makes every tile dearer, so an
+      // under-committed assault stalls — this is what lets a defender repel an
+      // attack by holding troops — while attacking on multiple fronts dilutes it.
+      const strengthFactor = strengthByDefender.get(attack.target) ?? 1;
 
       for (const ref of frontier) {
         // A tile may have been captured already if a player relinquished it; skip

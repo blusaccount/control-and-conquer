@@ -162,6 +162,42 @@ test("a strong garrison repels the very assault a weak one cannot", () => {
   assert.equal(strong.conflict.activeAttackCount, 0, "the repelled assault ends");
 });
 
+test("a garrison can't hold every front at full strength: a second front dilutes its defence", () => {
+  // 5x1 line: player 1 (tile 0) and player 2 (tile 4) flank defender player 3,
+  // who holds tiles 1-3 with a pool of 14. Each attacker commits the same small
+  // force of 6. One front alone is repelled; both together overwhelm the garrison,
+  // because the defender's strength is split across the combined assault.
+  const build = () => {
+    const grid = new TerritoryGrid(flatLand(5, 1));
+    grid.addPlayer(1, 6);
+    grid.addPlayer(2, 6);
+    grid.addPlayer(3, 14);
+    grid.claim(0, 1);
+    grid.claim(1, 3);
+    grid.claim(2, 3);
+    grid.claim(3, 3);
+    grid.claim(4, 2);
+    return { grid, conflict: new RasterConflict(grid) };
+  };
+
+  // One front: 6 troops can't afford a tile against the full 14-troop garrison.
+  const solo = build();
+  assert.equal(solo.conflict.launchAttack({ attacker: 1, target: 3, troops: 6 }), null);
+  runTicks(solo.conflict, 30);
+  assert.equal(solo.grid.tileCountOf(3), 3, "a single front is repelled by the full garrison");
+
+  // Two fronts: the same 6-troop assaults, now splitting the garrison's defence
+  // between them, break into the defender's territory.
+  const pincer = build();
+  assert.equal(pincer.conflict.launchAttack({ attacker: 1, target: 3, troops: 6 }), null);
+  assert.equal(pincer.conflict.launchAttack({ attacker: 2, target: 3, troops: 6 }), null);
+  runTicks(pincer.conflict, 30);
+  assert.ok(
+    pincer.grid.tileCountOf(3) < 3,
+    `a two-front pincer cracks the garrison, defender holds ${pincer.grid.tileCountOf(3)}`,
+  );
+});
+
 test("frontier priority captures easy low ground before high ground", () => {
   // 3x1 line: tile 0 is high ground (mag 10), the attacker sits on tile 1, tile 2
   // is flat. By raw tile order the elevated tile 0 comes first; priority ordering
