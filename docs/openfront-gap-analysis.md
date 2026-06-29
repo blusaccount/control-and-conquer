@@ -32,7 +32,8 @@
 ### Networking / Multiplayer
 - WebSocket + autoritativer Server (`ws`, `src/Server/index.ts`).
 - **Solo-Match-Isolation** via `MatchRegistry`: jeder Client bekommt eine eigene
-  `RasterGameSession` gegen einen serverseitigen Bot.
+  `RasterGameSession` gegen ein **Feld serverseitiger Bots** (Default 4, FFA;
+  konfigurierbar über `RASTER_BOTS`).
 - Diskriminierte ServerMessage-Union (`SERVER_RASTER_PLAYER_ASSIGNED`,
   `SERVER_RASTER_SNAPSHOT`, `SERVER_RASTER_ACTION_REJECTED`,
   `SERVER_RASTER_MATCH_ENDED`).
@@ -77,8 +78,9 @@
 | Spielbare Nationen / Fraktions-Fähigkeiten (Generals-Asymmetrie) | offen | P1 |
 | Roguelite-Meta-Loop (Runs, Upgrades zwischen Matches) | offen | P1 |
 | Echtes PvP (geteilte Session, Matchmaking, Player-Identity) | offen | P1 |
-| Stärkere Bot-KI (Sea-Crossing-Nutzung, Zielpriorisierung) | offen | P2 |
-| Delta-Snapshots (Owner-Raster nur als Diff senden) | erledigt | P2 |
+| Stärkere Bot-KI (Sea-Crossing-Nutzung, Zielpriorisierung) | **erledigt** — strategiebasierte Multi-Bot-KI mit Persönlichkeiten, amphibischer Expansion & Gegner-Priorisierung (`RasterBotController`) | — |
+| Schwierigkeits-/Persönlichkeits-Presets als wählbare Lobby-Option | offen | P2 |
+| Delta-Snapshots (Owner-Raster nur als Diff senden) | **erledigt** — initialer Full-Snapshot + inkrementelle Owner-Deltas bei niedriger Churn (`encodeOwnerDelta`) | — |
 | Reconnect/Resync-Protokoll | offen | P2 |
 | Persistenz für Match-Resultate / Progression | offen | P2 |
 | Lobby-/Menü-UI über „Play vs Bot" hinaus | offen | P3 |
@@ -114,5 +116,5 @@
 
 ## 6) Nächste konkret kleine Schritte
 1. Fraktions-Datenmodell (Nation → Modifikatoren auf Income/Capture-Kosten).
-2. Sea-Crossing-Nutzung in der Bot-KI (heute nur Land-Frontier).
-3. Geteilte PvP-Session als zweiter `MatchRegistry`-Modus neben Solo.
+2. Geteilte PvP-Session als zweiter `MatchRegistry`-Modus neben Solo.
+3. Bot-Persönlichkeit/Anzahl als wählbare Lobby-Option (heute nur via `RASTER_BOTS`).

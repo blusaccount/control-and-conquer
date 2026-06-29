@@ -4,7 +4,7 @@ import { extname, join, normalize } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { MatchRegistry } from "./MatchRegistry.js";
+import { MatchRegistry, DEFAULT_RASTER_BOT_COUNT, MAX_RASTER_BOTS } from "./MatchRegistry.js";
 import { validateCommand } from "./validateCommand.js";
 import { DEFAULT_REAL_MAP_ID, getRealMap } from "../Core/realMaps.js";
 import { buildHeightmapGameMap, getHeightmapMap, HEIGHTMAP_MAP_IDS } from "./heightmapMaps.js";
@@ -41,6 +41,12 @@ if (activeHeightmap) {
   const built = buildHeightmapGameMap(activeHeightmap, rasterMapSize || undefined);
   console.log(`Pre-built heightmap map "${activeMapId}" at ${built.width}x${built.height} (${built.size} tiles).`);
 }
+// Number of AI opponents seated in each solo match. Defaults to a small FFA;
+// clamp to the seats a session can fill and fall back on a bad value.
+const requestedBots = Number(process.env.RASTER_BOTS ?? DEFAULT_RASTER_BOT_COUNT);
+const botCount = Number.isFinite(requestedBots)
+  ? Math.max(0, Math.min(Math.floor(requestedBots), MAX_RASTER_BOTS))
+  : DEFAULT_RASTER_BOT_COUNT;
 
 const registry = new MatchRegistry();
 let clientSequence = 0;
@@ -108,7 +114,7 @@ wss.on("connection", (socket) => {
   const unsubscribe = registry.joinRasterSolo(clientId, send, {
     realMapId: activeMapId,
     mapSize: rasterMapSize,
-  });
+  }, botCount);
 
   socket.on("message", (data) => {
     let parsed: unknown;
@@ -139,6 +145,7 @@ server.listen(port, () => {
   console.log(`Control & Conquer listening on http://localhost:${port}`);
   const sizeNote = getHeightmapMap(activeMapId) && rasterMapSize ? ` (size ${rasterMapSize})` : "";
   console.log(`Active map: "${activeMapId}"${sizeNote}. Heightmap maps: ${HEIGHTMAP_MAP_IDS.join(", ")}.`);
+  console.log(`Seating ${botCount} AI opponent(s) per solo match.`);
   console.log(`Simulation loop running at ${SIMULATION_TICK_RATE} TPS.`);
 });
 

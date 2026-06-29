@@ -18,7 +18,8 @@ npm install
 npm run dev      # tsx watch — serves http://localhost:3000
 ```
 
-Then open <http://localhost:3000> and click **Play vs Bot**.
+Then open <http://localhost:3000> and click **Play vs Bot** to drop into a
+free-for-all against a field of AI opponents.
 
 Select the active map with the `RASTER_MAP` env var. Two kinds of maps exist:
 
@@ -42,6 +43,13 @@ heightmap source with the build tool:
 ```bash
 tsx scripts/buildMap.ts --in <source-heightmap.png> --out earth-topo.png --max-width 2048
 ```
+
+Set the number of AI opponents with `RASTER_BOTS` (default 4, max 5), e.g.
+`RASTER_BOTS=5 npm run dev`. Each bot is seated with a distinct personality
+(land-grabber, warmonger, all-rounder, opportunist, turtle) and plays a
+strategic game: it races for cheap neutral land to compound its income, strikes
+the weakest rival it can beat, and uses amphibious crossings to attack across
+narrow seas.
 
 ## Scripts
 
@@ -88,7 +96,7 @@ OpenFront gap analysis / roadmap.
 
 ## Status
 
-Early prototype. Solo-vs-bot only; state is in-memory; the faction/nation and
+Early prototype. Solo-vs-bots only (no human-vs-human yet); state is in-memory; the faction/nation and
 roguelite layers are designed but not yet implemented. See
 [`docs/openfront-gap-analysis.md`](docs/openfront-gap-analysis.md) for the
 prioritized roadmap.
