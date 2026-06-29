@@ -386,14 +386,32 @@ export class RasterGameSession {
   }
 
   /**
-   * Seat an as-yet-unspawned player at the tile they clicked, if it is open land.
-   * The first map click of a human's run is a spawn pick (OpenFront's "choose a
-   * start position"); ignored once they already hold territory.
+   * Move an already-seated player's founding tile to `ref`, releasing whatever
+   * (single) tile they currently hold. Only meaningful during the start phase,
+   * where a player owns nothing but their freshly picked spawn — it lets them
+   * relocate their nation freely before the countdown elapses.
+   */
+  private moveSpawn(playerId: PlayerId, ref: TileRef): void {
+    for (const old of this.grid.tilesOf(playerId)) this.grid.claim(old, NEUTRAL_PLAYER);
+    this.grid.claim(ref, playerId);
+    this.peakTiles.set(playerId, this.grid.tileCountOf(playerId));
+  }
+
+  /**
+   * Seat a player at the tile they clicked, if it is open land. The map clicks
+   * of a human's run during the start phase are spawn picks (OpenFront's "choose
+   * a start position"): the first founds their nation and each later one
+   * relocates it, so a player can flexibly move their spawn until the countdown
+   * ends. Once the game is live and they hold ground, spawn picks are ignored.
    */
   public selectSpawn(clientId: string, x: number, y: number): void {
     const subscriber = this.subscribers.get(clientId);
     if (!subscriber || this.matchEndedBroadcast) return;
-    if (this.grid.hasPlayer(subscriber.playerId)) return; // already spawned
+    const playerId = subscriber.playerId;
+    const alreadySpawned = this.grid.hasPlayer(playerId);
+    // Re-picking is only allowed while the start phase runs; once territory is
+    // live a player keeps the ground they hold.
+    if (alreadySpawned && this.phase !== "spawn") return;
 
     const reject = (message: string): void =>
       subscriber.send({
@@ -410,11 +428,14 @@ export class RasterGameSession {
       return;
     }
     const ref = this.map.ref(x, y);
+    // Clicking your own current spawn is a harmless no-op rather than a rejection.
+    if (alreadySpawned && this.grid.ownerOf(ref) === playerId) return;
     if (!this.grid.isCapturable(ref) || this.grid.ownerOf(ref) !== NEUTRAL_PLAYER) {
       reject("Choose open, unclaimed land for your start position.");
       return;
     }
-    this.seatPlayer(subscriber.playerId, ref);
+    if (alreadySpawned) this.moveSpawn(playerId, ref);
+    else this.seatPlayer(playerId, ref);
     // Push the seated state straight away so the client can zoom to the spawn
     // without waiting for the next tick.
     this.sendSnapshotTo(subscriber);
