@@ -73,6 +73,38 @@ test("claim throws on non-capturable terrain", () => {
   assert.throws(() => grid.claim(1, 1));
 });
 
+test("nearestCapturable snaps an off-target click to the land it meant", () => {
+  // 5x1: land | water | water | rock | land. Tiles 1,2 (water) and 3 (rock) are
+  // un-ownable; tiles 0 and 4 are capturable land.
+  const terrain = new Uint8Array(5);
+  terrain[0] = encodeTile({ land: true, shoreline: true, ocean: false, magnitude: 0 });
+  terrain[1] = WATER;
+  terrain[2] = WATER;
+  terrain[3] = ROCK;
+  terrain[4] = encodeTile({ land: true, shoreline: true, ocean: false, magnitude: 0 });
+  const grid = new TerritoryGrid(new GameMap(5, 1, terrain));
+
+  // A capturable click is returned unchanged.
+  assert.equal(grid.nearestCapturable(0), 0);
+  assert.equal(grid.nearestCapturable(4), 4);
+  // Water/rock clicks snap to the nearest land within radius.
+  assert.equal(grid.nearestCapturable(1), 0, "water by the left shore snaps left");
+  assert.equal(grid.nearestCapturable(3), 4, "rock by the right shore snaps right");
+  // A tie (tile 2 is equidistant from both shores) breaks to the lower TileRef.
+  assert.equal(grid.nearestCapturable(2), 0);
+});
+
+test("nearestCapturable returns null when no land is within range", () => {
+  // A lone land tile surrounded by a wide ocean: a click far out at sea finds
+  // nothing inside the snap radius.
+  const width = 12;
+  const terrain = new Uint8Array(width).fill(WATER);
+  terrain[0] = encodeTile({ land: true, shoreline: true, ocean: false, magnitude: 0 });
+  const grid = new TerritoryGrid(new GameMap(width, 1, terrain));
+  assert.equal(grid.nearestCapturable(grid.map.ref(11, 0)), null, "deep ocean snaps to nothing");
+  assert.equal(grid.nearestCapturable(grid.map.ref(2, 0)), 0, "near the coast still snaps");
+});
+
 test("frontierOf / hasFrontier find capturable target tiles adjacent to the attacker", () => {
   // 3x1 land: player 1 owns tile 0, tiles 1 and 2 are neutral.
   const grid = new TerritoryGrid(flatLand(3, 1));
