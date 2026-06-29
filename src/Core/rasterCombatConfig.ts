@@ -248,6 +248,21 @@ export const FRONTIER_PRIORITY_FLOOR = 0.05;
 export const FRONTIER_JITTER_SPAN = 0.15;
 
 /**
+ * Directional pull toward the tile a player actually clicked. When an attack
+ * carries a `toward` target, each frontier tile's priority is nudged up by its
+ * normalised distance (0 at the frontier tile nearest the click, 1 at the
+ * farthest) times this weight, so the limited per-tick budget is spent on the
+ * side of the front facing the click — the blob *bulges* toward where you
+ * pointed instead of advancing evenly on all sides (OpenFront's directed
+ * attack). Deliberately kept **below** {@link FRONTIER_SURROUND_WEIGHT}: one
+ * extra owned neighbour (a pocket) lowers priority by 0.6, more than this term
+ * can ever add, so back-filling concavities still dominates and the front stays
+ * a smooth bulge rather than snaking a tendril straight at the target. `0`
+ * disables the bias entirely (pure radial growth, the old behaviour).
+ */
+export const FRONTIER_TOWARD_WEIGHT = 0.5;
+
+/**
  * Fraction of an attack's remaining committed troops that may be spent in a
  * single tick. Spreading the spend over multiple ticks is what makes the front
  * advance gradually (ring by ring) instead of teleporting across the map.

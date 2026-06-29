@@ -64,6 +64,34 @@ test("launchAttack rejects invalid intents without mutating state", () => {
   assert.equal(grid.troopsOf(1), 5);
 });
 
+test("a directed attack advances toward the clicked tile, not radially", () => {
+  // A 1-row strip: player 1 seeds the middle (tile 10) with neutral land on both
+  // sides. With a small commit only one tile is affordable per tick, so a purely
+  // radial front would have to pick a side — but a `toward` target makes it pick
+  // the side facing the click every time.
+  const make = (toward: number): TerritoryGrid => {
+    const grid = new TerritoryGrid(flatLand(21, 1));
+    grid.addPlayer(1, 12);
+    grid.claim(10, 1);
+    const conflict = new RasterConflict(grid);
+    conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 8, toward });
+    runTicks(conflict, 4);
+    return grid;
+  };
+
+  const right = make(20);
+  assert.ok(right.tileCountOf(1) >= 4, "the front advanced several tiles");
+  for (let r = 0; r < 10; r += 1) {
+    assert.equal(right.ownerOf(r), NEUTRAL_PLAYER, `tile ${r} (away from the click) stays neutral`);
+  }
+
+  // Pointing the other way mirrors the result: the right side is left untouched.
+  const left = make(0);
+  for (let r = 11; r < 21; r += 1) {
+    assert.equal(left.ownerOf(r), NEUTRAL_PLAYER, `tile ${r} (away from the click) stays neutral`);
+  }
+});
+
 test("neutral expansion claims a line of tiles ring by ring until troops run out", () => {
   const grid = new TerritoryGrid(flatLand(5, 1));
   grid.addPlayer(1, 4);

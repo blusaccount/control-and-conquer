@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { RasterGameSession } from "../src/Server/RasterGameSession.js";
 import { MAX_SEA_CROSSING_TILES } from "../src/Core/rasterCombatConfig.js";
+import { NEUTRAL_PLAYER } from "../src/Core/TerritoryGrid.js";
 import type { RasterServerMessage, RasterSnapshot } from "../src/Core/types.js";
 
 const collect = (session: RasterGameSession, clientId: string): RasterServerMessage[] => {
@@ -152,6 +153,53 @@ test("clicking a sea-only target dispatches a transport ship that lands", () => 
   const ref = session.peekMap().ref(target.x, target.y);
   assert.equal(grid.ownerOf(ref), 1, "the ship captured its beachhead");
   assert.equal(lastSnapshot(messages).ships.filter((s) => s.playerId === 1).length, 0, "the ship is gone once it has landed");
+});
+
+test("clicking an unbordered rival on the same landmass heads there instead of rejecting", () => {
+  const session = new RasterGameSession({ width: 48, height: 32, seed: 5 });
+  const messages = collect(session, "human"); // player 1, auto-spawned
+  const grid = session.peekGrid();
+  const map = session.peekMap();
+
+  // Give player 1 an interior foothold so it borders neutral land all around.
+  let interior = -1;
+  for (let ref = 0; ref < map.size && interior < 0; ref += 1) {
+    if (!grid.isCapturable(ref) || grid.ownerOf(ref) !== NEUTRAL_PLAYER) continue;
+    const ns = map.neighbors(ref);
+    if (ns.length === 4 && ns.every((n) => grid.isCapturable(n) && grid.ownerOf(n) === NEUTRAL_PLAYER)) {
+      interior = ref;
+    }
+  }
+  assert.ok(interior >= 0, "found an interior neutral tile to stand on");
+  grid.claim(interior, 1);
+  const comp = grid.landComponentId(interior);
+
+  // Seat a rival far away on the *same* landmass — reachable by land, but not yet
+  // bordered by player 1 (neutral ground lies between them).
+  grid.addPlayer(2, 50);
+  let rival = -1;
+  for (let ref = map.size - 1; ref >= 0 && rival < 0; ref -= 1) {
+    if (!grid.isCapturable(ref) || grid.ownerOf(ref) !== NEUTRAL_PLAYER) continue;
+    if (grid.landComponentId(ref) !== comp) continue;
+    if (map.neighbors(ref).some((n) => grid.ownerOf(n) === 1)) continue; // must not be adjacent
+    rival = ref;
+  }
+  assert.ok(rival >= 0, "found a far same-landmass tile for the rival");
+  grid.claim(rival, 2);
+
+  assert.ok(grid.ownsLandComponentOf(1, rival), "the rival sits on player 1's landmass");
+  assert.equal(grid.hasLandBorderWith(1, 2), false, "player 1 does not yet border the rival");
+
+  const before = grid.tileCountOf(1);
+  session.queueExpand("human", { targetX: map.x(rival), targetY: map.y(rival), percent: 80 });
+  session.tick();
+
+  assert.equal(
+    messages.find((m) => m.type === "SERVER_RASTER_ACTION_REJECTED"),
+    undefined,
+    "the click toward the unbordered rival is not rejected",
+  );
+  assert.ok(grid.tileCountOf(1) > before, "player 1 marched toward the rival through neutral land");
 });
 
 test("a fourth simultaneous ship is rejected with TOO_MANY_SHIPS", () => {

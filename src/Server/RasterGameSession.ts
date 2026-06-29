@@ -819,15 +819,24 @@ export class RasterGameSession {
     // A different landmass (across open water) → dispatch a transport ship to the
     // exact clicked tile instead.
     if (this.grid.ownsLandComponentOf(attacker, ref)) {
+      // We already border the clicked owner (neutral or a rival): push straight
+      // into them, biased toward the exact tile clicked.
       if (this.grid.hasLandBorderWith(attacker, target)) {
-        return { kind: "land", intent: { attacker, target, troops } };
+        return { kind: "land", intent: { attacker, target, troops, toward: ref } };
+      }
+      // Same landmass but not yet bordering that rival. Rather than a dead
+      // rejection, march toward the click through whatever neutral ground we do
+      // border — the front heads that way and rolls into the rival once adjacent,
+      // instead of the player having to hand-walk their border over there first.
+      if (target !== NEUTRAL_PLAYER && this.grid.hasLandBorderWith(attacker, NEUTRAL_PLAYER)) {
+        return { kind: "land", intent: { attacker, target: NEUTRAL_PLAYER, troops, toward: ref } };
       }
       return {
         kind: "rejected",
         reason: "NO_FRONTIER",
         message: target === NEUTRAL_PLAYER
           ? "Your border doesn't touch any neutral land there yet."
-          : "Your border doesn't touch that opponent yet.",
+          : "There's no land route toward that opponent yet.",
       };
     }
     // The click is on a different landmass. Rather than demanding the player hit
