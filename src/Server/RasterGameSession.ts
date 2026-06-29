@@ -145,6 +145,13 @@ export class RasterGameSession {
   private readonly kills = new Map<PlayerId, number>();
   /** Tick at which a player was eliminated, for their survival-time stat. */
   private readonly eliminationTick = new Map<PlayerId, number>();
+  /**
+   * Players already sent their personal end-of-run summary — either when their
+   * capital fell (a defeat screen the instant they die) or at the overall match
+   * end. Guards against sending a second summary at match end to someone who was
+   * already eliminated mid-match.
+   */
+  private readonly endedSent = new Set<PlayerId>();
 
   public constructor(options: RasterGameSessionOptions = {}) {
     const opts = { ...DEFAULT_OPTIONS, ...options };
@@ -369,7 +376,7 @@ export class RasterGameSession {
 
     // A capital captured this tick eliminates its owner: the rest of their
     // empire collapses to neutral and an elimination event is broadcast.
-    const eliminationLines = this.resolveCapitalCaptures();
+    const { lines: eliminationLines, eliminated: justEliminated } = this.resolveCapitalCaptures();
     if (eliminationLines.length > 0) {
       this.recentEvents = [...eliminationLines, ...this.recentEvents].slice(0, MAX_EVENTS);
     }
@@ -383,6 +390,28 @@ export class RasterGameSession {
 
     for (const subscriber of this.subscribers.values()) {
       this.sendSnapshotTo(subscriber);
+    }
+
+    // Give every player eliminated this tick their own end-of-run summary now —
+    // a defeat screen the instant their capital falls, rather than leaving them
+    // staring at dead controls until the whole match resolves. Sent after the
+    // snapshot so the client first paints their collapse to neutral.
+    if (justEliminated.length > 0) {
+      const endTick = this.conflict.tick;
+      for (const subscriber of this.subscribers.values()) {
+        if (!justEliminated.includes(subscriber.playerId) || this.endedSent.has(subscriber.playerId)) continue;
+        this.endedSent.add(subscriber.playerId);
+        subscriber.send({
+          type: "SERVER_RASTER_MATCH_ENDED",
+          payload: {
+            winnerPlayerId: null,
+            reason: "conquest",
+            durationTicks: endTick,
+            tickRate: SIMULATION_TICK_RATE,
+            stats: this.buildRunStats(subscriber.playerId, endTick, null),
+          },
+        });
+      }
     }
 
     // End the match on conquest (a player owns everything) or when the clock
@@ -403,6 +432,9 @@ export class RasterGameSession {
       this.recentEvents = [endLine, ...this.recentEvents].slice(0, MAX_EVENTS);
 
       for (const subscriber of this.subscribers.values()) {
+        // Players eliminated mid-match already got their summary; don't send a second.
+        if (this.endedSent.has(subscriber.playerId)) continue;
+        this.endedSent.add(subscriber.playerId);
         subscriber.send({
           type: "SERVER_RASTER_MATCH_ENDED",
           payload: {
@@ -473,16 +505,19 @@ export class RasterGameSession {
    * holds is turned neutral (the conqueror keeps only the capital tile they
    * actually took), so the map reopens as contestable land rather than handing a
    * whole empire to one attacker. Returns the elimination event lines (newest
-   * first) for the event feed. Pure bookkeeping otherwise — no broadcast here.
+   * first) for the event feed, plus the ids eliminated this call. Pure
+   * bookkeeping otherwise — no broadcast here.
    */
-  private resolveCapitalCaptures(): string[] {
+  private resolveCapitalCaptures(): { lines: string[]; eliminated: PlayerId[] } {
     const lines: string[] = [];
+    const eliminated: PlayerId[] = [];
     for (const [playerId, capitalRef] of this.capitals) {
       if (this.eliminated.has(playerId)) continue;
       const conqueror = this.grid.ownerOf(capitalRef);
       if (conqueror === playerId) continue; // Capital still held.
 
       this.eliminated.add(playerId);
+      eliminated.push(playerId);
       this.eliminationTick.set(playerId, this.conflict.tick);
       // The fallen capital is no longer a fortified seat — drop its defense aura.
       this.grid.removeDefensePost(capitalRef);
@@ -502,7 +537,7 @@ export class RasterGameSession {
         : this.playerMeta.get(conqueror)?.name ?? `Player ${conqueror}`;
       lines.unshift(`${conquerorName} captured ${fallenName}'s capital — ${fallenName} is eliminated!`);
     }
-    return lines;
+    return { lines, eliminated };
   }
 
   /**
