@@ -1,12 +1,48 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { RasterGameSession } from "../src/Server/RasterGameSession.js";
-import type { RasterServerMessage } from "../src/Core/types.js";
+import type { RasterServerMessage, RasterSnapshot } from "../src/Core/types.js";
 
 const collect = (session: RasterGameSession, clientId: string): RasterServerMessage[] => {
   const messages: RasterServerMessage[] = [];
   session.subscribe(clientId, (m) => messages.push(m));
   return messages;
+};
+
+const lastSnapshot = (messages: RasterServerMessage[]): RasterSnapshot => {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const m = messages[i];
+    if (m.type === "SERVER_RASTER_SNAPSHOT") return m.payload;
+  }
+  throw new Error("no snapshot seen");
+};
+
+/**
+ * Stage a sea assault for player 1 on a hand-authored map: find a sea-link pair
+ * spanning two landmasses, give player 1 a coastal foothold on the near one, and
+ * return the far tile to click. Procedural continents almost never place a small
+ * island within ship range of a spawn, so we construct the situation explicitly.
+ */
+const stageSeaTarget = (session: RasterGameSession): { x: number; y: number } => {
+  const grid = session.peekGrid();
+  const map = session.peekMap();
+  const spawnComp = (() => {
+    for (let ref = 0; ref < map.size; ref += 1) if (grid.ownerOf(ref) === 1) return grid.landComponentId(ref);
+    return -1;
+  })();
+  for (let a = 0; a < map.size; a += 1) {
+    const compA = grid.landComponentId(a);
+    if (compA < 0) continue;
+    for (const b of grid.seaLinks.neighborsOf(a)) {
+      const compB = grid.landComponentId(b);
+      // b must be a different landmass from both the foothold and the spawn, so
+      // the only way to reach it is by ship.
+      if (compB === compA || compB === spawnComp || grid.ownerOf(b) !== 0) continue;
+      grid.claim(a, 1); // player 1 gains a coast on landmass A
+      return { x: map.x(b), y: map.y(b) };
+    }
+  }
+  throw new Error("no cross-landmass sea link on this map");
 };
 
 test("first subscriber gets PLAYER_ASSIGNED and an initial snapshot with terrain", () => {
@@ -83,6 +119,55 @@ test("ticks broadcast a snapshot every tick", () => {
   session.tick();
   const after = messages.filter((m) => m.type === "SERVER_RASTER_SNAPSHOT").length;
   assert.equal(after - before, 3);
+});
+
+test("snapshots carry a ships array (empty when none are at sea)", () => {
+  const session = new RasterGameSession({ width: 32, height: 24, seed: 3 });
+  const messages = collect(session, "human");
+  const snap = lastSnapshot(messages);
+  assert.ok(Array.isArray(snap.ships), "every snapshot must carry a ships array");
+  assert.equal(snap.ships.length, 0, "no ships are at sea before any are launched");
+});
+
+test("clicking a sea-only target dispatches a transport ship that lands", () => {
+  const session = new RasterGameSession({ realMapId: "mediterranean", startingTroops: 200 });
+  const messages = collect(session, "human");
+  const target = stageSeaTarget(session);
+
+  session.queueExpand("human", { targetX: target.x, targetY: target.y, percent: 100 });
+  session.tick();
+
+  const afterLaunch = lastSnapshot(messages);
+  const myShips = afterLaunch.ships.filter((s) => s.playerId === 1);
+  assert.equal(myShips.length, 1, "one click dispatches exactly one ship");
+  assert.ok(afterLaunch.recentEvents.some((e) => e.includes("transport ship")), "the launch is logged");
+
+  // Let the ship sail and disembark; it should capture its target tile.
+  for (let i = 0; i < 30; i += 1) session.tick();
+  const grid = session.peekGrid();
+  const ref = session.peekMap().ref(target.x, target.y);
+  assert.equal(grid.ownerOf(ref), 1, "the ship captured its beachhead");
+  assert.equal(lastSnapshot(messages).ships.filter((s) => s.playerId === 1).length, 0, "the ship is gone once it has landed");
+});
+
+test("a fourth simultaneous ship is rejected with TOO_MANY_SHIPS", () => {
+  const session = new RasterGameSession({ realMapId: "mediterranean", startingTroops: 200 });
+  const messages = collect(session, "human");
+  const target = stageSeaTarget(session);
+
+  // Four clicks on the same tick: only three ships may put to sea.
+  for (let i = 0; i < 4; i += 1) {
+    session.queueExpand("human", { targetX: target.x, targetY: target.y, percent: 10 });
+  }
+  session.tick();
+
+  const rejections = messages.filter(
+    (m): m is Extract<RasterServerMessage, { type: "SERVER_RASTER_ACTION_REJECTED" }> =>
+      m.type === "SERVER_RASTER_ACTION_REJECTED",
+  );
+  assert.equal(rejections.length, 1, "exactly the fourth click is rejected");
+  assert.equal(rejections[0].payload.reason, "TOO_MANY_SHIPS");
+  assert.equal(session.peekGrid() && lastSnapshot(messages).ships.filter((s) => s.playerId === 1).length, 3);
 });
 
 test("sessions with identical seed produce identical terrain bytes", () => {

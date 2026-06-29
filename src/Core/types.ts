@@ -28,9 +28,9 @@ export interface RasterPlayerInfo {
 }
 
 /**
- * An amphibious landing resolved on a tick: troops crossed water from the
- * coastal tile (`fromX`,`fromY`) to land on (`toX`,`toY`). The client uses these
- * to animate boats travelling over the water/rivers.
+ * A transport-ship landing resolved on a tick: troops disembarked from the water
+ * tile (`fromX`,`fromY`) onto (`toX`,`toY`). The client uses these to flash the
+ * moment a ship reaches shore and captures its beachhead.
  */
 export interface RasterCrossing {
   playerId: number;
@@ -38,6 +38,20 @@ export interface RasterCrossing {
   fromY: number;
   toX: number;
   toY: number;
+}
+
+/**
+ * A transport ship in flight this snapshot: a vessel carrying `troops` of
+ * `playerId` currently at tile (`x`,`y`) along its water route. Sent every
+ * snapshot while the ship sails so the client can draw it gliding the shortest
+ * path toward its target; it vanishes from the list once it lands.
+ */
+export interface RasterShip {
+  shipId: number;
+  playerId: number;
+  x: number;
+  y: number;
+  troops: number;
 }
 
 /** Snapshot of a raster-mode match. */
@@ -80,8 +94,10 @@ export interface RasterSnapshot {
   winnerPlayerId: number | null;
   /** Most recent gameplay events, newest first. */
   recentEvents: string[];
-  /** Amphibious landings resolved this tick (empty on most ticks). */
+  /** Transport-ship landings resolved this tick (empty on most ticks). */
   crossings: RasterCrossing[];
+  /** Transport ships currently in flight (empty when none are at sea). */
+  ships: RasterShip[];
 }
 
 /** Reasons the server can reject a raster expand intent. */
@@ -91,6 +107,7 @@ export type RasterRejectReason =
   | "INVALID_PERCENT"
   | "NO_FRONTIER"
   | "INSUFFICIENT_TROOPS"
+  | "TOO_MANY_SHIPS"
   | "MATCH_ENDED";
 
 /** Sent by the client to expand its border toward a clicked tile. */

@@ -5,6 +5,7 @@ import type {
   RasterCrossing,
   RasterPlayerAssignedPayload,
   RasterServerMessage,
+  RasterShip,
   RasterSnapshot,
 } from "../Core/types.js";
 import { hideMenu, setStatus, type UiElements } from "./dom.js";
@@ -15,17 +16,34 @@ import { playerColor } from "./rasterPalette.js";
  * Self-contained raster-mode client.
  *
  * Owns its own WebSocket, a persistent base-map canvas (repainted only when a
- * snapshot arrives) and a requestAnimationFrame overlay loop that animates
- * boats for every amphibious crossing the server reports, so players can see
- * troops travelling across water and rivers.
+ * snapshot arrives) and a requestAnimationFrame overlay loop that glides each
+ * transport ship the server reports along its shortest water route and flashes a
+ * landing where a ship reaches shore.
  */
-interface Boat {
-  fromX: number;
-  fromY: number;
-  toX: number;
-  toY: number;
+
+/**
+ * A transport ship being drawn. The server streams the ship's authoritative tile
+ * position every snapshot (`tx`,`ty`); the render loop eases the drawn position
+ * (`rx`,`ry`) toward it each frame so the vessel glides smoothly between ticks.
+ */
+interface ShipDot {
+  rx: number;
+  ry: number;
+  tx: number;
+  ty: number;
   color: string;
-  /** performance.now() timestamp when the crossing started animating. */
+  /** Whether `rx`/`ry` have been seeded yet (false until the first snapshot). */
+  placed: boolean;
+  /** Snapshot generation this ship was last seen in, for cleanup. */
+  seen: number;
+}
+
+/** A short-lived flash where a transport ship disembarked and took its beachhead. */
+interface Landing {
+  x: number;
+  y: number;
+  color: string;
+  /** performance.now() timestamp when the landing started animating. */
   start: number;
 }
 
@@ -50,6 +68,7 @@ interface RasterRuntime {
   myColor: string;
   pool: number;
   myTiles: number;
+  myShips: number;
   capturableTotal: number;
   recentEvents: string[];
   matchEnded: boolean;
@@ -60,12 +79,19 @@ interface RasterRuntime {
   baseImage: ImageData | null;
   /** Pan/zoom camera over the base map. */
   view: View;
-  /** In-flight boat animations. */
-  boats: Boat[];
+  /** Transport ships currently being drawn, keyed by server ship id. */
+  ships: Map<number, ShipDot>;
+  /** Monotonic counter bumped per snapshot to expire ships that have landed. */
+  shipGeneration: number;
+  /** In-flight landing flashes. */
+  landings: Landing[];
 }
 
-/** How long a single crossing animation lasts, in milliseconds. */
-const BOAT_DURATION_MS = 1100;
+/** How long a landing flash lasts, in milliseconds. */
+const LANDING_DURATION_MS = 700;
+
+/** Per-frame easing fraction the drawn ship position moves toward its target. */
+const SHIP_EASE = 0.25;
 
 /** Hard zoom-in ceiling, in screen pixels per tile. */
 const MAX_TILE_SCALE = 16;
@@ -110,6 +136,7 @@ export const startRasterClient = (ui: UiElements): void => {
     myColor: "#888",
     pool: 0,
     myTiles: 0,
+    myShips: 0,
     capturableTotal: 0,
     recentEvents: [],
     matchEnded: false,
@@ -117,7 +144,9 @@ export const startRasterClient = (ui: UiElements): void => {
     base: null,
     baseImage: null,
     view: { scale: 1, x: 0, y: 0, initialized: false },
-    boats: [],
+    ships: new Map(),
+    shipGeneration: 0,
+    landings: [],
   };
 
   const socketProtocol = window.location.protocol === "https:" ? "wss" : "ws";
@@ -163,15 +192,42 @@ export const startRasterClient = (ui: UiElements): void => {
     setStatus(ui, `Assigned as ${payload.name}.`);
   };
 
-  const spawnBoats = (crossings: RasterCrossing[]): void => {
+  // Reconcile the drawn ship set with the server's authoritative list: update or
+  // create a dot per reported ship, then drop any that vanished (they landed).
+  const updateShips = (ships: RasterShip[]): void => {
+    const generation = (runtime.shipGeneration += 1);
+    for (const s of ships) {
+      const tx = s.x + 0.5;
+      const ty = s.y + 0.5;
+      const existing = runtime.ships.get(s.shipId);
+      if (existing) {
+        existing.tx = tx;
+        existing.ty = ty;
+        existing.seen = generation;
+      } else {
+        runtime.ships.set(s.shipId, {
+          rx: tx,
+          ry: ty,
+          tx,
+          ty,
+          color: rgbaToCss(playerColor(s.playerId)),
+          placed: true,
+          seen: generation,
+        });
+      }
+    }
+    for (const [id, dot] of runtime.ships) {
+      if (dot.seen !== generation) runtime.ships.delete(id);
+    }
+  };
+
+  const spawnLandings = (crossings: RasterCrossing[]): void => {
     if (crossings.length === 0) return;
     const now = performance.now();
     for (const c of crossings) {
-      runtime.boats.push({
-        fromX: c.fromX,
-        fromY: c.fromY,
-        toX: c.toX,
-        toY: c.toY,
+      runtime.landings.push({
+        x: c.toX,
+        y: c.toY,
         color: rgbaToCss(playerColor(c.playerId)),
         start: now,
       });
@@ -207,7 +263,10 @@ export const startRasterClient = (ui: UiElements): void => {
     runtime.pool = me?.troops ?? 0;
     runtime.myTiles = me?.tiles ?? 0;
 
-    spawnBoats(snapshot.crossings ?? []);
+    const ships = snapshot.ships ?? [];
+    runtime.myShips = ships.reduce((n, s) => (s.playerId === runtime.myPlayerId ? n + 1 : n), 0);
+    updateShips(ships);
+    spawnLandings(snapshot.crossings ?? []);
     renderSidebar();
   };
 
@@ -290,7 +349,7 @@ export const startRasterClient = (ui: UiElements): void => {
     y: (ty - runtime.view.y) * runtime.view.scale,
   });
 
-  /** Composite the base map plus animated boats onto the visible canvas. */
+  /** Composite the base map plus transport ships and landings onto the canvas. */
   const renderFrame = (now: number): void => {
     const map = runtime.map;
     const base = runtime.base;
@@ -304,55 +363,60 @@ export const startRasterClient = (ui: UiElements): void => {
     ctx.clearRect(0, 0, cw, ch);
     if (map && base) {
       // Draw the base raster under the camera transform (nearest-neighbour), then
-      // overlay boats in screen space so their markers keep a constant size.
+      // overlay ships in screen space so their markers keep a constant size.
       ctx.setTransform(scale, 0, 0, scale, -x * scale, -y * scale);
       ctx.drawImage(base, 0, 0);
       ctx.setTransform(1, 0, 0, 1, 0, 0);
-      drawBoats(now, ctx, scale);
+      drawShips(ctx, scale);
+      drawLandings(now, ctx, scale);
     }
     requestAnimationFrame(renderFrame);
   };
 
-  const drawBoats = (now: number, ctx: CanvasRenderingContext2D, scale: number): void => {
-    if (runtime.boats.length === 0) return;
-    const survivors: Boat[] = [];
-    for (const boat of runtime.boats) {
-      const t = (now - boat.start) / BOAT_DURATION_MS;
-      if (t >= 1) continue; // animation finished
-      survivors.push(boat);
+  // Ease each ship's drawn position toward its latest server position, then draw
+  // it as a haloed dot. Smoothing between snapshots is what makes a ship appear
+  // to glide continuously along the shortest water route it was assigned.
+  const drawShips = (ctx: CanvasRenderingContext2D, scale: number): void => {
+    if (runtime.ships.size === 0) return;
+    const radius = Math.max(2.5, scale * 0.45);
+    for (const ship of runtime.ships.values()) {
+      ship.rx += (ship.tx - ship.rx) * SHIP_EASE;
+      ship.ry += (ship.ty - ship.ry) * SHIP_EASE;
+      const p = worldToScreen(ship.rx, ship.ry);
 
-      const from = worldToScreen(boat.fromX + 0.5, boat.fromY + 0.5);
-      const to = worldToScreen(boat.toX + 0.5, boat.toY + 0.5);
-      const cx = from.x + (to.x - from.x) * t;
-      const cy = from.y + (to.y - from.y) * t;
-
-      // Wake: a fading dashed line from the launch coast up to the boat.
-      ctx.save();
-      ctx.globalAlpha = 0.5 * (1 - t);
-      ctx.strokeStyle = boat.color;
-      ctx.lineWidth = Math.max(1, scale * 0.25);
-      ctx.setLineDash([Math.max(2, scale * 0.5), Math.max(2, scale * 0.5)]);
-      ctx.beginPath();
-      ctx.moveTo(from.x, from.y);
-      ctx.lineTo(cx, cy);
-      ctx.stroke();
-      ctx.restore();
-
-      // Boat marker: a small filled dot in the player's colour with a halo so
-      // it stays visible over both shallow and deep water.
-      const radius = Math.max(2.5, scale * 0.45);
       ctx.save();
       ctx.beginPath();
-      ctx.arc(cx, cy, radius + 1.5, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, radius + 1.5, 0, Math.PI * 2);
       ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
       ctx.fill();
       ctx.beginPath();
-      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-      ctx.fillStyle = boat.color;
+      ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+      ctx.fillStyle = ship.color;
       ctx.fill();
       ctx.restore();
     }
-    runtime.boats = survivors;
+  };
+
+  // Draw an expanding, fading ring at each landing point for a brief moment.
+  const drawLandings = (now: number, ctx: CanvasRenderingContext2D, scale: number): void => {
+    if (runtime.landings.length === 0) return;
+    const survivors: Landing[] = [];
+    for (const landing of runtime.landings) {
+      const t = (now - landing.start) / LANDING_DURATION_MS;
+      if (t >= 1) continue;
+      survivors.push(landing);
+
+      const c = worldToScreen(landing.x + 0.5, landing.y + 0.5);
+      ctx.save();
+      ctx.globalAlpha = 1 - t;
+      ctx.strokeStyle = landing.color;
+      ctx.lineWidth = Math.max(1.5, scale * 0.3);
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, Math.max(3, scale * (0.4 + t * 0.9)), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+    runtime.landings = survivors;
   };
 
   const renderSidebar = (): void => {
@@ -362,7 +426,9 @@ export const startRasterClient = (ui: UiElements): void => {
     ui.selectionInfo.innerHTML =
       `<strong>Troop pool:</strong> ${runtime.pool}<br/>` +
       `<strong>Tiles:</strong> ${runtime.myTiles} / ${runtime.capturableTotal} (${pct}%)<br/>` +
-      `<em>Click to expand toward a tile (you can land across narrow seas and rivers). Drag to pan, scroll to zoom.</em>`;
+      `<strong>Ships at sea:</strong> ${runtime.myShips} / 3<br/>` +
+      `<em>Click adjacent land to expand. Click across water to send a transport ship ` +
+      `(one per click, max 3 at sea) along the shortest route. Drag to pan, scroll to zoom.</em>`;
 
     ui.eventsPanel.innerHTML = runtime.recentEvents
       .map((ev) => `<div class="event">${escapeHtml(ev)}</div>`)
