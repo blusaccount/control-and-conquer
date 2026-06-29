@@ -12,6 +12,19 @@ test("joinRasterSolo starts immediately and assigns a player", () => {
   assert.equal(messages.some((m) => m.type === "SERVER_RASTER_SNAPSHOT"), true);
 });
 
+test("joinRasterSolo opens the match in a start phase so the player can pick a spawn", () => {
+  const registry = new MatchRegistry();
+  const messages: RasterServerMessage[] = [];
+  registry.joinRasterSolo("human", (m) => messages.push(m), { width: 24, height: 16, seed: 1 });
+
+  const snap = messages.find((m) => m.type === "SERVER_RASTER_SNAPSHOT");
+  assert.ok(snap && snap.type === "SERVER_RASTER_SNAPSHOT");
+  if (snap.type === "SERVER_RASTER_SNAPSHOT") {
+    assert.equal(snap.payload.phase, "spawn", "real matches begin in the spawn/start phase");
+    assert.ok(snap.payload.spawnRemainingSeconds > 0, "the start-phase countdown is running");
+  }
+});
+
 test("joinRasterSolo creates an isolated raster match", () => {
   const registry = new MatchRegistry();
   registry.joinRasterSolo("a", () => {}, { width: 24, height: 16, seed: 1 });

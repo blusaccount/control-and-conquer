@@ -5,7 +5,7 @@ import type { TerritoryGrid } from "../Core/TerritoryGrid.js";
 import { troopsPerSecond } from "../Core/rasterCombatConfig.js";
 import { goldPerSecond } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
-import type { RasterAttackFront, RasterBuilding, RasterCrossing, RasterPlayerInfo, RasterShip, RasterSnapshot } from "../Core/types.js";
+import type { RasterAttackFront, RasterBuilding, RasterCrossing, RasterMatchPhase, RasterPlayerInfo, RasterShip, RasterSnapshot } from "../Core/types.js";
 
 /**
  * Serialize a `GameMap`'s static terrain into base64 plus a stable hash.
@@ -74,6 +74,10 @@ export interface PlayerMeta {
 export interface BuildSnapshotInput {
   tick: number;
   mapName: string;
+  /** Current match phase (`spawn` start phase vs live `playing` game). */
+  phase: RasterMatchPhase;
+  /** Whole seconds left in the start phase; 0 once playing. */
+  spawnRemainingSeconds: number;
   map: GameMap;
   grid: TerritoryGrid;
   playerMeta: Map<number, PlayerMeta>;
@@ -105,7 +109,7 @@ export interface BuildSnapshotInput {
 }
 
 export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot => {
-  const { tick, mapName, map, grid, playerMeta, includeTerrain, terrainHash, terrainBase64, winnerPlayerId, recentEvents, crossings, ships, fronts, ownerDeltaBase64, omitOwner, eliminated } = input;
+  const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, includeTerrain, terrainHash, terrainBase64, winnerPlayerId, recentEvents, crossings, ships, fronts, ownerDeltaBase64, omitOwner, eliminated } = input;
 
   const players: RasterPlayerInfo[] = [];
   for (const id of grid.players()) {
@@ -139,6 +143,8 @@ export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
   return {
     tick,
     mapName,
+    phase,
+    spawnRemainingSeconds,
     width: map.width,
     height: map.height,
     terrainHash,

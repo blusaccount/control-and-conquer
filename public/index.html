@@ -36,6 +36,48 @@
         overscroll-behavior: none;
       }
 
+      /* ---- Start-phase countdown banner ---------------------------------- */
+      /* A floating glass banner over the top-center of the map during the
+         opening start phase, sitting just below the resource readout. */
+      #startBanner {
+        position: fixed;
+        top: 64px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 20;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+        padding: 14px 30px;
+        text-align: center;
+        pointer-events: none;
+        background: var(--panel-bg);
+        border: 1px solid var(--accent);
+        border-radius: var(--panel-radius);
+        box-shadow: var(--panel-shadow);
+        backdrop-filter: blur(10px) saturate(1.1);
+        -webkit-backdrop-filter: blur(10px) saturate(1.1);
+      }
+      #startBanner.hidden { display: none; }
+      #startBanner .start-banner-title {
+        font-size: 14px;
+        font-weight: 700;
+        letter-spacing: 0.03em;
+        color: var(--text);
+      }
+      #startBanner .start-banner-timer {
+        font-size: 38px;
+        font-weight: 800;
+        line-height: 1.05;
+        color: #9ec5ff;
+        font-variant-numeric: tabular-nums;
+      }
+      #startBanner .start-banner-sub {
+        font-size: 12px;
+        color: var(--text-dim);
+      }
+
       h1, h2, h3, p { margin: 0; }
 
       /* ---- Full-bleed map ------------------------------------------------ */
@@ -554,6 +596,7 @@
       <button id="startButton" class="menu-button primary" type="button">Start Run</button>
     </div>
 
+    <div id="startBanner" class="hidden"></div>
     <script type="module" src="/assets/Client/main.js"></script>
   </body>
 </html>

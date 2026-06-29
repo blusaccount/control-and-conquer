@@ -19,6 +19,7 @@ import type {
 import { RASTER_MATCH_DURATION_SECONDS } from "../Core/rasterCombatConfig.js";
 import { BUILDING_DEFS, buildingCost } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
+import type { RasterMatchPhase } from "../Core/types.js";
 import { buildRasterSnapshot, encodeOwnerDelta, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
 import { MAX_TRANSPORT_SHIPS_PER_PLAYER } from "../Core/rasterCombatConfig.js";
 
@@ -120,6 +121,14 @@ export interface RasterGameSessionOptions {
    * Exposed mainly so tests can run short matches.
    */
   maxDurationTicks?: number;
+  /**
+   * Length of the opening "start phase" in ticks. While it runs, every player
+   * picks their start position and nobody can take territory or earn income —
+   * the game (and the match clock) only begins once it elapses. `0` (the
+   * default) skips the start phase entirely so the match is live from tick one;
+   * the real game seats a 15-second phase via {@link MatchRegistry}.
+   */
+  spawnPhaseTicks?: number;
 }
 
 const DEFAULT_OPTIONS: Required<RasterGameSessionOptions> = {
@@ -131,6 +140,7 @@ const DEFAULT_OPTIONS: Required<RasterGameSessionOptions> = {
   realMapId: "",
   mapSize: 0,
   maxDurationTicks: RASTER_MATCH_DURATION_SECONDS * SIMULATION_TICK_RATE,
+  spawnPhaseTicks: 0,
 };
 
 /**
@@ -179,6 +189,16 @@ export class RasterGameSession {
   private readonly lastTileSeen = new Map<PlayerId, TileRef>();
   /** Hard tick budget for the run; the match ends on the time limit when hit. */
   private readonly maxDurationTicks: number;
+  /**
+   * Current match phase. The session opens in `spawn` (the start phase) when a
+   * spawn-phase length is configured, then flips to `playing` once it elapses.
+   * With no start phase configured it is `playing` from construction.
+   */
+  private phase: RasterMatchPhase;
+  /** Total ticks the opening start phase lasts (0 = no start phase). */
+  private readonly spawnPhaseTicks: number;
+  /** Ticks elapsed in the start phase so far, counted only while `spawn`. */
+  private spawnTicksElapsed = 0;
   /** Most tiles each player has held at any point — a run-stat. */
   private readonly peakTiles = new Map<PlayerId, number>();
   /** Nations each player has wiped out (eliminations they caused) — a run-stat. */
@@ -202,6 +222,8 @@ export class RasterGameSession {
       options.mapName ?? (heightmapDef ? heightmapDef.name : realMap ? realMap.name : opts.mapName);
     this.startingTroops = opts.startingTroops;
     this.maxDurationTicks = Math.max(1, Math.floor(opts.maxDurationTicks));
+    this.spawnPhaseTicks = Math.max(0, Math.floor(opts.spawnPhaseTicks));
+    this.phase = this.spawnPhaseTicks > 0 ? "spawn" : "playing";
 
     let map;
     if (heightmapDef) {
@@ -398,6 +420,23 @@ export class RasterGameSession {
     this.sendSnapshotTo(subscriber);
   }
 
+  /**
+   * End the start phase and begin the live game. Any subscriber who never picked
+   * a start position (a human who sat out the countdown) is auto-seated at their
+   * reserved spawn so they still drop into the match, and the phase flips to
+   * `playing` so the next tick resolves combat. Idempotent in effect — only ever
+   * called once, on the tick the countdown elapses.
+   */
+  private beginPlayingPhase(): void {
+    for (const subscriber of this.subscribers.values()) {
+      if (this.grid.hasPlayer(subscriber.playerId)) continue;
+      const spawn = this.spawnTiles[subscriber.playerId - 1] ?? this.firstFreeSpawn();
+      if (spawn !== undefined) this.seatPlayer(subscriber.playerId, spawn);
+    }
+    this.phase = "playing";
+    this.recentEvents = ["The start phase is over — seize territory!", ...this.recentEvents].slice(0, MAX_EVENTS);
+  }
+
   public queueExpand(clientId: string, intent: RasterExpandIntent): void {
     if (!this.subscribers.has(clientId)) return;
     this.pendingExpands.push({ clientId, intent });
@@ -416,6 +455,23 @@ export class RasterGameSession {
     // Once the match has ended (conquest or time limit) the simulation freezes:
     // no further state changes or broadcasts.
     if (this.matchEndedBroadcast) return;
+
+    // Start phase: players are still choosing where to found their nations. The
+    // world is frozen — no expansion, combat, income or match clock — until the
+    // countdown elapses. Any actions queued now (clients gate this, so this is a
+    // safety net) are dropped rather than applied.
+    if (this.phase === "spawn") {
+      this.spawnTicksElapsed += 1;
+      this.pendingExpands.length = 0;
+      this.pendingBuilds.length = 0;
+      if (this.spawnTicksElapsed < this.spawnPhaseTicks) {
+        for (const subscriber of this.subscribers.values()) this.sendSnapshotTo(subscriber);
+        return;
+      }
+      // Countdown over: seat any no-shows and switch to the game phase, then fall
+      // through to run this very tick as the first live one.
+      this.beginPlayingPhase();
+    }
 
     const intents: AttackIntent[] = [];
     const eventLines: string[] = [];
@@ -535,9 +591,9 @@ export class RasterGameSession {
     }
 
     // Give every player eliminated this tick their own end-of-run summary now —
-    // a defeat screen the instant their capital falls, rather than leaving them
+    // a defeat screen the instant their last tile falls, rather than leaving them
     // staring at dead controls until the whole match resolves. Sent after the
-    // snapshot so the client first paints their collapse to neutral.
+    // snapshot so the client first paints their final loss of territory.
     if (justEliminated.length > 0) {
       const endTick = this.conflict.tick;
       for (const subscriber of this.subscribers.values()) {
@@ -867,9 +923,14 @@ export class RasterGameSession {
       }
     }
 
+    const spawnRemainingTicks =
+      this.phase === "spawn" ? Math.max(0, this.spawnPhaseTicks - this.spawnTicksElapsed) : 0;
+
     const snapshot = buildRasterSnapshot({
       tick: this.conflict.tick,
       mapName: this.mapName,
+      phase: this.phase,
+      spawnRemainingSeconds: Math.ceil(spawnRemainingTicks / SIMULATION_TICK_RATE),
       map: this.map,
       grid: this.grid,
       playerMeta: this.playerMeta,
