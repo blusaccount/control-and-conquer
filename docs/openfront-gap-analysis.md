@@ -1,112 +1,113 @@
 # OpenFront-ähnliche Roadmap: Repository Audit + Gap-Analyse
 
-> **Letztes Update:** 2026-06-28 (Bündel „Game Feel #1" gemerged).
-> Dieses Dokument spiegelt den Ist-Zustand auf `main`.
+> **Letztes Update:** 2026-06-29 (Refactoring-Review: Raster-Engine).
+> Dieses Dokument spiegelt den Ist-Zustand auf `main` nach dem Umbau auf die
+> Pixel-Raster-Engine (commit „Rebuild as OpenFront-style raster game"). Die
+> ältere Polygon-/`MapState`-Engine existiert nicht mehr.
 
-## 1) Zielbild (Referenz: openfront.io)
-- Tile/Territory-Karte, Spieler starten auf einem Teil, expandieren über Nachbarschaft.
-- **Organisches Truppenwachstum** pro Tile pro Tick (keine manuelle Ressourcenverwaltung).
-- **One-Click-Angriff:** Klick eigenes Gebiet → Klick feindliches Nachbargebiet.
-- **Frontlinien-Visualisierung** als animierte Front zwischen zwei Gebieten.
+## 1) Zielbild (Referenz: openfront.io + Roguelite + Generals-Asymmetrie)
+- Pixel-Raster-Karte: Spieler starten auf einem Tile und expandieren über
+  4-Nachbarschaft (Land) sowie amphibische Übersetzungen über schmale Seen.
+- **Organisches Truppenwachstum** pro Tile pro Tick (keine manuelle Wirtschaft).
+- **One-Click-Angriff:** Klick auf ein Ziel-Tile → Front wächst dorthin.
 - **Deterministischer Server**, Client rendert nur.
-- **Echtzeit-Multiplayer** via WebSocket-Snapshots.
-- **Kein Spielereingriff im Kampf** — Kämpfe laufen autonom ab.
+- **Kein Spielereingriff im Kampf** — Fronten lösen sich autonom auf.
+- Geplant: spielbare Nationen mit einzigartigen Fähigkeiten, Roguelite-Meta.
 
 ## 2) Aktueller Stand (Ist-Zustand)
 
 ### Gameplay-Loop
-- Deterministischer Server-Tick bei 20 TPS (`src/Server/index.ts`, `simulationConfig.ts`).
-- `MapState.processTick()` führt pro Tick aus: **Attack-Validation → Income → Conflict-Advance → Win-Check** (`src/Core/MapState.ts`).
-- **Organisches Truppenwachstum** vorhanden (`INCOME_PER_TICK = 0.05`, ein voller Trupp pro Tile pro Sekunde, fraktionaler Akkumulator privat im MapState gehalten).
-- Conflict-Engine: Attrition + Progress-Advance/Retreat + automatische Resolution (Capture/Repel).
-- **Win-Condition:** Sobald ein Team alle Territorien hält und keine Conflicts laufen, wird `winnerTeamId` gesetzt und `SERVER_MATCH_ENDED` einmalig gebroadcastet.
+- Deterministischer Server-Tick bei 20 TPS (`src/Server/index.ts`,
+  `simulationConfig.ts`).
+- `RasterConflict.processTick()` führt pro Tick aus: **Intent-Registrierung →
+  Income → Attack-Advance (BFS-Ring) → Win-Check** (`src/Core/RasterConflict.ts`).
+- **Organisches Truppenwachstum** über einen Pool pro Spieler
+  (`INCOME_PER_TILE_PER_TICK`, fraktionaler Akkumulator, gedeckelt durch
+  `MAX_POOL_PER_TILE × tiles`).
+- **Terrain-Kosten:** höhere Elevation und gegnerische Tiles kosten mehr Truppen;
+  amphibische Landungen tragen einen `SEA_CROSSING_SURCHARGE`.
+- **Win-Condition:** ein Spieler, der alle eroberbaren Tiles hält, gewinnt;
+  `SERVER_RASTER_MATCH_ENDED` wird einmalig gebroadcastet.
 
 ### Networking / Multiplayer
 - WebSocket + autoritativer Server (`ws`, `src/Server/index.ts`).
-- **Match-Isolation** via `MatchRegistry` (paart je zwei Clients in eine eigene `GameSession`).
-- Diskriminierte ServerMessage-Union (`SERVER_LOBBY_WAITING`, `SERVER_PLAYER_ASSIGNED`, `SERVER_STATE_SNAPSHOT`, `SERVER_ACTION_REJECTED`, `SERVER_MATCH_ENDED`).
-- Strikte Runtime-Validation eingehender Commands (`src/Server/validateCommand.ts`).
+- **Solo-Match-Isolation** via `MatchRegistry`: jeder Client bekommt eine eigene
+  `RasterGameSession` gegen einen serverseitigen Bot.
+- Diskriminierte ServerMessage-Union (`SERVER_RASTER_PLAYER_ASSIGNED`,
+  `SERVER_RASTER_SNAPSHOT`, `SERVER_RASTER_ACTION_REJECTED`,
+  `SERVER_RASTER_MATCH_ENDED`).
+- Strikte Runtime-Validation eingehender Commands (`validateCommand.ts`) +
+  Business-Rules in `RasterGameSession.validateAndBuildIntent`.
+- Terrain wird nur einmal pro Client gesendet (Cache-Key `terrainHash`); danach
+  nur das Owner-Raster.
 - Drift-Detection, Slow-Tick-Warnung, Catch-up-Cap im Scheduler.
 
-### Lobby / Matchmaking
-- Implizites Pairing nach Connection-Order; 1v1 fixiert (`TEAM_ROTATION = ["blue", "red"]`).
-- Keine Lobby-UI, kein Ready-Check, kein Rematch.
-
-### Map / Territory
-- **Datengetriebenes Kartenformat:** `MapDefinition` (Daten) → `loadMap()` validiert (eindeutige IDs, existierende Nachbarn, **symmetrische Adjazenz**, Polygone ≥3 Punkte, Truppen-Integer, gültige Owner) → runtime `LoadedMap`.
-- **JSON-Loader:** Server lädt Karten aus `maps/<id>.json` (Fallback auf eingebaute Maps), wählbar via `MAP_ID`. Aktive Live-Karte: `frontline-grid` (36 Tiles).
-- **Grid-Generator** (`generateGridMap`) erzeugt große, garantiert valide Karten — Keim für prozedurale Roguelite-Level.
-- Eingebaute Default-Map „Conqueror Basin" (8 Tiles) als datenbasierter Fallback ohne Filesystem-Abhängigkeit.
-- Polygon-basierter Hit-Test im Client.
+### Map / Terrain
+- **1-Byte-pro-Tile-Codec** (`terrainCodec.ts`): Land/Wasser, Küste, Ozean-vs-See,
+  5-Bit-Magnitude (Elevation bzw. Wassertiefe, 31 = impassable Fels).
+- **Prozeduraler Generator** (`terrainGenerator.ts`): seed-deterministisches
+  Fractal-Value-Noise → Land/Wasser-Maske → Speckle-Cleanup → Finishing-Pipeline.
+- **Hand-authored Real-Maps** (`realMaps.ts`): ASCII-Landmasken (Mediterranean,
+  World), gleiche Finishing-Pipeline (`terrainBuilder.ts`).
+- **Sea-Links** (`seaLinks.ts`): vorberechnete amphibische Adjazenz für schmale
+  Gewässer.
 
 ### UI / UX
-- Canvas 2D mit polygon-fill + Truppen-Labels.
-- **Client modularisiert** in `state` / `geometry` / `dom` / `render` / `net` / `input`; `main.ts` ist nur noch Bootstrap (~9 Zeilen). Module werden als ES-Module über `/assets/` ausgeliefert.
-- **Slider-basierte Attack-UX** (Range 10–90% in 5%-Schritten, Default 50%).
-- **Frontlinien-Overlay** mit Gradient + pulsierendem Border.
-- Victory-Banner über der Karte sobald `winnerTeamId` gesetzt ist.
+- Canvas 2D, 1 Pixel pro Tile (`rasterPaint.ts`/`rasterPalette.ts`), hochskaliert.
+- Boot-Animationen für amphibische Landungen (`rasterClient.ts`).
+- Slider-basierte Attack-UX (% des Pools), Event-Log, Victory-Banner.
 
 ### Persistenz / Stats
 - Komplett In-Memory, kein Storage-Layer.
 
-### Build / CI / Observability
-- `npm test`, `npm run build`, `npm run lint`, `npm run dev` (Casing-Bug gefixt).
-- 58 Unit-Tests (Core + Server + Tick-Determinismus + Wachstum + Win-Condition + Client-Geometrie + Map-Loader/Generator/Repository).
-- Auto-Deploy via Render auf https://control-and-conquer.onrender.com nach Push auf `main`.
-- **GitHub-Actions-CI** (`.github/workflows/ci.yml`): `lint + build + test` als PR-Gate auf jeden PR und Push nach `main`.
+### Build / CI
+- `npm test` (tsx --test, 76 Unit-Tests), `npm run build`/`lint` (tsc), `npm run dev`.
+- **GitHub-Actions-CI** (`.github/workflows/ci.yml`): lint + build + test als PR-Gate.
 
 ## 3) Priorisierte Gap-Analyse (offene Punkte)
 
-| Bereich | Status | Priorität | Aufwand | Risiko |
-|---|---|---|---|---|
-| Karte vergrößern + datengetrieben (JSON-Loader, 30+ Tiles) | ✅ erledigt (36 Tiles) | P1 | M | M |
-| N-Player-Support (Teams als Array, Color-Palette) | offen | P1 | M | M |
-| Bot-KI für Solo-Matches | offen | P1 | S | L |
-| Lobby-UI (Waiting-Screen, Rematch-Button) | offen | P1 | S | L |
-| Client-Modul-Splittung (`render`/`input`/`net`) | ✅ erledigt | P1 | S | L |
-| GitHub-Actions-CI (lint+build+test als PR-Gate) | ✅ erledigt | P1 | S | L |
-| Reconnect/Resync-Protokoll | offen | P2 | M | M |
-| Delta-Snapshots (relevant ab > ~30 Tiles) | offen | P2 | M | M |
-| Persistenz für Match-Resultate / MMR | offen | P2 | M | M |
-| Strukturierte Logs + Metriken | offen | P2 | M | L |
+| Bereich | Status | Priorität |
+|---|---|---|
+| Spielbare Nationen / Fraktions-Fähigkeiten (Generals-Asymmetrie) | offen | P1 |
+| Roguelite-Meta-Loop (Runs, Upgrades zwischen Matches) | offen | P1 |
+| Echtes PvP (geteilte Session, Matchmaking, Player-Identity) | offen | P1 |
+| Stärkere Bot-KI (Sea-Crossing-Nutzung, Zielpriorisierung) | offen | P2 |
+| Delta-Snapshots (Owner-Raster nur als Diff senden) | offen | P2 |
+| Reconnect/Resync-Protokoll | offen | P2 |
+| Persistenz für Match-Resultate / Progression | offen | P2 |
+| Lobby-/Menü-UI über „Play vs Bot" hinaus | offen | P3 |
 
 ## 4) Architektur (Ist)
 
 ```
-                 ┌─────────────────────────────────┐
-                 │            Render               │
-                 │  control-and-conquer.onrender   │
-                 └────────────────┬────────────────┘
-                                  │ auto-deploy
-                                  ▼
-┌───────────────┐   WS    ┌────────────────────┐
-│  Browser      │ ◄─────► │  Node.js + ws      │
-│  Canvas 2D    │         │  src/Server/       │
-│  src/Client/  │         │  ┌──────────────┐  │
-└───────────────┘         │  │ MatchRegistry│  │
-                          │  └──────┬───────┘  │
-                          │         │ 1:N      │
-                          │  ┌──────▼───────┐  │
-                          │  │ GameSession  │  │
-                          │  └──────┬───────┘  │
-                          │         │ owns 1   │
-                          │  ┌──────▼───────┐  │
-                          │  │   MapState   │  │
-                          │  │ (Core)       │  │
-                          │  └──────────────┘  │
-                          └────────────────────┘
+┌───────────────┐   WS    ┌────────────────────────────┐
+│  Browser      │ ◄─────► │  Node.js + ws (Server/)     │
+│  Canvas 2D    │         │  ┌──────────────────────┐   │
+│  Client/      │         │  │ MatchRegistry        │   │
+└───────────────┘         │  └──────────┬───────────┘   │
+                          │             │ 1:1 (solo)     │
+                          │  ┌──────────▼───────────┐    │
+                          │  │ RasterGameSession    │    │
+                          │  │  + RasterBotController│   │
+                          │  └──────────┬───────────┘    │
+                          │             │ owns           │
+                          │  ┌──────────▼───────────┐    │
+                          │  │ Core/                │    │
+                          │  │  GameMap (terrain)   │    │
+                          │  │  TerritoryGrid (owner)│   │
+                          │  │  RasterConflict (sim)│    │
+                          │  └──────────────────────┘    │
+                          └────────────────────────────┘
 ```
 
 ## 5) Layering-Regeln
-- `src/Core/` darf **nicht** auf `src/Server/` zugreifen.
-- Game-Mechanik-Konstanten leben in `src/Core/conflictConfig.ts`.
+- `src/Core/` darf **nicht** auf `src/Server/` oder `src/Client/` zugreifen.
+- Game-Mechanik-Konstanten leben in `src/Core/rasterCombatConfig.ts`.
 - Server-Scheduling lebt in `src/Server/simulationConfig.ts`.
-- Tests dürfen aus `src/Core/` und `src/Server/` importieren.
+- Tests dürfen aus allen `src/`-Ebenen importieren.
 
 ## 6) Nächste konkret kleine Schritte
-1. ~~Karte auf JSON-Loader umstellen.~~ ✅ erledigt (`maps/frontline-grid.json`, 36 Tiles, `MAP_ID`-wählbar)
-2. N-Player-Support: `TeamId` von `"blue" | "red"` auf Array/Palette umstellen (Voraussetzung für PvE & Fraktionen).
-3. Solo-Bot-KI (simpel: greedy „angreife schwächstes Nachbargebiet").
-4. Rematch-Flow (Client-Button → Server-Reset oder neue Session).
-5. ~~GitHub-Actions-Workflow (`.github/workflows/ci.yml`).~~ ✅ erledigt
-6. ~~Client-Modul-Splittung (`render`/`input`/`net`).~~ ✅ erledigt
+1. Fraktions-Datenmodell (Nation → Modifikatoren auf Income/Capture-Kosten).
+2. Sea-Crossing-Nutzung in der Bot-KI (heute nur Land-Frontier).
+3. Delta-Owner-Snapshots als Bandbreiten-Optimierung ab größeren Karten.
+4. Geteilte PvP-Session als zweiter `MatchRegistry`-Modus neben Solo.

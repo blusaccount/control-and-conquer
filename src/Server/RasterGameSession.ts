@@ -84,6 +84,7 @@ export class RasterGameSession {
   private readonly grid: TerritoryGrid;
   private readonly conflict: RasterConflict;
   private readonly mapName: string;
+  private readonly startingTroops: number;
   private readonly terrainHash: string;
   private readonly terrainBase64: string;
   private readonly playerMeta = new Map<PlayerId, PlayerMeta>();
@@ -103,6 +104,7 @@ export class RasterGameSession {
     const realMap = opts.realMapId ? getRealMap(opts.realMapId) : undefined;
     // Prefer the real map's own name unless the caller explicitly set one.
     this.mapName = options.mapName ?? (realMap ? realMap.name : opts.mapName);
+    this.startingTroops = opts.startingTroops;
 
     let map;
     if (realMap) {
@@ -190,7 +192,7 @@ export class RasterGameSession {
     this.playerMeta.set(playerId, meta);
 
     // Register the player, give them a starting pool + their spawn tile.
-    this.grid.addPlayer(playerId, DEFAULT_OPTIONS.startingTroops);
+    this.grid.addPlayer(playerId, this.startingTroops);
     const spawn = this.spawnTiles[playerId - 1];
     this.grid.claim(spawn, playerId);
 

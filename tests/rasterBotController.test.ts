@@ -35,6 +35,23 @@ test("RasterBot does eventually queue an expand intent once income builds", () =
   assert.ok(any, "Aggressive bot should queue at least one expand intent within 50 ticks.");
 });
 
+test("RasterBot expands into real land instead of stalling on water/rock", () => {
+  // On a land-rich map an aggressive bot must turn its intents into captures.
+  // The old owner-only heuristic could lock onto a neighbouring water/rock tile
+  // the server rejects, leaving the bot stuck on its single spawn tile.
+  const session = new RasterGameSession({ width: 48, height: 32, seed: 5 });
+  session.subscribe("human", () => {});
+  const bot = new RasterBotController({ ...DEFAULT_RASTER_BOT_CONFIG, expandCooldownTicks: 0, minPool: 1, percent: 60 });
+  bot.attach(session);
+
+  for (let i = 0; i < 200; i += 1) session.tick();
+
+  const botId = bot.getPlayerId();
+  assert.ok(botId !== null);
+  const grid = session.peekGrid();
+  assert.ok(grid.tileCountOf(botId!) > 1, `bot should capture beyond its spawn, owns ${grid.tileCountOf(botId!)}`);
+});
+
 test("RasterBot respects cooldown", () => {
   const session = new RasterGameSession({ width: 32, height: 24, seed: 5 });
   session.subscribe("human", () => {});

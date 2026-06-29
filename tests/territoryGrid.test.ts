@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { GameMap } from "../src/Core/GameMap.js";
-import { NEUTRAL_PLAYER, TerritoryGrid } from "../src/Core/TerritoryGrid.js";
+import { GameMap, type TileRef } from "../src/Core/GameMap.js";
+import { NEUTRAL_PLAYER, type PlayerId, TerritoryGrid } from "../src/Core/TerritoryGrid.js";
 import { encodeTile, IMPASSABLE_MAGNITUDE } from "../src/Core/terrainCodec.js";
+import { generateTerrain } from "../src/Core/terrainGenerator.js";
 
 /** Build a flat all-land map of the given size (elevation 0). */
 const flatLand = (width: number, height: number, elevation = 0): GameMap => {
@@ -86,4 +87,48 @@ test("frontierOf / hasFrontier find capturable target tiles adjacent to the atta
   grid.claim(2, 2);
   assert.ok(!grid.hasFrontier(1, 2));
   assert.deepEqual(grid.frontierOf(1, 2), []);
+});
+
+test("frontierOf matches a brute-force scan over a real generated map", () => {
+  // The owned-set-driven frontier must be byte-identical to a naive full-raster
+  // scan that asks, per capturable target tile, whether the attacker can reach
+  // it across a land border or a sea crossing.
+  const map = generateTerrain({ width: 40, height: 28, seed: 7 });
+  const grid = new TerritoryGrid(map);
+  const players: PlayerId[] = [1, 2, 3];
+  for (const id of players) grid.addPlayer(id);
+
+  // Deterministically scatter ownership across capturable land.
+  let salt = 1234567;
+  const nextInt = (n: number): number => {
+    salt = (Math.imul(salt, 1103515245) + 12345) & 0x7fffffff;
+    return salt % n;
+  };
+  for (let ref = 0; ref < map.size; ref += 1) {
+    if (!grid.isCapturable(ref)) continue;
+    const roll = nextInt(5); // ~60% of land claimed, spread over 3 players
+    if (roll < players.length) grid.claim(ref, players[roll]);
+  }
+
+  const bruteForce = (attacker: PlayerId, target: PlayerId): TileRef[] => {
+    const out: TileRef[] = [];
+    for (let ref = 0; ref < map.size; ref += 1) {
+      if (grid.ownerOf(ref) !== target || !grid.isCapturable(ref)) continue;
+      const reaches =
+        map.neighbors(ref).some((n) => grid.ownerOf(n) === attacker) ||
+        grid.seaLinks.neighborsOf(ref).some((n) => grid.ownerOf(n) === attacker);
+      if (reaches) out.push(ref);
+    }
+    return out;
+  };
+
+  const targets: PlayerId[] = [NEUTRAL_PLAYER, 1, 2, 3];
+  for (const attacker of players) {
+    for (const target of targets) {
+      if (attacker === target) continue;
+      const expected = bruteForce(attacker, target);
+      assert.deepEqual(grid.frontierOf(attacker, target), expected, `frontierOf(${attacker}, ${target})`);
+      assert.equal(grid.hasFrontier(attacker, target), expected.length > 0, `hasFrontier(${attacker}, ${target})`);
+    }
+  }
 });

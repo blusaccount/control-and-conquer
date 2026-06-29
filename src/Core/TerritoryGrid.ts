@@ -16,8 +16,13 @@ export const NEUTRAL_PLAYER: PlayerId = 0;
 interface PlayerStanding {
   /** Current troop pool (may be fractional internally; reported rounded). */
   troops: number;
-  /** Number of tiles currently owned by this player. */
-  tiles: number;
+  /**
+   * The set of tiles this player currently owns. Single source of truth for both
+   * the tile count (`tiles.size`) and the player's frontier: expansion only ever
+   * radiates from owned tiles, so iterating this set is far cheaper than scanning
+   * the whole ownership raster.
+   */
+  tiles: Set<TileRef>;
 }
 
 /**
@@ -71,7 +76,7 @@ export class TerritoryGrid {
     if (troops < 0) {
       throw new Error(`Starting troops must be non-negative, got ${troops}.`);
     }
-    this.standings.set(id, { troops, tiles: 0 });
+    this.standings.set(id, { troops, tiles: new Set() });
   }
 
   hasPlayer(id: PlayerId): boolean {
@@ -110,7 +115,7 @@ export class TerritoryGrid {
 
   /** Number of tiles a player currently owns. */
   tileCountOf(id: PlayerId): number {
-    return this.standing(id).tiles;
+    return this.standing(id).tiles.size;
   }
 
   /**
@@ -125,10 +130,10 @@ export class TerritoryGrid {
     const previous = this.owner[ref];
     if (previous === id) return;
     if (previous !== NEUTRAL_PLAYER) {
-      this.standing(previous).tiles -= 1;
+      this.standing(previous).tiles.delete(ref);
     }
     if (id !== NEUTRAL_PLAYER) {
-      this.standing(id).tiles += 1;
+      this.standing(id).tiles.add(ref);
     }
     this.owner[ref] = id;
   }
@@ -142,31 +147,26 @@ export class TerritoryGrid {
   }
 
   /**
-   * True if `attacker` can reach `ref` either across a shared land border or via
-   * an amphibious crossing from one of its coastal tiles.
-   */
-  private canReach(attacker: PlayerId, ref: TileRef): boolean {
-    if (this.hasLandFrontier(attacker, ref)) return true;
-    for (const n of this.seaLinks.neighborsOf(ref)) {
-      if (this.owner[n] === attacker) return true;
-    }
-    return false;
-  }
-
-  /**
    * Capturable tiles owned by `target` that `attacker` could expand into this
    * tick — adjacent across a land border, or reachable by an amphibious landing
    * across a narrow sea. Returned in ascending `TileRef` order for determinism.
    *
    * `target` may be {@link NEUTRAL_PLAYER} to expand into unclaimed land.
+   *
+   * Expansion can only ever radiate outward from tiles the attacker already
+   * holds, so we walk the attacker's owned set and collect the qualifying
+   * neighbours rather than scanning the whole raster.
    */
   frontierOf(attacker: PlayerId, target: PlayerId): TileRef[] {
-    const frontier: TileRef[] = [];
-    for (let ref = 0; ref < this.owner.length; ref += 1) {
-      if (this.owner[ref] !== target || !this.isCapturable(ref)) continue;
-      if (this.canReach(attacker, ref)) frontier.push(ref);
+    const found = new Set<TileRef>();
+    const consider = (ref: TileRef): void => {
+      if (this.owner[ref] === target && this.isCapturable(ref)) found.add(ref);
+    };
+    for (const ref of this.standing(attacker).tiles) {
+      for (const n of this.map.neighbors(ref)) consider(n);
+      for (const n of this.seaLinks.neighborsOf(ref)) consider(n);
     }
-    return frontier;
+    return [...found].sort((a, b) => a - b);
   }
 
   /**
@@ -174,9 +174,11 @@ export class TerritoryGrid {
    * counting amphibious crossings as borders.
    */
   hasFrontier(attacker: PlayerId, target: PlayerId): boolean {
-    for (let ref = 0; ref < this.owner.length; ref += 1) {
-      if (this.owner[ref] !== target || !this.isCapturable(ref)) continue;
-      if (this.canReach(attacker, ref)) return true;
+    const reaches = (ref: TileRef): boolean =>
+      this.owner[ref] === target && this.isCapturable(ref);
+    for (const ref of this.standing(attacker).tiles) {
+      for (const n of this.map.neighbors(ref)) if (reaches(n)) return true;
+      for (const n of this.seaLinks.neighborsOf(ref)) if (reaches(n)) return true;
     }
     return false;
   }

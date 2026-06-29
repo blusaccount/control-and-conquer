@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import type { RasterGameSession, RasterMessageHandler } from "./RasterGameSession.js";
-import { NEUTRAL_PLAYER, type PlayerId } from "../Core/TerritoryGrid.js";
+import { GameMap } from "../Core/GameMap.js";
+import { type PlayerId } from "../Core/TerritoryGrid.js";
 import type { RasterExpandIntent, RasterServerMessage, RasterSnapshot } from "../Core/types.js";
 
 export interface RasterBotConfig {
@@ -24,10 +25,10 @@ export const DEFAULT_RASTER_BOT_CONFIG: RasterBotConfig = {
  * `RasterGameSession` and queues `RasterExpandIntent`s back into the same
  * session — exactly like a human client would.
  *
- * Strategy: every `expandCooldownTicks`, scan the bot's frontier (neutral and
- * enemy tiles touching its area). Pick the frontier tile with the lowest
- * elevation (cheapest to capture) and target it. Deterministic: no RNG; ties
- * broken by ascending TileRef order.
+ * Strategy: every `expandCooldownTicks`, scan the bot's frontier (capturable
+ * land tiles touching its area). Pick the frontier tile with the most owned
+ * neighbours (the least exposed push) and target it. Deterministic: no RNG;
+ * ties broken by ascending TileRef order.
  */
 export class RasterBotController {
   private myPlayerId: PlayerId | null = null;
@@ -35,6 +36,12 @@ export class RasterBotController {
   private session: RasterGameSession | null = null;
   private width = 0;
   private height = 0;
+  /**
+   * Static terrain, rebuilt once from the first snapshot that carries it. Lets
+   * the bot tell capturable land apart from water/rock so it never wastes an
+   * expand on a tile the server would reject.
+   */
+  private map: GameMap | null = null;
   /** Last decoded owner snapshot (Uint16). */
   private owner: Uint16Array | null = null;
 
@@ -46,6 +53,7 @@ export class RasterBotController {
     return () => {
       this.session = null;
       this.myPlayerId = null;
+      this.map = null;
       this.owner = null;
       unsubscribe();
     };
@@ -77,10 +85,22 @@ export class RasterBotController {
     if (!this.myPlayerId || !this.session) return;
     if (snapshot.winnerPlayerId !== null) return;
 
-    // Decode the owner array. The grid never changes dimensions mid-match so
-    // we can lazy-allocate once.
     this.width = snapshot.width;
     this.height = snapshot.height;
+
+    // Capture the static terrain the one time it is shipped (first snapshot).
+    if (snapshot.terrainBase64 && !this.map) {
+      const terrain = Buffer.from(snapshot.terrainBase64, "base64");
+      this.map = new GameMap(this.width, this.height, new Uint8Array(terrain));
+    }
+
+    // Cheap gates first, so we skip the O(tiles) owner decode on idle ticks.
+    if (snapshot.tick - this.lastExpandTick < this.config.expandCooldownTicks) return;
+    const myStanding = snapshot.players.find((p) => p.playerId === this.myPlayerId);
+    if (!myStanding || myStanding.troops < this.config.minPool) return;
+
+    // Decode the owner array. The grid never changes dimensions mid-match so
+    // we can lazy-allocate once.
     const ownerBuffer = Buffer.from(snapshot.ownerBase64, "base64");
     if (!this.owner || this.owner.length !== this.width * this.height) {
       this.owner = new Uint16Array(this.width * this.height);
@@ -88,11 +108,6 @@ export class RasterBotController {
     for (let i = 0; i < this.owner.length; i += 1) {
       this.owner[i] = ownerBuffer.readUInt16LE(i * 2);
     }
-
-    if (snapshot.tick - this.lastExpandTick < this.config.expandCooldownTicks) return;
-
-    const myStanding = snapshot.players.find((p) => p.playerId === this.myPlayerId);
-    if (!myStanding || myStanding.troops < this.config.minPool) return;
 
     const target = this.pickFrontierTile();
     if (!target) return;
@@ -107,22 +122,27 @@ export class RasterBotController {
   }
 
   /**
-   * Walk every non-owned tile that borders one of the bot's tiles. Among those,
-   * pick the one with the most reachable owned neighbours (= least exposed
-   * push) and lowest TileRef as tiebreaker. Returns `null` if no frontier.
+   * Walk every capturable land tile the bot does not own that borders one of its
+   * tiles. Among those, pick the one with the most owned neighbours (= least
+   * exposed push), lowest TileRef as tiebreaker. Skips water and impassable rock
+   * so the server never rejects the resulting intent. Returns `null` if no
+   * frontier exists yet.
    */
   private pickFrontierTile(): { x: number; y: number } | null {
-    if (!this.owner || !this.myPlayerId) return null;
+    if (!this.owner || !this.map || !this.myPlayerId) return null;
     const me = this.myPlayerId;
     const w = this.width;
     const h = this.height;
     const owner = this.owner;
+    const map = this.map;
 
     let bestRef = -1;
     let bestNeighbours = -1;
 
     for (let ref = 0; ref < owner.length; ref += 1) {
       if (owner[ref] === me) continue;
+      // Only passable land can be captured; ignore water and rock.
+      if (!map.isLand(ref) || map.isImpassable(ref)) continue;
       // Count owned neighbours; if zero, skip.
       const x = ref % w;
       const y = Math.floor(ref / w);
