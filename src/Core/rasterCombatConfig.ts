@@ -23,18 +23,38 @@ export const INCOME_PER_TILE_PER_TICK = 0.02;
 /** Troop pool ceiling, scaled by territory size, to keep numbers bounded. */
 export const MAX_POOL_PER_TILE = 50;
 
+/** Soft-cap troop pool maximum for an empire of `tiles` tiles. */
+export const poolCap = (tiles: number): number => tiles * MAX_POOL_PER_TILE;
+
 /**
- * Troops generated per second by a player holding `tiles` tiles — the figure the
- * leaderboard shows as "(+N/s)". Derived directly from the engine's real per-tick
- * income so the displayed rate matches the pool growth a player actually sees.
- * `incomeMultiplier` folds in perk/class bonuses (e.g. Wachstumstreiber) so the
- * display tracks them; `ticksPerSecond` converts the per-tick income to seconds.
+ * Logistic growth factor in [0, 1] used as a **soft cap** on the troop pool:
+ * full income when the pool is empty, tapering to zero as the pool approaches
+ * its {@link poolCap}. Income is multiplied by this factor, so the pool
+ * approaches the cap asymptotically instead of piling up at a flat rate — a
+ * sprawling empire's army growth visibly slows and plateaus (OpenFront feel),
+ * rather than every "+N/s" climbing without limit.
+ */
+export const growthFactor = (troops: number, tiles: number): number => {
+  const cap = poolCap(tiles);
+  if (cap <= 0) return 0;
+  return Math.max(0, 1 - troops / cap);
+};
+
+/**
+ * Troops generated per second by a player — the figure the leaderboard shows as
+ * "(+N/s)". Derived directly from the engine's real per-tick income (including
+ * the logistic {@link growthFactor} soft cap) so the displayed rate matches the
+ * pool growth a player actually sees: it tapers toward 0 as the empire fills up.
+ * `incomeMultiplier` folds in any income modifiers; `ticksPerSecond` converts
+ * the per-tick income to seconds.
  */
 export const troopsPerSecond = (
   tiles: number,
+  troops: number,
   ticksPerSecond: number,
   incomeMultiplier = 1,
-): number => tiles * INCOME_PER_TILE_PER_TICK * ticksPerSecond * incomeMultiplier;
+): number =>
+  tiles * INCOME_PER_TILE_PER_TICK * ticksPerSecond * incomeMultiplier * growthFactor(troops, tiles);
 
 /**
  * Maximum wall-clock length of a single roguelite run, in seconds. When the

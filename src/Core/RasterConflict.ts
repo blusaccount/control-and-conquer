@@ -9,6 +9,7 @@ import {
   FRONTIER_MAGNITUDE_WEIGHT,
   FRONTIER_PRIORITY_FLOOR,
   FRONTIER_SURROUND_WEIGHT,
+  growthFactor,
   INCOME_PER_TILE_PER_TICK,
   MAX_POOL_PER_TILE,
   MAX_TRANSPORT_SHIPS_PER_PLAYER,
@@ -336,12 +337,16 @@ export class RasterConflict {
   private applyIncome(): void {
     for (const id of this.grid.players()) {
       const tiles = this.grid.tileCountOf(id);
+      const troops = this.grid.troopsOf(id);
       const cap = tiles * MAX_POOL_PER_TILE;
-      if (this.grid.troopsOf(id) >= cap) {
+      if (troops >= cap) {
         this.incomeAccumulator.set(id, 0);
         continue;
       }
-      const incomeRate = tiles * INCOME_PER_TILE_PER_TICK * this.grid.modifiersOf(id).income;
+      // Logistic soft cap: income tapers as the pool nears its ceiling, so an
+      // empire's army growth slows and plateaus instead of climbing forever.
+      const incomeRate =
+        tiles * INCOME_PER_TILE_PER_TICK * this.grid.modifiersOf(id).income * growthFactor(troops, tiles);
       const accumulated = (this.incomeAccumulator.get(id) ?? 0) + incomeRate;
       const whole = Math.floor(accumulated);
       if (whole > 0) {

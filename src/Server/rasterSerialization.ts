@@ -114,7 +114,7 @@ export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
       color: meta.color,
       troops: Math.floor(grid.troopsOf(id)),
       tiles,
-      troopsPerSecond: troopsPerSecond(tiles, SIMULATION_TICK_RATE, grid.incomeMultiplierOf(id)),
+      troopsPerSecond: troopsPerSecond(tiles, grid.troopsOf(id), SIMULATION_TICK_RATE, grid.incomeMultiplierOf(id)),
       capitalX: capitalRef !== undefined ? map.x(capitalRef) : -1,
       capitalY: capitalRef !== undefined ? map.y(capitalRef) : -1,
       eliminated: eliminated?.has(id) ?? false,

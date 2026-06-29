@@ -697,8 +697,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ? Math.round((runtime.myTiles / runtime.capturableTotal) * 100)
       : 0;
     ui.selectionInfo.innerHTML =
-      `<strong>Troop pool:</strong> ${runtime.pool}<br/>` +
-      `<strong>Tiles:</strong> ${runtime.myTiles} / ${runtime.capturableTotal} (${pct}%)<br/>` +
+      `<strong>Troop pool:</strong> ${formatCount(runtime.pool)}<br/>` +
+      `<strong>Tiles:</strong> ${formatCount(runtime.myTiles)} / ${formatCount(runtime.capturableTotal)} (${pct}%)<br/>` +
       `<strong>Ships at sea:</strong> ${runtime.myShips} / 3<br/>` +
       `<em>Click adjacent land to expand. Click any landmass across water to send a transport ship ` +
       `to its nearest reachable shore (one per click, max 3 at sea). Drag to pan, scroll to zoom.</em>`;
@@ -735,7 +735,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
           .filter(Boolean)
           .join(" ");
         const name = escapeHtml(p.name) + (isMe ? " (you)" : "");
-        const stats = `${p.tiles} · ${p.troops} (+${formatRate(p.troopsPerSecond)}/s)`;
+        const stats = `${formatCount(p.tiles)} · ${formatCount(p.troops)} (+${formatRate(p.troopsPerSecond)}/s)`;
         return (
           `<div class="${rowClass}">` +
           `<span class="lb-dot" style="background:${escapeHtml(p.color)}"></span>` +
@@ -873,10 +873,26 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
 };
 
 /**
- * Format a troops-per-second rate compactly: whole numbers once it's large
- * enough, otherwise one decimal so small early-game rates don't read as "+0/s".
+ * Compact integer formatting for large counts (troops, tiles): 1234 → "1.2k",
+ * 19595 → "20k", 1_250_000 → "1.3M". Keeps the sidebar and leaderboard legible
+ * once empires reach tens of thousands of tiles/troops instead of showing raw
+ * six-digit numbers.
  */
-const formatRate = (rate: number): string => (rate >= 10 ? String(Math.round(rate)) : rate.toFixed(1));
+const formatCount = (n: number): string => {
+  const v = Math.round(n);
+  if (Math.abs(v) >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (Math.abs(v) >= 10_000) return `${Math.round(v / 1000)}k`;
+  if (Math.abs(v) >= 1000) return `${(v / 1000).toFixed(1)}k`;
+  return String(v);
+};
+
+/**
+ * Format a troops-per-second rate compactly: large rates use the compact
+ * notation (k/M); small early-game rates keep one decimal so they don't read as
+ * "+0/s".
+ */
+const formatRate = (rate: number): string =>
+  rate >= 1000 ? formatCount(rate) : rate >= 10 ? String(Math.round(rate)) : rate.toFixed(1);
 
 /** Format whole seconds as m:ss for the stats screen. */
 const formatDuration = (seconds: number): string => {
