@@ -1,15 +1,49 @@
-import { RasterBotController, RASTER_BOT_PERSONALITIES } from "./RasterBotController.js";
+import {
+  RasterBotController,
+  RASTER_BOT_PERSONALITIES,
+  type RasterBotPersonality,
+} from "./RasterBotController.js";
 import { RasterGameSession, type RasterMessageHandler, type RasterGameSessionOptions } from "./RasterGameSession.js";
 import { RasterExpandIntent } from "../Core/types.js";
+import type { RasterDifficulty } from "../Core/messages.js";
 
 /**
- * Most opponents a solo match can seat. The session palette holds 6 player
- * slots; the human takes one, leaving 5 for bots.
+ * Most opponents a solo match can seat (the session caps total nations at 32, so
+ * up to 31 bots alongside the human). Difficulty picks how many actually spawn.
  */
-export const MAX_RASTER_BOTS = 5;
+export const MAX_RASTER_BOTS = 31;
 
 /** Default field of AI opponents — a multi-bot FFA rather than a 1v1 duel. */
-export const DEFAULT_RASTER_BOT_COUNT = 4;
+export const DEFAULT_RASTER_BOT_COUNT = 12;
+
+/** Rival nations seated per difficulty — more, harder opponents as it rises. */
+export const DIFFICULTY_BOT_COUNT: Record<RasterDifficulty, number> = {
+  easy: 6,
+  medium: 12,
+  hard: 20,
+};
+
+/**
+ * Tilt a personality by difficulty: Easy bots react slower and pick fewer
+ * fights; Hard bots react faster and press harder. Medium keeps the preset.
+ */
+const scalePersonality = (p: RasterBotPersonality, difficulty: RasterDifficulty): RasterBotPersonality => {
+  if (difficulty === "hard") {
+    return {
+      ...p,
+      decisionCooldownTicks: Math.max(4, Math.round(p.decisionCooldownTicks * 0.7)),
+      aggression: Math.min(1, p.aggression * 1.3),
+    };
+  }
+  if (difficulty === "easy") {
+    return {
+      ...p,
+      decisionCooldownTicks: Math.round(p.decisionCooldownTicks * 1.4),
+      aggression: p.aggression * 0.6,
+    };
+  }
+  return p;
+};
 
 /**
  * Manages isolated raster (openfront-style) matches. Each connecting client is
@@ -33,6 +67,7 @@ export class MatchRegistry {
     send: RasterMessageHandler,
     options: RasterGameSessionOptions = {},
     botCount: number = DEFAULT_RASTER_BOT_COUNT,
+    difficulty: RasterDifficulty = "medium",
   ): () => void {
     this.matchSequence += 1;
     const matchId = `match-${this.matchSequence}-raster-solo`;
@@ -46,7 +81,8 @@ export class MatchRegistry {
     const seats = Math.max(0, Math.min(Math.floor(botCount) || 0, MAX_RASTER_BOTS));
     const unsubBots: Array<() => void> = [];
     for (let i = 0; i < seats; i += 1) {
-      const personality = RASTER_BOT_PERSONALITIES[i % RASTER_BOT_PERSONALITIES.length];
+      const base = RASTER_BOT_PERSONALITIES[i % RASTER_BOT_PERSONALITIES.length];
+      const personality = scalePersonality(base, difficulty);
       const bot = new RasterBotController({ botId: `${matchId}-bot-${i + 1}`, personality });
       unsubBots.push(bot.attach(session));
     }

@@ -12,15 +12,18 @@ import type {
 } from "../Core/types.js";
 import { hideMenu, setStatus, type UiElements } from "./dom.js";
 import { paintRaster, paintTileInto } from "./rasterPaint.js";
-import { playerColor } from "./rasterPalette.js";
+import { playerColor, playerEmoji } from "./rasterPalette.js";
 import { loadRunHistory, recordRun, type RunRecord, type StorageLike } from "./runHistory.js";
 import { computeNameAnchors, type NameAnchor } from "./nameLayout.js";
 import { MAX_POOL_PER_TILE } from "../Core/rasterCombatConfig.js";
+import type { RasterDifficulty } from "../Core/messages.js";
 
-/** Options for starting a raster match: the chosen map. */
+/** Options for starting a raster match: the chosen map and difficulty. */
 export interface RasterClientOptions {
   /** Selected map-choice id (see `mapCatalog`). */
   mapId: string;
+  /** Selected difficulty (size + aggression of the AI field). */
+  difficulty: RasterDifficulty;
 }
 
 /**
@@ -215,7 +218,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   socket.addEventListener("open", () => {
     const join: RasterClientMessage = {
       type: "CLIENT_RASTER_JOIN",
-      payload: { mapId: options.mapId },
+      payload: { mapId: options.mapId, difficulty: options.difficulty },
     };
     socket.send(JSON.stringify(join));
   });
@@ -420,7 +423,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const owner = runtime.owner;
     const target = ensureBase();
     if (!map || !owner || !target) return;
-    paintRaster(map, owner, target.image.data);
+    paintRaster(map, owner, target.image.data, undefined, runtime.myPlayerId ?? -1);
     target.base.getContext("2d")?.putImageData(target.image, 0, 0);
   };
 
@@ -448,7 +451,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         for (const n of map.neighbors(index)) dirty.add(n);
       }
     }
-    for (const ref of dirty) paintTileInto(map, owner, ref, target.image.data);
+    const highlight = runtime.myPlayerId ?? -1;
+    for (const ref of dirty) paintTileInto(map, owner, ref, target.image.data, undefined, highlight);
     target.base.getContext("2d")?.putImageData(target.image, 0, 0);
   };
 
@@ -615,7 +619,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       // (for the leader) a crown above it — the OpenFront map readout.
       const showDetail = fontPx >= 14;
       const nameY = showDetail ? sy - fontPx * 0.26 : sy;
-      label(player.name, sx, nameY, fontPx, "600");
+      label(`${playerEmoji(player.playerId)} ${player.name}`, sx, nameY, fontPx, "600");
       if (showDetail) {
         label(formatCount(player.troops), sx, sy + fontPx * 0.52, fontPx * 0.62, "500");
         if (player.playerId === leaderId) {
@@ -812,7 +816,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         const rowClass = ["lb-row", isMe ? "me" : "", isLeader ? "leader" : ""]
           .filter(Boolean)
           .join(" ");
-        const name = escapeHtml(p.name) + (isMe ? " (you)" : "");
+        const name = `${playerEmoji(p.playerId)} ${escapeHtml(p.name)}` + (isMe ? " (you)" : "");
         const maxPool = p.tiles * MAX_POOL_PER_TILE;
         const own = runtime.capturableTotal > 0 ? (p.tiles / runtime.capturableTotal) * 100 : 0;
         const ownStr = own >= 10 ? String(Math.round(own)) : own.toFixed(1);

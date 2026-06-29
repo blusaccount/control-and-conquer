@@ -95,6 +95,21 @@ export const playerColor = (
   return { ...palette[index] };
 };
 
+/**
+ * Per-nation crest emojis, indexed by `(playerId - 1)`, wrapping for large ids.
+ * A lightweight stand-in for OpenFront's national flags: a recognisable symbol
+ * that disambiguates nations even when palette colours repeat at high counts.
+ */
+const PLAYER_EMOJIS: readonly string[] = [
+  "🦁", "🐺", "🦅", "🐉", "🐻", "🦈", "🐗", "🦊",
+  "🦂", "🐲", "🦉", "🐅", "🦏", "🐊", "🦇", "🐍",
+  "🦌", "🐃", "🦬", "🦣", "🐆", "🦓", "🦃", "🦅",
+];
+
+/** Crest emoji for a player id (wraps for ids beyond the set). */
+export const playerEmoji = (id: PlayerId): string =>
+  PLAYER_EMOJIS[(id - 1) % PLAYER_EMOJIS.length];
+
 /** Pure white, the target a border colour is lightened toward. */
 const WHITE: Rgba = { r: 255, g: 255, b: 255, a: 255 };
 
@@ -110,6 +125,17 @@ export const borderColor = (
   id: PlayerId,
   palette: readonly Rgba[] = DEFAULT_PLAYER_PALETTE,
 ): Rgba => lerpColor(playerColor(id, palette), WHITE, BORDER_LIGHTEN);
+
+/**
+ * Border colour for the local player's *own* nation: a near-pure-white outline
+ * so "me" reads at a glance on a crowded map (OpenFront highlights the player's
+ * own territory the same way). Still tinted a hair toward the owner hue so the
+ * nation colour is recognisable on the edge.
+ */
+export const ownBorderColor = (
+  id: PlayerId,
+  palette: readonly Rgba[] = DEFAULT_PLAYER_PALETTE,
+): Rgba => lerpColor(playerColor(id, palette), WHITE, 0.85);
 
 /** How strongly an owner's colour washes over the underlying terrain relief. */
 const OWNERSHIP_MIX = 0.55;

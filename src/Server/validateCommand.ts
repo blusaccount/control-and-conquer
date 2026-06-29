@@ -1,5 +1,5 @@
 import { RasterClientMessage, RasterExpandIntent } from "../Core/types.js";
-import { RasterJoinPayload, RasterSpawnPayload } from "../Core/messages.js";
+import { isRasterDifficulty, RasterJoinPayload, RasterSpawnPayload } from "../Core/messages.js";
 import { isMapChoiceId } from "../Core/mapCatalog.js";
 
 const parseRasterExpand = (payload: unknown): RasterExpandIntent => {
@@ -37,11 +37,17 @@ const parseRasterJoin = (payload: unknown): RasterJoinPayload => {
   if (typeof payload !== "object" || payload === null) {
     throw new Error("CLIENT_RASTER_JOIN.payload must be an object.");
   }
-  const { mapId } = payload as Record<string, unknown>;
+  const { mapId, difficulty } = payload as Record<string, unknown>;
   if (mapId !== undefined && !isMapChoiceId(mapId)) {
     throw new Error("mapId must be a known map id.");
   }
-  return mapId === undefined ? {} : { mapId };
+  if (difficulty !== undefined && !isRasterDifficulty(difficulty)) {
+    throw new Error("difficulty must be a known difficulty id.");
+  }
+  const out: RasterJoinPayload = {};
+  if (mapId !== undefined) out.mapId = mapId;
+  if (difficulty !== undefined) out.difficulty = difficulty;
+  return out;
 };
 
 export const validateCommand = (raw: unknown): RasterClientMessage => {

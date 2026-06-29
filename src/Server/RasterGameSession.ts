@@ -44,15 +44,34 @@ interface PendingExpand {
 
 const MAX_EVENTS = 10;
 
-/** Hex palette used to colour player 1..N. Indexed by playerId - 1. */
-const PLAYER_PALETTE: ReadonlyArray<{ name: string; color: string }> = [
-  { name: "Blue Empire", color: "#3b82f6" },
-  { name: "Red Empire", color: "#ef4444" },
-  { name: "Green Empire", color: "#22c55e" },
-  { name: "Amber Empire", color: "#f59e0b" },
-  { name: "Violet Empire", color: "#a855f7" },
-  { name: "Cyan Empire", color: "#06b6d4" },
+/** Hex colours for player 1..N, wrapping for large fields. Indexed by playerId-1. */
+const PLAYER_COLORS: readonly string[] = [
+  "#3b82f6", "#ef4444", "#22c55e", "#f59e0b", "#a855f7", "#06b6d4",
+  "#ec4899", "#84cc16", "#f97316", "#0ea5e9",
 ];
+
+/**
+ * Nation names, indexed by playerId-1. The first six keep the classic colour
+ * names (so small games read identically); the rest are distinct so a crowded
+ * map of many small nations stays legible. Length sets the player cap.
+ */
+const NATION_NAMES: readonly string[] = [
+  "Blue Empire", "Red Empire", "Green Empire", "Amber Empire", "Violet Empire", "Cyan Empire",
+  "Iron Pact", "Sun Dominion", "Frost Clans", "Ember League", "Stone Republic", "Tide Union",
+  "Ash Horde", "Dawn Coalition", "Storm Reach", "Ridge Confederacy", "Dust Khanate", "Reed Princes",
+  "Granite Order", "Marsh Syndicate", "Cinder Tribes", "Vale Compact", "Salt Barony", "Pine Hegemony",
+  "Wolf Banner", "Falcon State", "Boar Clans", "Serpent Cult", "Bear Holds", "Shark Fleet",
+  "Crane Court", "Lynx Reach",
+];
+
+/** Maximum nations a single session can seat (1 human + up to N-1 bots). */
+const MAX_PLAYERS = NATION_NAMES.length;
+
+/** Display name + colour for a player id (both wrap for ids beyond the lists). */
+const metaForPlayer = (id: PlayerId): { name: string; color: string } => ({
+  name: NATION_NAMES[(id - 1) % NATION_NAMES.length],
+  color: PLAYER_COLORS[(id - 1) % PLAYER_COLORS.length],
+});
 
 export interface RasterGameSessionOptions {
   /** Width in tiles. Default 64. Ignored when `realMapId` is set. */
@@ -227,11 +246,12 @@ export class RasterGameSession {
     const chosen: TileRef[] = [];
     // First spawn: the corner-most land tile (low x, low y).
     chosen.push(landTiles[0]);
-    while (chosen.length < PLAYER_PALETTE.length) {
-      let bestRef = landTiles[0];
+    const chosenSet = new Set<TileRef>(chosen);
+    while (chosen.length < MAX_PLAYERS) {
+      let bestRef = -1;
       let bestScore = -1;
       for (const candidate of candidates) {
-        if (chosen.includes(candidate)) continue;
+        if (chosenSet.has(candidate)) continue;
         const cx = this.map.x(candidate);
         const cy = this.map.y(candidate);
         let minDist = Infinity;
@@ -246,6 +266,9 @@ export class RasterGameSession {
           bestRef = candidate;
         }
       }
+      // No distinct candidate left (tiny map) — stop rather than duplicate spawns.
+      if (bestRef < 0) break;
+      chosenSet.add(bestRef);
       chosen.push(bestRef);
     }
     return chosen;
@@ -256,12 +279,12 @@ export class RasterGameSession {
     send: RasterMessageHandler,
     autoSpawn = true,
   ): () => void {
-    if (this.nextPlayerId > PLAYER_PALETTE.length) {
-      throw new Error(`Raster session is full (max ${PLAYER_PALETTE.length} players).`);
+    if (this.nextPlayerId > MAX_PLAYERS) {
+      throw new Error(`Raster session is full (max ${MAX_PLAYERS} players).`);
     }
     const playerId = this.nextPlayerId;
     this.nextPlayerId += 1;
-    const meta = PLAYER_PALETTE[playerId - 1];
+    const meta = metaForPlayer(playerId);
     this.playerMeta.set(playerId, meta);
 
     const subscriber: RasterSubscriber = {
@@ -276,7 +299,10 @@ export class RasterGameSession {
     // Bots (and any auto-spawn caller) take their precomputed spawn immediately;
     // a human is left *unspawned* until they pick a start position via
     // {@link selectSpawn}, so the player chooses where their empire begins.
-    if (autoSpawn) this.seatPlayer(playerId, this.spawnTiles[playerId - 1]);
+    if (autoSpawn) {
+      const spawn = this.spawnTiles[playerId - 1] ?? this.firstFreeSpawn();
+      if (spawn !== undefined) this.seatPlayer(playerId, spawn);
+    }
 
     send({
       type: "SERVER_RASTER_PLAYER_ASSIGNED",
@@ -295,6 +321,18 @@ export class RasterGameSession {
    * instant, only) tile becomes their capital — a fortified defense post whose
    * loss later eliminates them.
    */
+  /**
+   * First open (neutral, capturable) land tile, used as a fallback spawn when a
+   * precomputed spawn tile is exhausted (e.g. more bots than the spread sampler
+   * placed on a small map). Returns undefined only if no open land remains.
+   */
+  private firstFreeSpawn(): TileRef | undefined {
+    for (let ref = 0; ref < this.map.size; ref += 1) {
+      if (this.grid.isCapturable(ref) && this.grid.ownerOf(ref) === NEUTRAL_PLAYER) return ref;
+    }
+    return undefined;
+  }
+
   private seatPlayer(playerId: PlayerId, spawnRef: TileRef): void {
     this.grid.addPlayer(playerId, this.startingTroops);
     this.grid.claim(spawnRef, playerId);

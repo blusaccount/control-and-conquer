@@ -4,7 +4,8 @@ import { extname, join, normalize } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { MatchRegistry, DEFAULT_RASTER_BOT_COUNT, MAX_RASTER_BOTS } from "./MatchRegistry.js";
+import { MatchRegistry, DIFFICULTY_BOT_COUNT, MAX_RASTER_BOTS } from "./MatchRegistry.js";
+import { isRasterDifficulty } from "../Core/messages.js";
 import { validateCommand } from "./validateCommand.js";
 import { buildHeightmapGameMap, getHeightmapMap } from "./heightmapMaps.js";
 import {
@@ -52,12 +53,12 @@ if (defaultHeightmap) {
     `Pre-built default map "${defaultMapChoice.id}" at ${built.width}x${built.height} (${built.size} tiles).`,
   );
 }
-// Number of AI opponents seated in each solo match. Defaults to a small FFA;
-// clamp to the seats a session can fill and fall back on a bad value.
-const requestedBots = Number(process.env.RASTER_BOTS ?? DEFAULT_RASTER_BOT_COUNT);
-const botCount = Number.isFinite(requestedBots)
-  ? Math.max(0, Math.min(Math.floor(requestedBots), MAX_RASTER_BOTS))
-  : DEFAULT_RASTER_BOT_COUNT;
+// Optional fixed override for the AI count (mainly for testing). When set it
+// wins over the per-join difficulty; otherwise the chosen difficulty decides.
+const botOverrideRaw = process.env.RASTER_BOTS;
+const botOverride = botOverrideRaw !== undefined && Number.isFinite(Number(botOverrideRaw))
+  ? Math.max(0, Math.min(Math.floor(Number(botOverrideRaw)), MAX_RASTER_BOTS))
+  : undefined;
 
 const registry = new MatchRegistry();
 let clientSequence = 0;
@@ -134,11 +135,16 @@ wss.on("connection", (socket) => {
       if (message.type === "CLIENT_RASTER_JOIN") {
         if (!unsubscribe) {
           const choice = resolveMapChoice(message.payload.mapId);
+          const difficulty = isRasterDifficulty(message.payload.difficulty)
+            ? message.payload.difficulty
+            : "medium";
+          const bots = botOverride ?? DIFFICULTY_BOT_COUNT[difficulty];
           unsubscribe = registry.joinRasterSolo(
             clientId,
             send,
             { ...choice.options },
-            botCount,
+            bots,
+            difficulty,
           );
         }
       } else if (message.type === "CLIENT_RASTER_SELECT_SPAWN") {
@@ -167,7 +173,11 @@ wss.on("connection", (socket) => {
 server.listen(port, () => {
   console.log(`Control & Conquer listening on http://localhost:${port}`);
   console.log(`Default map: "${defaultMapChoice.id}". Selectable maps: ${MAP_CHOICES.map((m) => m.id).join(", ")}.`);
-  console.log(`Seating ${botCount} AI opponent(s) per solo match.`);
+  console.log(
+    botOverride !== undefined
+      ? `Seating a fixed ${botOverride} AI opponent(s) per solo match (RASTER_BOTS override).`
+      : `AI opponents per difficulty — easy: ${DIFFICULTY_BOT_COUNT.easy}, medium: ${DIFFICULTY_BOT_COUNT.medium}, hard: ${DIFFICULTY_BOT_COUNT.hard}.`,
+  );
   console.log(`Simulation loop running at ${SIMULATION_TICK_RATE} TPS.`);
 });
 

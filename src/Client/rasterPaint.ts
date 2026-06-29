@@ -1,6 +1,9 @@
 import type { GameMap } from "../Core/GameMap.js";
 import { NEUTRAL_PLAYER, type PlayerId } from "../Core/TerritoryGrid.js";
-import { borderColor, DEFAULT_PLAYER_PALETTE, tileColor, type Rgba } from "./rasterPalette.js";
+import { borderColor, DEFAULT_PLAYER_PALETTE, ownBorderColor, tileColor, type Rgba } from "./rasterPalette.js";
+
+/** Sentinel meaning "no own-nation highlight" for the paint functions. */
+const NO_HIGHLIGHT = -1;
 
 /** Allocate an RGBA pixel buffer (one pixel per tile) for a map. */
 export const createPixelBuffer = (map: GameMap): Uint8ClampedArray =>
@@ -25,16 +28,25 @@ export const isBorderTile = (
   return false;
 };
 
-/** On-screen colour for a tile: a bright border outline on owned edges, else the terrain+ownership blend. */
+/**
+ * On-screen colour for a tile: a bright border outline on owned edges (white-hot
+ * for the local player's own nation when `highlightId` matches), else the
+ * terrain+ownership blend.
+ */
 const colorForTile = (
   map: GameMap,
   owner: ArrayLike<PlayerId>,
   ref: number,
   palette: readonly Rgba[],
-): Rgba =>
-  isBorderTile(map, owner, ref)
-    ? borderColor(owner[ref], palette)
-    : tileColor(map.tile(ref), owner[ref], palette);
+  highlightId: number,
+): Rgba => {
+  if (!isBorderTile(map, owner, ref)) {
+    return tileColor(map.tile(ref), owner[ref], palette);
+  }
+  return owner[ref] === highlightId
+    ? ownBorderColor(owner[ref], palette)
+    : borderColor(owner[ref], palette);
+};
 
 /**
  * Paint a single tile's terrain + ownership colour into an RGBA buffer. Used
@@ -48,8 +60,9 @@ export const paintTileInto = (
   ref: number,
   pixels: Uint8ClampedArray,
   palette: readonly Rgba[] = DEFAULT_PLAYER_PALETTE,
+  highlightId: number = NO_HIGHLIGHT,
 ): void => {
-  const color = colorForTile(map, owner, ref, palette);
+  const color = colorForTile(map, owner, ref, palette, highlightId);
   const offset = ref * 4;
   pixels[offset] = color.r;
   pixels[offset + 1] = color.g;
@@ -70,6 +83,7 @@ export const paintRaster = (
   owner: ArrayLike<PlayerId>,
   pixels: Uint8ClampedArray,
   palette: readonly Rgba[] = DEFAULT_PLAYER_PALETTE,
+  highlightId: number = NO_HIGHLIGHT,
 ): void => {
   const expected = map.size * 4;
   if (pixels.length !== expected) {
@@ -79,7 +93,7 @@ export const paintRaster = (
     throw new Error(`Owner array length ${owner.length} does not match map.size ${map.size}.`);
   }
   for (let ref = 0; ref < map.size; ref += 1) {
-    const color = colorForTile(map, owner, ref, palette);
+    const color = colorForTile(map, owner, ref, palette, highlightId);
     const offset = ref * 4;
     pixels[offset] = color.r;
     pixels[offset + 1] = color.g;
