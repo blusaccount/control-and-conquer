@@ -173,6 +173,49 @@
         margin-top: 4px;
       }
       .menu-overlay.hidden { display: none; }
+
+      .stats-card {
+        background: #161a22;
+        border: 1px solid #2a3341;
+        border-radius: 12px;
+        padding: 20px 24px;
+        width: 360px;
+        max-width: 90vw;
+      }
+      .stats-card .verdict {
+        font-size: 22px;
+        font-weight: 700;
+        margin: 0 0 4px;
+      }
+      .stats-card .verdict.win { color: #4ade80; }
+      .stats-card .verdict.loss { color: #fca5a5; }
+      .stats-card .run-label {
+        color: #9ca3af;
+        font-size: 13px;
+        margin: 0 0 16px;
+      }
+      .stats-grid {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px 12px;
+        font-size: 14px;
+      }
+      .stats-grid .k { color: #9ca3af; }
+      .stats-grid .v { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+      .stats-history {
+        margin-top: 16px;
+        border-top: 1px solid #2a3341;
+        padding-top: 12px;
+      }
+      .stats-history h3 { font-size: 13px; margin: 0 0 8px; color: #cbd5e1; }
+      .stats-history .row {
+        display: flex;
+        justify-content: space-between;
+        font-size: 12px;
+        color: #9ca3af;
+        padding: 2px 0;
+        font-variant-numeric: tabular-nums;
+      }
       #events .event {
         font-size: 12px;
         padding: 4px 0;
@@ -241,6 +284,7 @@
   </head>
   <body>
 
+    <div id="statsOverlay" class="menu-overlay hidden"></div>
     <div id="menuOverlay" class="menu-overlay">
       <h1>Control &amp; Conquer</h1>
       <p class="hint">OpenFront-style territorial conquest on real-world maps. Expand your borders, cross the straits, take the map.</p>

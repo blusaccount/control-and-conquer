@@ -136,6 +136,46 @@ export interface RasterPlayerAssignedPayload {
   color: string;
 }
 
+/** Why a match ended. */
+export type RasterMatchEndReason =
+  /** A single player came to own every capturable tile. */
+  | "conquest"
+  /** The match clock ran out; the territory leader is declared the winner. */
+  | "timeLimit";
+
+/**
+ * End-of-run statistics for a single player, shown on the post-match screen.
+ * Built per-recipient so each client sees its own run.
+ */
+export interface RasterRunStats {
+  playerId: number;
+  /** Most tiles this player ever held during the match. */
+  peakTiles: number;
+  /** Tiles held at the final tick. */
+  finalTiles: number;
+  /** Opponents this player eliminated by capturing their capital. */
+  kills: number;
+  /** Ticks the player survived (until eliminated, else the full match). */
+  survivedTicks: number;
+  /** True if the player's capital was captured before the match ended. */
+  eliminated: boolean;
+  /** True if this player is the declared winner. */
+  won: boolean;
+}
+
+/** Payload broadcast when a raster match ends. */
+export interface RasterMatchEndedPayload {
+  /** Declared winner, or null if no player held any territory. */
+  winnerPlayerId: number | null;
+  reason: RasterMatchEndReason;
+  /** Total ticks the match ran. */
+  durationTicks: number;
+  /** Simulation tick rate, so the client can convert ticks to seconds. */
+  tickRate: number;
+  /** The receiving player's own run statistics. */
+  stats: RasterRunStats;
+}
+
 /** Messages the client can send to the server. */
 export type RasterClientMessage = {
   type: "CLIENT_RASTER_EXPAND";
@@ -148,4 +188,4 @@ export type RasterServerMessage =
   | { type: "SERVER_RASTER_PLAYER_ASSIGNED"; payload: RasterPlayerAssignedPayload }
   | { type: "SERVER_RASTER_SNAPSHOT"; payload: RasterSnapshot }
   | { type: "SERVER_RASTER_ACTION_REJECTED"; payload: RasterActionRejectedEvent }
-  | { type: "SERVER_RASTER_MATCH_ENDED"; payload: { winnerPlayerId: number } };
+  | { type: "SERVER_RASTER_MATCH_ENDED"; payload: RasterMatchEndedPayload };

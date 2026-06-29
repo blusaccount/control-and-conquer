@@ -35,6 +35,14 @@ export const TROOPS_PER_SECOND_PER_TILE = 0.05;
 /** Troops generated per second by a player holding `tiles` tiles. */
 export const troopsPerSecond = (tiles: number): number => tiles * TROOPS_PER_SECOND_PER_TILE;
 
+/**
+ * Maximum wall-clock length of a single roguelite run, in seconds. When the
+ * clock runs out the territory leader is declared the winner. Kept in seconds
+ * (a pure gameplay rule) so it stays independent of the server tick rate, which
+ * the session multiplies in to derive a tick budget.
+ */
+export const RASTER_MATCH_DURATION_SECONDS = 600;
+
 /** Base troop cost to claim a flat (elevation 0) neutral tile. */
 export const NEUTRAL_CAPTURE_COST = 1;
 

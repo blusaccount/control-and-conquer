@@ -3,6 +3,7 @@ import type { PlayerId } from "../Core/TerritoryGrid.js";
 import type {
   RasterClientMessage,
   RasterCrossing,
+  RasterMatchEndedPayload,
   RasterPlayerAssignedPayload,
   RasterPlayerInfo,
   RasterServerMessage,
@@ -11,6 +12,7 @@ import type {
 import { hideMenu, setStatus, type UiElements } from "./dom.js";
 import { paintRaster, paintTileInto } from "./rasterPaint.js";
 import { playerColor } from "./rasterPalette.js";
+import { loadRunHistory, recordRun, type RunRecord, type StorageLike } from "./runHistory.js";
 
 /**
  * Self-contained raster-mode client.
@@ -161,11 +163,64 @@ export const startRasterClient = (ui: UiElements): void => {
     } else if (message.type === "SERVER_RASTER_ACTION_REJECTED") {
       setStatus(ui, message.payload.message, "error");
     } else if (message.type === "SERVER_RASTER_MATCH_ENDED") {
-      runtime.matchEnded = true;
-      runtime.winnerPlayerId = message.payload.winnerPlayerId;
-      const youWon = runtime.myPlayerId === message.payload.winnerPlayerId;
-      setStatus(ui, youWon ? "You conquered the map!" : "The map has been conquered.", "victory");
+      onMatchEnded(message.payload);
     }
+  };
+
+  const onMatchEnded = (payload: RasterMatchEndedPayload): void => {
+    runtime.matchEnded = true;
+    runtime.winnerPlayerId = payload.winnerPlayerId;
+    setStatus(ui, payload.stats.won ? "You won the run!" : "Run over.", "victory");
+
+    const storage = safeStorage();
+    const record = recordRun(storage, payload, Date.now());
+    showStatsScreen(payload, record, loadRunHistory(storage));
+  };
+
+  /**
+   * Render the post-match stats screen: this run's verdict and key figures, a
+   * Play-Again button, and a short tail of previous runs from local history.
+   */
+  const showStatsScreen = (
+    payload: RasterMatchEndedPayload,
+    record: RunRecord,
+    history: RunRecord[],
+  ): void => {
+    const { stats, reason, durationTicks, tickRate } = payload;
+    const verdictClass = stats.won ? "win" : "loss";
+    const verdictText = stats.won ? "Victory!" : stats.eliminated ? "Eliminated" : "Defeated";
+    const reasonText = reason === "conquest" ? "by conquest" : "on the clock";
+    const matchSeconds = tickRate > 0 ? Math.round(durationTicks / tickRate) : 0;
+
+    const recent = history
+      .slice(-6)
+      .reverse()
+      .map((r) => {
+        const result = r.won ? "Win" : "Loss";
+        return (
+          `<div class="row"><span>Run #${r.run} · ${result}</span>` +
+          `<span>${r.peakTiles} tiles · ${r.kills} kills</span></div>`
+        );
+      })
+      .join("");
+
+    ui.statsOverlay.innerHTML =
+      `<div class="stats-card">` +
+      `<p class="verdict ${verdictClass}">${verdictText}</p>` +
+      `<p class="run-label">Run #${record.run} · ${escapeHtml(reasonText)} · match ${formatDuration(matchSeconds)}</p>` +
+      `<div class="stats-grid">` +
+      `<span class="k">Peak territory</span><span class="v">${stats.peakTiles} tiles</span>` +
+      `<span class="k">Final territory</span><span class="v">${stats.finalTiles} tiles</span>` +
+      `<span class="k">Eliminations</span><span class="v">${stats.kills}</span>` +
+      `<span class="k">Survival time</span><span class="v">${formatDuration(record.survivedSeconds)}</span>` +
+      `</div>` +
+      `<button id="statsPlayAgain" class="menu-button primary" type="button" style="width:100%;margin-top:16px;">Play Again</button>` +
+      (recent ? `<div class="stats-history"><h3>Recent runs</h3>${recent}</div>` : "") +
+      `</div>`;
+    ui.statsOverlay.classList.remove("hidden");
+
+    const again = ui.statsOverlay.querySelector<HTMLButtonElement>("#statsPlayAgain");
+    again?.addEventListener("click", () => window.location.reload());
   };
 
   const onAssigned = (payload: RasterPlayerAssignedPayload): void => {
@@ -639,6 +694,32 @@ export const startRasterClient = (ui: UiElements): void => {
  * enough, otherwise one decimal so small early-game rates don't read as "+0/s".
  */
 const formatRate = (rate: number): string => (rate >= 10 ? String(Math.round(rate)) : rate.toFixed(1));
+
+/** Format whole seconds as m:ss for the stats screen. */
+const formatDuration = (seconds: number): string => {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+};
+
+/**
+ * The browser's `localStorage`, or an in-memory stand-in when it is unavailable
+ * (private mode, disabled storage). Keeps run-history writes from throwing.
+ */
+const safeStorage = (): StorageLike => {
+  try {
+    if (typeof localStorage !== "undefined") return localStorage;
+  } catch {
+    // Access can throw in locked-down browsers; fall through to the stub.
+  }
+  const mem = new Map<string, string>();
+  return {
+    getItem: (key) => mem.get(key) ?? null,
+    setItem: (key, value) => {
+      mem.set(key, value);
+    },
+  };
+};
 
 const escapeHtml = (input: string): string =>
   input.replace(/[&<>"']/g, (ch) => {

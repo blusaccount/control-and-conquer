@@ -8,9 +8,13 @@ import type {
   RasterActionRejectedEvent,
   RasterCrossing,
   RasterExpandIntent,
+  RasterMatchEndReason,
   RasterRejectReason,
+  RasterRunStats,
   RasterServerMessage,
 } from "../Core/types.js";
+import { RASTER_MATCH_DURATION_SECONDS } from "../Core/rasterCombatConfig.js";
+import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import { buildRasterSnapshot, encodeOwnerDelta, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
 
 export type RasterMessageHandler = (message: RasterServerMessage) => void;
@@ -72,6 +76,13 @@ export interface RasterGameSessionOptions {
    * the map's default size.
    */
   mapSize?: number;
+  /**
+   * Hard match length in ticks. When reached, the match ends on the time limit
+   * and the territory leader wins. Defaults to
+   * {@link RASTER_MATCH_DURATION_SECONDS} converted at the server tick rate.
+   * Exposed mainly so tests can run short matches.
+   */
+  maxDurationTicks?: number;
 }
 
 const DEFAULT_OPTIONS: Required<RasterGameSessionOptions> = {
@@ -82,6 +93,7 @@ const DEFAULT_OPTIONS: Required<RasterGameSessionOptions> = {
   startingTroops: 50,
   realMapId: "",
   mapSize: 0,
+  maxDurationTicks: RASTER_MATCH_DURATION_SECONDS * SIMULATION_TICK_RATE,
 };
 
 /**
@@ -121,6 +133,14 @@ export class RasterGameSession {
   private readonly capitals = new Map<PlayerId, TileRef>();
   /** Players whose capital has fallen; their territory was turned neutral. */
   private readonly eliminated = new Set<PlayerId>();
+  /** Hard tick budget for the run; the match ends on the time limit when hit. */
+  private readonly maxDurationTicks: number;
+  /** Most tiles each player has held at any point — a run-stat. */
+  private readonly peakTiles = new Map<PlayerId, number>();
+  /** Capitals each player has captured (eliminations they caused) — a run-stat. */
+  private readonly kills = new Map<PlayerId, number>();
+  /** Tick at which a player was eliminated, for their survival-time stat. */
+  private readonly eliminationTick = new Map<PlayerId, number>();
 
   public constructor(options: RasterGameSessionOptions = {}) {
     const opts = { ...DEFAULT_OPTIONS, ...options };
@@ -130,6 +150,7 @@ export class RasterGameSession {
     this.mapName =
       options.mapName ?? (heightmapDef ? heightmapDef.name : realMap ? realMap.name : opts.mapName);
     this.startingTroops = opts.startingTroops;
+    this.maxDurationTicks = Math.max(1, Math.floor(opts.maxDurationTicks));
 
     let map;
     if (heightmapDef) {
@@ -235,6 +256,8 @@ export class RasterGameSession {
     const spawn = this.spawnTiles[playerId - 1];
     this.grid.claim(spawn, playerId);
     this.capitals.set(playerId, spawn);
+    this.peakTiles.set(playerId, this.grid.tileCountOf(playerId));
+    this.kills.set(playerId, 0);
 
     const subscriber: RasterSubscriber = {
       clientId,
@@ -267,6 +290,10 @@ export class RasterGameSession {
    * `AttackIntent`s, advance the conflict engine, then broadcast snapshots.
    */
   public tick(): void {
+    // Once the match has ended (conquest or time limit) the simulation freezes:
+    // no further state changes or broadcasts.
+    if (this.matchEndedBroadcast) return;
+
     const intents: AttackIntent[] = [];
     const rejections: Array<{ clientId: string; rejection: RasterActionRejectedEvent }> = [];
 
@@ -290,6 +317,12 @@ export class RasterGameSession {
     this.pendingExpands.length = 0;
 
     const tickResult = this.conflict.processTick(intents);
+
+    // Track each player's peak territory before any elimination neutralises it.
+    for (const id of this.grid.players()) {
+      const tiles = this.grid.tileCountOf(id);
+      if (tiles > (this.peakTiles.get(id) ?? 0)) this.peakTiles.set(id, tiles);
+    }
 
     // Convert this tick's amphibious landings to wire coordinates for animation.
     this.lastCrossings = tickResult.crossings.map((c) => ({
@@ -330,17 +363,67 @@ export class RasterGameSession {
       this.sendSnapshotTo(subscriber);
     }
 
-    if (tickResult.winner !== null && !this.matchEndedBroadcast) {
+    // End the match on conquest (a player owns everything) or when the clock
+    // runs out (the territory leader is crowned). Either way, broadcast a
+    // per-player run summary for the post-match stats screen.
+    const timeUp = this.conflict.tick >= this.maxDurationTicks;
+    if (tickResult.winner !== null || timeUp) {
       this.matchEndedBroadcast = true;
-      const winnerName = this.playerMeta.get(tickResult.winner)?.name ?? `Player ${tickResult.winner}`;
-      this.recentEvents = [`${winnerName} has conquered the map.`, ...this.recentEvents].slice(0, MAX_EVENTS);
+      const reason: RasterMatchEndReason = tickResult.winner !== null ? "conquest" : "timeLimit";
+      const winnerId = tickResult.winner !== null ? tickResult.winner : this.leaderByTiles();
+      const endTick = this.conflict.tick;
+
+      const endLine = winnerId === null
+        ? "The match ended with no survivors."
+        : reason === "conquest"
+          ? `${this.nameOf(winnerId)} has conquered the map.`
+          : `Time's up — ${this.nameOf(winnerId)} leads with the most territory.`;
+      this.recentEvents = [endLine, ...this.recentEvents].slice(0, MAX_EVENTS);
+
       for (const subscriber of this.subscribers.values()) {
         subscriber.send({
           type: "SERVER_RASTER_MATCH_ENDED",
-          payload: { winnerPlayerId: tickResult.winner },
+          payload: {
+            winnerPlayerId: winnerId,
+            reason,
+            durationTicks: endTick,
+            tickRate: SIMULATION_TICK_RATE,
+            stats: this.buildRunStats(subscriber.playerId, endTick, winnerId),
+          },
         });
       }
     }
+  }
+
+  private nameOf(id: PlayerId): string {
+    return this.playerMeta.get(id)?.name ?? `Player ${id}`;
+  }
+
+  /** The player holding the most tiles, ties broken by lowest id; null if none. */
+  private leaderByTiles(): PlayerId | null {
+    let leader: PlayerId | null = null;
+    let best = 0;
+    for (const id of this.grid.players()) {
+      const tiles = this.grid.tileCountOf(id);
+      if (tiles > best) {
+        best = tiles;
+        leader = id;
+      }
+    }
+    return leader;
+  }
+
+  /** Assemble a player's end-of-run statistics for the post-match screen. */
+  private buildRunStats(playerId: PlayerId, endTick: number, winnerId: PlayerId | null): RasterRunStats {
+    return {
+      playerId,
+      peakTiles: this.peakTiles.get(playerId) ?? 0,
+      finalTiles: this.grid.hasPlayer(playerId) ? this.grid.tileCountOf(playerId) : 0,
+      kills: this.kills.get(playerId) ?? 0,
+      survivedTicks: this.eliminationTick.get(playerId) ?? endTick,
+      eliminated: this.eliminated.has(playerId),
+      won: winnerId === playerId,
+    };
   }
 
   public getSubscriberCount(): number {
@@ -377,6 +460,11 @@ export class RasterGameSession {
       if (conqueror === playerId) continue; // Capital still held.
 
       this.eliminated.add(playerId);
+      this.eliminationTick.set(playerId, this.conflict.tick);
+      // Credit the conqueror with a kill (capital captured) for their run stats.
+      if (conqueror !== NEUTRAL_PLAYER) {
+        this.kills.set(conqueror, (this.kills.get(conqueror) ?? 0) + 1);
+      }
       // Neutralise the fallen player's remaining territory (the capital tile is
       // already owned by the conqueror, so it is excluded by ownership).
       for (const ref of this.grid.tilesOf(playerId)) {
