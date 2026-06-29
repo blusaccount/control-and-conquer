@@ -74,19 +74,37 @@ export const carveRivers = (opts: CarveRiversOptions): void => {
   // reached the pre-existing coastline. Only needed when extending mouths.
   const wasWater = extendMouths ? land.slice() : null;
 
+  const setWater = (x: number, y: number): void => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return;
+    const i = y * width + x;
+    land[i] = 0;
+    elevation[i] = 0;
+  };
+
+  // Previous brush centre along the current trace, so a single-tile channel can
+  // stay 4-connected (see below). Reset to NaN at the start of every trace.
+  let prevX = NaN;
+  let prevY = NaN;
+
   const stamp = (cx: number, cy: number): void => {
     const cxi = Math.round(cx);
     const cyi = Math.round(cy);
+    // At halfWidth 0 the brush is a single tile, so a diagonal step between two
+    // samples lands on a tile that is only 8-connected to the previous one. The
+    // ocean flood-fill is 4-connected, so such a channel would be cut into
+    // isolated lakes. Bridge each diagonal step with one orthogonal connector
+    // tile to keep the thin channel 4-connected (no visible widening). Wider
+    // brushes already overlap 4-connectedly, so this is a no-op for them.
+    if (cxi !== prevX && cyi !== prevY && !Number.isNaN(prevX)) {
+      setWater(prevX, cyi);
+    }
+    prevX = cxi;
+    prevY = cyi;
     const r = halfWidth;
     for (let dy = -r; dy <= r; dy += 1) {
       for (let dx = -r; dx <= r; dx += 1) {
         if (dx * dx + dy * dy > r * r) continue;
-        const x = cxi + dx;
-        const y = cyi + dy;
-        if (x < 0 || y < 0 || x >= width || y >= height) continue;
-        const i = y * width + x;
-        land[i] = 0;
-        elevation[i] = 0;
+        setWater(cxi + dx, cyi + dy);
       }
     }
   };
@@ -97,6 +115,8 @@ export const carveRivers = (opts: CarveRiversOptions): void => {
 
   for (const river of rivers) {
     const pts = river.points;
+    prevX = NaN;
+    prevY = NaN;
     for (let s = 0; s < pts.length - 1; s += 1) {
       const ax = lonToTx(pts[s][0]);
       const ay = latToTy(pts[s][1]);
@@ -117,6 +137,8 @@ export const carveRivers = (opts: CarveRiversOptions): void => {
     // the finishing flood-fill classifies the whole river as ocean). If the
     // mouth already sits on water this stops immediately.
     if (extendMouths && pts.length >= 2) {
+      // The mouth extension continues straight from the final reach, so keep the
+      // 4-connected trail running (do not reset prevX/prevY here).
       const px = lonToTx(pts[pts.length - 2][0]);
       const py = latToTy(pts[pts.length - 2][1]);
       const mx = lonToTx(pts[pts.length - 1][0]);
@@ -139,9 +161,12 @@ export const carveRivers = (opts: CarveRiversOptions): void => {
 };
 
 /**
- * Brush half-width to use for a given grid width: wider grids get fatter rivers
- * so they stay visible, while small grids keep single-tile channels that don't
- * swallow the land they cut through.
+ * Brush half-width to use for a given grid width. OpenFront paints rivers as
+ * thin (≈1-tile) water channels in its source maps and never fattens them by
+ * map size, so we keep single-tile channels at every normal grid size: a wider
+ * brush makes rivers read as bloated lakes (and the bright shallow-water shading
+ * adds a glow halo on each side that exaggerates them further). Only very
+ * high-resolution grids, where a single tile would shrink below a pixel, widen
+ * to a 3-tile channel so the river stays visible.
  */
-export const riverHalfWidthFor = (width: number): number =>
-  width >= 1500 ? 2 : width >= 600 ? 1 : 0;
+export const riverHalfWidthFor = (width: number): number => (width >= 2400 ? 1 : 0);

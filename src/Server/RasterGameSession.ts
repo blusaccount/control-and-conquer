@@ -12,9 +12,11 @@ import type {
   RasterExpandIntent,
   RasterMatchEndReason,
   RasterRejectReason,
+  RasterRail,
   RasterRunStats,
   RasterServerMessage,
   RasterShip,
+  RasterTrain,
 } from "../Core/types.js";
 import { RASTER_MATCH_DURATION_SECONDS } from "../Core/rasterCombatConfig.js";
 import { BUILDING_DEFS, buildingCost } from "../Core/buildings.js";
@@ -172,6 +174,10 @@ export class RasterGameSession {
   private lastShips: RasterShip[] = [];
   /** Active land-attack fronts from the most recent tick, for on-map troop labels. */
   private lastFronts: RasterAttackFront[] = [];
+  /** Auto-routed railroads as of the most recent tick, for the client to draw. */
+  private lastRails: RasterRail[] = [];
+  /** Trains riding the rails as of the most recent tick, for the client to draw. */
+  private lastTrains: RasterTrain[] = [];
   /** Determines spawn placement: each new subscriber takes the next slot. */
   private nextPlayerId: PlayerId = 1;
   private matchEndedBroadcast = false;
@@ -586,6 +592,10 @@ export class RasterGameSession {
       x: this.map.x(f.tile),
       y: this.map.y(f.tile),
     }));
+    // Auto-routed railroads and the trains riding them → wire records, so the
+    // client can draw the track network and the moving trains over the map.
+    this.lastRails = this.conflict.railLinks().map((r) => ({ playerId: r.owner, points: r.points }));
+    this.lastTrains = this.conflict.activeTrains().map((t) => ({ playerId: t.owner, x: t.x, y: t.y }));
 
     // Append a single event line per command issued this tick, newest first.
     if (eventLines.length > 0) {
@@ -981,6 +991,8 @@ export class RasterGameSession {
       crossings: this.lastCrossings,
       ships: this.lastShips,
       fronts: this.lastFronts,
+      rails: this.lastRails,
+      trains: this.lastTrains,
       ownerDeltaBase64,
       omitOwner: !subscriber.wantsRaster,
       eliminated: this.eliminated,

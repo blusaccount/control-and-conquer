@@ -4,10 +4,14 @@ import { carveRivers, riverHalfWidthFor, type River } from "../src/Server/rivers
 import { loadEarthRivers } from "../src/Server/riverData.js";
 import { buildHeightmapGameMap, getHeightmapMap } from "../src/Server/heightmapMaps.js";
 
-test("riverHalfWidthFor scales the brush with grid width", () => {
+test("riverHalfWidthFor keeps rivers single-tile until very high resolution", () => {
+  // Like OpenFront, rivers stay thin (single-tile) at every normal grid size;
+  // only very wide grids widen to a 3-tile channel so they don't sub-pixel away.
   assert.equal(riverHalfWidthFor(256), 0);
-  assert.equal(riverHalfWidthFor(1024), 1);
-  assert.equal(riverHalfWidthFor(2048), 2);
+  assert.equal(riverHalfWidthFor(1024), 0);
+  assert.equal(riverHalfWidthFor(2048), 0);
+  assert.equal(riverHalfWidthFor(2400), 1);
+  assert.equal(riverHalfWidthFor(4096), 1);
 });
 
 test("carveRivers stamps a continuous water channel into a land mask", () => {

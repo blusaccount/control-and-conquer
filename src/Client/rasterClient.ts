@@ -9,9 +9,11 @@ import type {
   RasterMatchPhase,
   RasterPlayerAssignedPayload,
   RasterPlayerInfo,
+  RasterRail,
   RasterServerMessage,
   RasterShip,
   RasterSnapshot,
+  RasterTrain,
 } from "../Core/types.js";
 import { hideMenu, setStatus, type UiElements } from "./dom.js";
 import { paintRaster, paintTileInto } from "./rasterPaint.js";
@@ -116,10 +118,15 @@ interface RasterRuntime {
   myCities: number;
   myPorts: number;
   myForts: number;
+  myFactories: number;
   /** The structure type the player is placing, or null when not in build mode. */
   buildMode: BuildingType | null;
   /** Structures on the map this snapshot, drawn as icon markers. */
   buildings: RasterBuilding[];
+  /** Auto-routed railroads this snapshot, drawn as track polylines. */
+  rails: RasterRail[];
+  /** Trains riding the rails this snapshot, drawn as moving dots. */
+  trains: RasterTrain[];
   capturableTotal: number;
   /** Full player standings from the latest snapshot, for the leaderboard. */
   players: RasterPlayerInfo[];
@@ -306,8 +313,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     myCities: 0,
     myPorts: 0,
     myForts: 0,
+    myFactories: 0,
     buildMode: null,
     buildings: [],
+    rails: [],
+    trains: [],
     capturableTotal: 0,
     players: [],
     recentEvents: [],
@@ -360,7 +370,13 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
 
   /** How many of `type` we currently own — feeds the geometric cost ramp. */
   const myBuildingCount = (type: BuildingType): number =>
-    type === "city" ? runtime.myCities : type === "port" ? runtime.myPorts : runtime.myForts;
+    type === "city"
+      ? runtime.myCities
+      : type === "port"
+        ? runtime.myPorts
+        : type === "factory"
+          ? runtime.myFactories
+          : runtime.myForts;
 
   /**
    * Build the (static) build-menu buttons once and wire each to toggle build
@@ -584,7 +600,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.myCities = me?.cities ?? 0;
     runtime.myPorts = me?.ports ?? 0;
     runtime.myForts = me?.forts ?? 0;
+    runtime.myFactories = me?.factories ?? 0;
     runtime.buildings = snapshot.buildings ?? [];
+    runtime.rails = snapshot.rails ?? [];
+    runtime.trains = snapshot.trains ?? [];
 
     // The first snapshot in which we hold land marks the end of the spawn phase:
     // zoom the camera in on the tile we founded on so the run starts at home.
@@ -776,7 +795,9 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       drawBorders(ctx, scale);
       recomputeNames(now);
       drawNames(ctx, scale);
+      drawRails(ctx, scale);
       drawBuildings(ctx, scale);
+      drawTrains(ctx, scale);
       drawShips(ctx, scale);
       drawLandings(now, ctx, scale);
       drawFronts(ctx, scale);
@@ -946,6 +967,62 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     ctx.strokeStyle = "rgba(34, 197, 94, 0.95)";
     ctx.lineWidth = 1;
     ctx.strokeRect(rx + 0.5, ry + 0.5, Math.max(1, viewW * t.scale - 1), Math.max(1, viewH * t.scale - 1));
+  };
+
+  /**
+   * Draw the auto-routed railroads as track polylines: a dark casing with a
+   * lighter steel rail on top so the network reads as track, not borders. Drawn
+   * beneath the building icons (the stations) it links. Skipped when zoomed too
+   * far out to keep the map tidy, matching the building-marker threshold.
+   */
+  const drawRails = (ctx: CanvasRenderingContext2D, scale: number): void => {
+    if (runtime.rails.length === 0 || scale < 2) return;
+    const lw = Math.max(1, scale * 0.45);
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    for (const rail of runtime.rails) {
+      if (rail.points.length < 2) continue;
+      ctx.beginPath();
+      for (let i = 0; i < rail.points.length; i += 1) {
+        const p = worldToScreen(rail.points[i][0] + 0.5, rail.points[i][1] + 0.5);
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      }
+      ctx.strokeStyle = "rgba(38, 40, 48, 0.85)";
+      ctx.lineWidth = lw * 1.7;
+      ctx.stroke();
+      ctx.strokeStyle = "rgba(176, 182, 194, 0.9)";
+      ctx.lineWidth = Math.max(0.6, lw * 0.55);
+      ctx.stroke();
+    }
+    ctx.restore();
+  };
+
+  /**
+   * Draw each train as a small owner-coloured dot with a dark halo, at its
+   * fractional position along the track. Trains earn gold at every city/port
+   * they reach, so seeing them roll is the visible payoff of a rail network.
+   */
+  const drawTrains = (ctx: CanvasRenderingContext2D, scale: number): void => {
+    if (runtime.trains.length === 0 || scale < 2) return;
+    const cw = ui.mapCanvas.width;
+    const ch = ui.mapCanvas.height;
+    const radius = Math.max(1.6, scale * 0.28);
+    ctx.save();
+    for (const train of runtime.trains) {
+      const p = worldToScreen(train.x + 0.5, train.y + 0.5);
+      if (p.x < -radius || p.y < -radius || p.x > cw + radius || p.y > ch + radius) continue;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, radius + 1.2, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+      ctx.fillStyle = rgbaToCss(playerColor(train.playerId));
+      ctx.fill();
+    }
+    ctx.restore();
   };
 
   /**
@@ -1167,7 +1244,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         `<span class="res-rate">+${formatRate(runtime.goldPerSecond)}/s</span></span>` +
         `<span class="res"><span class="res-ico">🗺️</span>` +
         `<span class="res-val">${pctStr}%</span></span>` +
-        `<span class="res res-builds">🏛️ ${runtime.myCities} ⚓ ${runtime.myPorts} 🛡️ ${runtime.myForts}</span>`;
+        `<span class="res res-builds">🏛️ ${runtime.myCities} ⚓ ${runtime.myPorts} 🛡️ ${runtime.myForts} 🏭 ${runtime.myFactories}</span>`;
     }
     refreshBuildMenu();
     if (!live) {

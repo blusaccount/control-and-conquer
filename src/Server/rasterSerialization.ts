@@ -5,7 +5,7 @@ import type { TerritoryGrid } from "../Core/TerritoryGrid.js";
 import { troopsPerSecond } from "../Core/rasterCombatConfig.js";
 import { goldPerSecond } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
-import type { RasterAttackFront, RasterBuilding, RasterCrossing, RasterMatchPhase, RasterPlayerInfo, RasterShip, RasterSnapshot } from "../Core/types.js";
+import type { RasterAttackFront, RasterBuilding, RasterCrossing, RasterMatchPhase, RasterPlayerInfo, RasterRail, RasterShip, RasterSnapshot, RasterTrain } from "../Core/types.js";
 
 /**
  * Serialize a `GameMap`'s static terrain into base64 plus a stable hash.
@@ -92,6 +92,10 @@ export interface BuildSnapshotInput {
   ships: RasterShip[];
   /** Active land-attack fronts this tick (for the on-map troop-count labels). */
   fronts: RasterAttackFront[];
+  /** Auto-routed railroads this snapshot (for the client to draw track). */
+  rails?: RasterRail[];
+  /** Trains riding the rail network this snapshot (for the client to draw dots). */
+  trains?: RasterTrain[];
   /**
    * When set, the snapshot carries this incremental ownership update instead of
    * the full owner raster. When omitted, the full raster is encoded and sent.
@@ -109,7 +113,7 @@ export interface BuildSnapshotInput {
 }
 
 export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot => {
-  const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, includeTerrain, terrainHash, terrainBase64, winnerPlayerId, recentEvents, crossings, ships, fronts, ownerDeltaBase64, omitOwner, eliminated } = input;
+  const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, includeTerrain, terrainHash, terrainBase64, winnerPlayerId, recentEvents, crossings, ships, fronts, rails = [], trains = [], ownerDeltaBase64, omitOwner, eliminated } = input;
 
   const players: RasterPlayerInfo[] = [];
   for (const id of grid.players()) {
@@ -126,6 +130,7 @@ export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
       cities,
       ports: grid.buildingCountOf(id, "port"),
       forts: grid.buildingCountOf(id, "fort"),
+      factories: grid.buildingCountOf(id, "factory"),
       tiles,
       troopsPerSecond: troopsPerSecond(tiles, grid.troopsOf(id), SIMULATION_TICK_RATE, grid.incomeMultiplierOf(id), cities),
       eliminated: eliminated?.has(id) ?? false,
@@ -164,6 +169,8 @@ export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
     crossings,
     ships,
     buildings,
+    rails,
+    trains,
     fronts,
   };
 };
