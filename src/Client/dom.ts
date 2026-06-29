@@ -17,6 +17,7 @@ export interface UiElements {
   leaderboard: HTMLDivElement;
   menuOverlay: HTMLDivElement;
   statsOverlay: HTMLDivElement;
+  perkOverlay: HTMLDivElement;
   playButton: HTMLButtonElement;
 }
 
@@ -34,6 +35,7 @@ export const getUiElements = (): UiElements => {
   const leaderboard = document.querySelector<HTMLDivElement>("#leaderboard");
   const menuOverlay = document.querySelector<HTMLDivElement>("#menuOverlay");
   const statsOverlay = document.querySelector<HTMLDivElement>("#statsOverlay");
+  const perkOverlay = document.querySelector<HTMLDivElement>("#perkOverlay");
   const playButton = document.querySelector<HTMLButtonElement>("#playButton");
 
   if (
@@ -48,6 +50,7 @@ export const getUiElements = (): UiElements => {
     !leaderboard ||
     !menuOverlay ||
     !statsOverlay ||
+    !perkOverlay ||
     !playButton
   ) {
     throw new Error("UI failed to initialize.");
@@ -73,6 +76,7 @@ export const getUiElements = (): UiElements => {
     leaderboard,
     menuOverlay,
     statsOverlay,
+    perkOverlay,
     playButton,
   };
 };

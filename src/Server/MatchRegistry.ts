@@ -1,6 +1,7 @@
 import { RasterBotController, RASTER_BOT_PERSONALITIES } from "./RasterBotController.js";
 import { RasterGameSession, type RasterMessageHandler, type RasterGameSessionOptions } from "./RasterGameSession.js";
 import { RasterExpandIntent } from "../Core/types.js";
+import type { PerkId } from "../Core/perks.js";
 
 /**
  * Most opponents a solo match can seat. The session palette holds 6 player
@@ -60,6 +61,10 @@ export class MatchRegistry {
 
   public queueRasterExpand(clientId: string, intent: RasterExpandIntent): void {
     this.clientToSession.get(clientId)?.queueExpand(clientId, intent);
+  }
+
+  public choosePerk(clientId: string, perkId: PerkId): void {
+    this.clientToSession.get(clientId)?.choosePerk(clientId, perkId);
   }
 
   public tickAll(): void {

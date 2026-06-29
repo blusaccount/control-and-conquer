@@ -175,13 +175,18 @@ export class RasterConflict {
    * whether the tile is taken across a land border or by an amphibious landing
    * (`viaSea`), which carries an extra surcharge.
    */
-  private captureCost(ref: TileRef, target: PlayerId, viaSea: boolean): number {
+  private captureCost(ref: TileRef, attacker: PlayerId, target: PlayerId, viaSea: boolean): number {
     const base = target === NEUTRAL_PLAYER
       ? NEUTRAL_CAPTURE_COST
       : NEUTRAL_CAPTURE_COST + ENEMY_CAPTURE_SURCHARGE;
     const elevationCost = this.grid.map.magnitude(ref) * ELEVATION_COST_PER_LEVEL;
-    const seaCost = viaSea ? SEA_CROSSING_SURCHARGE : 0;
-    return Math.ceil(base + elevationCost + seaCost);
+    // Faster boats (Sea God) lower the crossing surcharge — an effectively
+    // quicker landing.
+    const seaCost = viaSea ? SEA_CROSSING_SURCHARGE / this.grid.modifiersOf(attacker).seaSpeed : 0;
+    let cost = base + elevationCost + seaCost;
+    // The defender's Fortress Wall raises the cost to capture their tiles.
+    if (target !== NEUTRAL_PLAYER) cost *= this.grid.modifiersOf(target).defense;
+    return Math.ceil(cost);
   }
 
   /**
@@ -197,7 +202,8 @@ export class RasterConflict {
         this.incomeAccumulator.set(id, 0);
         continue;
       }
-      const accumulated = (this.incomeAccumulator.get(id) ?? 0) + tiles * INCOME_PER_TILE_PER_TICK;
+      const incomeRate = tiles * INCOME_PER_TILE_PER_TICK * this.grid.modifiersOf(id).income;
+      const accumulated = (this.incomeAccumulator.get(id) ?? 0) + incomeRate;
       const whole = Math.floor(accumulated);
       if (whole > 0) {
         const next = Math.min(cap, this.grid.troopsOf(id) + whole);
@@ -227,7 +233,9 @@ export class RasterConflict {
 
       // Spend at most this slice of the remaining troops this tick, but always
       // enough to attempt the cheapest possible capture so progress is steady.
-      const budget = Math.max(NEUTRAL_CAPTURE_COST, attack.committed * EXPANSION_SPEND_FRACTION);
+      // Swift Attacker lets a front spend more of its troops per tick.
+      const expansionSpeed = this.grid.modifiersOf(attack.attacker).expansionSpeed;
+      const budget = Math.max(NEUTRAL_CAPTURE_COST, attack.committed * EXPANSION_SPEND_FRACTION * expansionSpeed);
       let spent = 0;
 
       for (const ref of frontier) {
@@ -236,11 +244,12 @@ export class RasterConflict {
         if (this.grid.ownerOf(ref) !== attack.target) continue;
         // Reached only via an amphibious landing if no land border touches it.
         const viaSea = !this.grid.hasLandFrontier(attack.attacker, ref);
-        const cost = this.captureCost(ref, attack.target, viaSea);
+        const cost = this.captureCost(ref, attack.attacker, attack.target, viaSea);
         if (attack.committed < cost || spent + cost > budget) continue;
 
         if (attack.target !== NEUTRAL_PLAYER) {
-          this.grid.addTroops(attack.target, -DEFENDER_LOSS_PER_TILE);
+          // Fortress Wall also blunts the defender's troop bleed per tile lost.
+          this.grid.addTroops(attack.target, -DEFENDER_LOSS_PER_TILE / this.grid.modifiersOf(attack.target).defense);
         }
         if (viaSea) {
           // Record the landing so the client can animate the crossing. The

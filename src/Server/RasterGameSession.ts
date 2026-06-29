@@ -13,7 +13,13 @@ import type {
   RasterRunStats,
   RasterServerMessage,
 } from "../Core/types.js";
-import { RASTER_MATCH_DURATION_SECONDS } from "../Core/rasterCombatConfig.js";
+import { PERK_OFFER_INTERVAL_SECONDS, RASTER_MATCH_DURATION_SECONDS } from "../Core/rasterCombatConfig.js";
+import {
+  modifiersForPerks,
+  offerPerks,
+  PERK_DEFINITIONS,
+  type PerkId,
+} from "../Core/perks.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import { buildRasterSnapshot, encodeOwnerDelta, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
 
@@ -83,6 +89,12 @@ export interface RasterGameSessionOptions {
    * Exposed mainly so tests can run short matches.
    */
   maxDurationTicks?: number;
+  /**
+   * Ticks between perk-offer rounds. Defaults to
+   * {@link PERK_OFFER_INTERVAL_SECONDS} at the server tick rate. Exposed so tests
+   * can trigger offers quickly.
+   */
+  perkIntervalTicks?: number;
 }
 
 const DEFAULT_OPTIONS: Required<RasterGameSessionOptions> = {
@@ -94,6 +106,7 @@ const DEFAULT_OPTIONS: Required<RasterGameSessionOptions> = {
   realMapId: "",
   mapSize: 0,
   maxDurationTicks: RASTER_MATCH_DURATION_SECONDS * SIMULATION_TICK_RATE,
+  perkIntervalTicks: PERK_OFFER_INTERVAL_SECONDS * SIMULATION_TICK_RATE,
 };
 
 /**
@@ -141,6 +154,14 @@ export class RasterGameSession {
   private readonly kills = new Map<PlayerId, number>();
   /** Tick at which a player was eliminated, for their survival-time stat. */
   private readonly eliminationTick = new Map<PlayerId, number>();
+  /** Ticks between perk-offer rounds. */
+  private readonly perkIntervalTicks: number;
+  /** Perks each player has chosen so far, in pick order. */
+  private readonly chosenPerks = new Map<PlayerId, PerkId[]>();
+  /** The outstanding perk offer per player (the set they may legally pick from). */
+  private readonly pendingOffer = new Map<PlayerId, PerkId[]>();
+  /** Number of perk rounds offered so far (drives the deterministic offer set). */
+  private perkRound = 0;
 
   public constructor(options: RasterGameSessionOptions = {}) {
     const opts = { ...DEFAULT_OPTIONS, ...options };
@@ -151,6 +172,7 @@ export class RasterGameSession {
       options.mapName ?? (heightmapDef ? heightmapDef.name : realMap ? realMap.name : opts.mapName);
     this.startingTroops = opts.startingTroops;
     this.maxDurationTicks = Math.max(1, Math.floor(opts.maxDurationTicks));
+    this.perkIntervalTicks = Math.max(1, Math.floor(opts.perkIntervalTicks));
 
     let map;
     if (heightmapDef) {
@@ -258,6 +280,7 @@ export class RasterGameSession {
     this.capitals.set(playerId, spawn);
     this.peakTiles.set(playerId, this.grid.tileCountOf(playerId));
     this.kills.set(playerId, 0);
+    this.chosenPerks.set(playerId, []);
 
     const subscriber: RasterSubscriber = {
       clientId,
@@ -392,7 +415,47 @@ export class RasterGameSession {
           },
         });
       }
+      return;
     }
+
+    // Periodic perk offer (skipped on the tick a match ends, handled above).
+    if (this.conflict.tick > 0 && this.conflict.tick % this.perkIntervalTicks === 0) {
+      this.broadcastPerkOffer();
+    }
+  }
+
+  /** Offer every player the next deterministic set of perks to choose from. */
+  private broadcastPerkOffer(): void {
+    const options = offerPerks(this.perkRound);
+    const offerNumber = this.perkRound + 1;
+    this.perkRound += 1;
+    for (const subscriber of this.subscribers.values()) {
+      this.pendingOffer.set(subscriber.playerId, options);
+      subscriber.send({ type: "SERVER_PERK_OFFER", payload: { options: [...options], offerNumber } });
+    }
+  }
+
+  /**
+   * Apply a player's perk choice. Ignored unless it matches that player's
+   * outstanding offer, so a client can't grant itself arbitrary perks. Recomputes
+   * the player's modifiers from their full pick history and clears the offer.
+   */
+  public choosePerk(clientId: string, perkId: PerkId): void {
+    const subscriber = this.subscribers.get(clientId);
+    if (!subscriber) return;
+    const pending = this.pendingOffer.get(subscriber.playerId);
+    if (!pending || !pending.includes(perkId)) return;
+    this.pendingOffer.delete(subscriber.playerId);
+
+    const chosen = this.chosenPerks.get(subscriber.playerId) ?? [];
+    chosen.push(perkId);
+    this.chosenPerks.set(subscriber.playerId, chosen);
+    this.grid.setModifiers(subscriber.playerId, modifiersForPerks(chosen));
+
+    this.recentEvents = [
+      `${this.nameOf(subscriber.playerId)} gained ${PERK_DEFINITIONS[perkId].name}.`,
+      ...this.recentEvents,
+    ].slice(0, MAX_EVENTS);
   }
 
   private nameOf(id: PlayerId): string {

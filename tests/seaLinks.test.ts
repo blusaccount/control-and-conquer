@@ -50,3 +50,14 @@ test("adjacent banks across a one-tile river are linked", () => {
   const links = SeaLinks.build(m, 6);
   assert.ok(links.areLinked(1, 3), "a one-tile river should be crossable");
 });
+
+test("neighborsWithin filters links by crossing distance", () => {
+  // land 0,1 ; water 2..6 (5 tiles) ; land 7,8. Built wide; filtered narrow.
+  const m = rowMap("##     ##");
+  const links = SeaLinks.build(m, 12);
+  // The graph holds the 5-tile crossing...
+  assert.ok(links.neighborsOf(1).includes(7));
+  // ...and a range of 5 still reaches it, but a range of 4 does not.
+  assert.ok(links.neighborsWithin(1, 5).includes(7), "range 5 reaches a 5-tile crossing");
+  assert.ok(!links.neighborsWithin(1, 4).includes(7), "range 4 is too short");
+});

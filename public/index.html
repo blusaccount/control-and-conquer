@@ -216,6 +216,33 @@
         padding: 2px 0;
         font-variant-numeric: tabular-nums;
       }
+
+      .perk-cards {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        justify-content: center;
+        max-width: 720px;
+      }
+      .perk-card {
+        width: 200px;
+        background: #161a22;
+        border: 1px solid #2a3341;
+        border-radius: 12px;
+        padding: 18px;
+        cursor: pointer;
+        text-align: left;
+        color: #f3f4f6;
+        transition: border-color 0.12s, transform 0.12s;
+      }
+      .perk-card:hover,
+      .perk-card:focus-visible {
+        border-color: #2563eb;
+        transform: translateY(-2px);
+        outline: none;
+      }
+      .perk-card h3 { margin: 0 0 8px; font-size: 16px; }
+      .perk-card p { margin: 0; font-size: 13px; color: #9ca3af; }
       #events .event {
         font-size: 12px;
         padding: 4px 0;
@@ -285,6 +312,10 @@
   <body>
 
     <div id="statsOverlay" class="menu-overlay hidden"></div>
+    <div id="perkOverlay" class="menu-overlay hidden">
+      <h1 id="perkHeading">Choose a Perk</h1>
+      <div id="perkCards" class="perk-cards"></div>
+    </div>
     <div id="menuOverlay" class="menu-overlay">
       <h1>Control &amp; Conquer</h1>
       <p class="hint">OpenFront-style territorial conquest on real-world maps. Expand your borders, cross the straits, take the map.</p>

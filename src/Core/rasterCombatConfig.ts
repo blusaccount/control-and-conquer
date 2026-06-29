@@ -24,16 +24,17 @@ export const INCOME_PER_TILE_PER_TICK = 0.02;
 export const MAX_POOL_PER_TILE = 50;
 
 /**
- * Display growth rate, in troops per second per owned tile, shown in the
- * leaderboard as "(+N/s)". This is the player-facing figure that Phase 2 perks
- * (e.g. Wachstumstreiber) scale, kept separate from the engine's per-tick
- * {@link INCOME_PER_TILE_PER_TICK} so the displayed rate can be tuned
- * independently of the raw simulation income.
+ * Troops generated per second by a player holding `tiles` tiles — the figure the
+ * leaderboard shows as "(+N/s)". Derived directly from the engine's real per-tick
+ * income so the displayed rate matches the pool growth a player actually sees.
+ * `incomeMultiplier` folds in perk/class bonuses (e.g. Wachstumstreiber) so the
+ * display tracks them; `ticksPerSecond` converts the per-tick income to seconds.
  */
-export const TROOPS_PER_SECOND_PER_TILE = 0.05;
-
-/** Troops generated per second by a player holding `tiles` tiles. */
-export const troopsPerSecond = (tiles: number): number => tiles * TROOPS_PER_SECOND_PER_TILE;
+export const troopsPerSecond = (
+  tiles: number,
+  ticksPerSecond: number,
+  incomeMultiplier = 1,
+): number => tiles * INCOME_PER_TILE_PER_TICK * ticksPerSecond * incomeMultiplier;
 
 /**
  * Maximum wall-clock length of a single roguelite run, in seconds. When the
@@ -77,3 +78,14 @@ export const MAX_SEA_CROSSING_TILES = 6;
  * deliberately more expensive than pushing a contiguous land front.
  */
 export const SEA_CROSSING_SURCHARGE = 8;
+
+/**
+ * Largest factor any perk/class can scale a player's sea-crossing range by. The
+ * crossing graph is precomputed once at `MAX_SEA_CROSSING_TILES` times this, so
+ * a Sea God player's extended reach is already in the graph and just gets
+ * un-filtered; base players are filtered back down to {@link MAX_SEA_CROSSING_TILES}.
+ */
+export const MAX_SEA_RANGE_MULTIPLIER = 2;
+
+/** Seconds between perk-offer rounds in a roguelite run. */
+export const PERK_OFFER_INTERVAL_SECONDS = 120;

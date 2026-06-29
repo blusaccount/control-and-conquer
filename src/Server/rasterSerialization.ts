@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { GameMap } from "../Core/GameMap.js";
 import type { TerritoryGrid } from "../Core/TerritoryGrid.js";
 import { troopsPerSecond } from "../Core/rasterCombatConfig.js";
+import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import type { RasterCrossing, RasterPlayerInfo, RasterSnapshot } from "../Core/types.js";
 
 /**
@@ -111,7 +112,7 @@ export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
       color: meta.color,
       troops: Math.floor(grid.troopsOf(id)),
       tiles,
-      troopsPerSecond: troopsPerSecond(tiles),
+      troopsPerSecond: troopsPerSecond(tiles, SIMULATION_TICK_RATE, grid.incomeMultiplierOf(id)),
       capitalX: capitalRef !== undefined ? map.x(capitalRef) : -1,
       capitalY: capitalRef !== undefined ? map.y(capitalRef) : -1,
       eliminated: eliminated?.has(id) ?? false,

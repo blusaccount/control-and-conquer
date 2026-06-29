@@ -124,6 +124,8 @@ wss.on("connection", (socket) => {
       const message = validateCommand(parsed);
       if (message.type === "CLIENT_RASTER_EXPAND") {
         registry.queueRasterExpand(clientId, message.payload);
+      } else if (message.type === "CLIENT_PERK_CHOSEN") {
+        registry.choosePerk(clientId, message.payload.perkId);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown command error.";
