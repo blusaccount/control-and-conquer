@@ -56,7 +56,12 @@
   (`buildingCost`), sodass Bauwerke knapp bleiben. Drei Typen:
   - **Stadt** 🏛️ — erhöht Gold- *und* Truppen-Einkommen (letzteres weiter durch den
     logistischen Soft-Cap begrenzt, bricht die Pool-Decke also nicht).
-  - **Hafen** ⚓ — vergrößert die amphibische Reichweite (`seaRangeOf`, gedeckelt).
+  - **Hafen** ⚓ — vergrößert die *automatisch entdeckte* amphibische Reichweite
+    (`seaRangeOf`, gedeckelt). Hinweis: explizit gestartete Transportboote haben
+    seit der OpenFront-Angleichung **keine** maximale Überquerungsdistanz mehr —
+    sie segeln jeden befahrbaren Wasserweg (`resolveSeaLanding`/`findSeaPath`
+    unbegrenzt). `seaRangeOf` betrifft nur noch die Frontier-Heuristik (welche
+    See-Ziele die Engine von selbst anbietet), nicht die Erreichbarkeit per Klick.
   - **Fort** 🛡️ — legt eine Defense-Post-Aura an (Capture-Kosten ↑ im Umkreis).
 - **Bauwerke leben mit ihrem Tile:** wird ein Tile erobert oder neutralisiert, fällt
   die Struktur (und eine Fort-Aura) — der Eroberer erbt nacktes Land (`claim` → `destroyBuilding`).

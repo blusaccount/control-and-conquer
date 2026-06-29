@@ -272,13 +272,18 @@ export const EXPANSION_SPEND_FRACTION = 0.12;
 export const CLICK_SNAP_RADIUS = 4;
 
 /**
- * Maximum width of open water (in tiles) a transport ship can cross. A coastal
- * tile can reach an enemy/neutral coast on the far bank of a strait, lake or
- * channel no wider than this — the openfront-style "transport ship" mechanic.
- * It bounds two things that must agree: the precomputed {@link seaLinks}
- * reachability graph (which surfaces sea-reachable targets) and the per-launch
- * shortest-water-path search a ship actually follows. Set to 0 to disable all
- * water crossing (water becomes a hard barrier).
+ * Width of open water (in tiles) bridged by the precomputed {@link seaLinks}
+ * adjacency graph — the cheap, narrow-strait "frontier discovery" used by the
+ * per-tick scans and the bot's target enumeration. A coastal tile is linked to
+ * an enemy/neutral coast on the far bank of a strait, lake or channel no wider
+ * than this.
+ *
+ * This is **no longer a hard wall on transport ships.** Mirroring OpenFront, an
+ * explicitly launched boat sails any navigable water route of any width
+ * ({@link TerritoryGrid.resolveSeaLanding} / {@link TerritoryGrid.findSeaPath}
+ * are unbounded); this constant only governs which sea targets the engine
+ * *surfaces automatically*. Set to 0 to disable that auto-discovery (boats can
+ * still be aimed manually at any reachable shore).
  */
 export const MAX_SEA_CROSSING_TILES = 6;
 

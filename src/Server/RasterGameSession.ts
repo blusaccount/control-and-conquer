@@ -823,14 +823,17 @@ export class RasterGameSession {
     // The click is on a different landmass. Rather than demanding the player hit
     // an exact in-range coastal tile, land the boat on the reachable shore
     // nearest the click (its own tile wins when that tile is itself reachable).
-    const landing = this.grid.resolveSeaLanding(attacker, ref, this.grid.seaRangeOf(attacker));
+    // Like OpenFront, there is no maximum crossing width — a boat sails any
+    // navigable water route, however wide, so this only fails when no continuous
+    // water connects the attacker's coast to the target's.
+    const landing = this.grid.resolveSeaLanding(attacker, ref);
     if (landing !== null) {
       return { kind: "sea", intent: { attacker, dest: landing, troops } };
     }
     return {
       kind: "rejected",
       reason: "NO_FRONTIER",
-      message: "No water route reaches that area (it may be too far across open water).",
+      message: "No water route reaches that area — it isn't connected to your coast by sea.",
     };
   }
 

@@ -43,10 +43,25 @@ test("the landing is the reachable shore nearest the click", () => {
   assert.equal(grid.resolveSeaLanding(1, grid.map.ref(2, 2)), grid.map.ref(2, 2), "click in the middle → middle shore");
 });
 
-test("no reachable shore yields null (water too wide)", () => {
-  // 8 water tiles exceeds MAX_SEA_CROSSING_TILES (6).
+test("a wide ocean is still crossable — there is no maximum width", () => {
+  // 8 open-water tiles separate the coasts; like OpenFront's transport ships, a
+  // boat sails the whole span rather than hitting a hard reachability wall.
   const grid = gridFromRows(["#........#"]);
   grid.addPlayer(1, 50);
   grid.claim(grid.map.ref(0, 0), 1);
-  assert.equal(grid.resolveSeaLanding(1, grid.map.ref(9, 0)), null);
+
+  const landing = grid.resolveSeaLanding(1, grid.map.ref(9, 0));
+  assert.equal(landing, grid.map.ref(9, 0), "the far shore across 8 water tiles is reachable");
+  assert.notEqual(grid.findSeaPath(1, landing!), null, "and a concrete water route exists to it");
+});
+
+test("a coast with no sea route to any other land yields null", () => {
+  // The player's island sits alone in open water — a boat has nowhere to land
+  // however far it sails, so no landing resolves.
+  const grid = gridFromRows([".....", ".###.", ".###.", ".###.", "....."]);
+  grid.addPlayer(1, 50);
+  for (let y = 1; y <= 3; y += 1) {
+    for (let x = 1; x <= 3; x += 1) grid.claim(grid.map.ref(x, y), 1);
+  }
+  assert.equal(grid.resolveSeaLanding(1, grid.map.ref(0, 0)), null, "no other shore exists to land on");
 });

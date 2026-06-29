@@ -142,16 +142,36 @@ test("a player may have at most three transport ships at sea", () => {
   assert.equal(conflict.launchShip({ attacker: 1, dest: 9, troops: 20 }), null, "a freed slot accepts a new ship");
 });
 
-test("water wider than the ship range cannot be crossed", () => {
-  // 8 water tiles exceeds MAX_SEA_CROSSING_TILES (6).
+test("a transport ship crosses open water of any width", () => {
+  // 8 water tiles — far past the narrow-strait frontier cap — yet, like
+  // OpenFront's boats, a ship still sails the whole ocean when aimed at it.
   const grid = new TerritoryGrid(rowMap("##        ##"));
   grid.addPlayer(1, 50);
   grid.claim(0, 1);
   grid.claim(1, 1);
   const conflict = new RasterConflict(grid);
 
-  assert.equal(grid.findSeaPath(1, 10), null, "no route across too-wide water");
-  assert.equal(conflict.launchShip({ attacker: 1, dest: 10, troops: 30 }), "NO_FRONTIER");
+  const path = grid.findSeaPath(1, 10);
+  assert.notEqual(path, null, "a route exists across the wide ocean");
+  assert.equal(path![0], 1, "it embarks from the nearest owned coast");
+  assert.equal(path![path!.length - 1], 10, "and ends on the target shore");
+  assert.equal(conflict.launchShip({ attacker: 1, dest: 10, troops: 30 }), null, "the launch is accepted");
+});
+
+test("a target on unconnected water still cannot be reached", () => {
+  // owned 0,1 | water 2 | neutral 3 | water 4 | neutral 5: tile 3 is land that
+  // walls the water in two — so 5's water never connects to the attacker's.
+  const grid = new TerritoryGrid(rowMap("## # #"));
+  grid.addPlayer(1, 50);
+  grid.claim(0, 1);
+  grid.claim(1, 1);
+  const conflict = new RasterConflict(grid);
+
+  // Tile 3 borders the attacker's water (tile 2) → reachable.
+  assert.notEqual(grid.findSeaPath(1, 3), null, "the near shore across the first strait is reachable");
+  // Tile 5's only water (tile 4) is fenced off by land 3 → no route.
+  assert.equal(grid.findSeaPath(1, 5), null, "no continuous water connects the far shore");
+  assert.equal(conflict.launchShip({ attacker: 1, dest: 5, troops: 30 }), "NO_FRONTIER");
 });
 
 test("a land attack never crosses water", () => {

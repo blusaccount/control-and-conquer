@@ -113,12 +113,18 @@ export class TerritoryGrid {
   private seaPathStamp?: Int32Array;
   private seaPathGeneration?: number;
 
+  // Separate generation-stamped scratch for {@link resolveSeaLanding}'s
+  // multi-source water flood, so it never clobbers a {@link findSeaPath} call.
+  private seaLandStamp?: Int32Array;
+  private seaLandGeneration?: number;
+
   constructor(map: GameMap) {
     this.map = map;
     this.owner = new Uint16Array(map.size);
-    // The reachability graph spans the base crossing range. A Sea God's extended
-    // reach is served by {@link findSeaPath}'s own range-parameterised BFS, so the
-    // graph (used for frontier discovery) stays at the baseline everyone shares.
+    // The reachability graph only spans the narrow-strait base range — it drives
+    // cheap per-tick frontier discovery (and the bot's target enumeration), not
+    // explicit boat launches, which are unbounded via {@link findSeaPath} /
+    // {@link resolveSeaLanding} (OpenFront-style: any navigable water, any width).
     this.seaLinks = SeaLinks.build(map, MAX_SEA_CROSSING_TILES);
     let capturable = 0;
     for (let ref = 0; ref < map.size; ref += 1) {
@@ -544,7 +550,14 @@ export class TerritoryGrid {
   /**
    * Shortest water route a transport ship would take from `attacker`'s coast to
    * land on `dest`, or `null` if `dest` is not a capturable tile the attacker can
-   * reach across open water within {@link MAX_SEA_CROSSING_TILES} tiles.
+   * reach across open water at all (no navigable water connects the two coasts).
+   *
+   * Mirroring OpenFront's transport ships, there is **no maximum crossing width**:
+   * a boat will sail across an ocean of any size so long as a continuous water
+   * route exists — the cost of a long crossing is paid in travel time and the
+   * boat-count cap, not a hard reachability wall. `maxCrossing` defaults to
+   * unbounded; callers may still pass a finite cap (e.g. the precomputed
+   * narrow-strait frontier heuristic) to bound the search.
    *
    * The returned path is land→water…water→land: it starts on the attacker's
    * embarkation tile (an owned coastal tile), runs through the open-water tiles
@@ -554,7 +567,7 @@ export class TerritoryGrid {
    * shortest crossing in one pass. Deterministic: the map's fixed neighbour order
    * makes the search reproducible, ties broken by that order.
    */
-  findSeaPath(attacker: PlayerId, dest: TileRef, maxCrossing: number = MAX_SEA_CROSSING_TILES): TileRef[] | null {
+  findSeaPath(attacker: PlayerId, dest: TileRef, maxCrossing: number = Number.POSITIVE_INFINITY): TileRef[] | null {
     if (!this.isCapturable(dest) || this.owner[dest] === attacker) return null;
 
     // Per-water-tile BFS scratch, generation-stamped so we never clear the whole
@@ -601,37 +614,63 @@ export class TerritoryGrid {
 
   /**
    * Pick the best amphibious landing for a click that fell anywhere on a
-   * landmass the attacker can't march to: the capturable coastal tile reachable
-   * by sea (within `maxDist`) that lies nearest the clicked tile.
+   * landmass the attacker can't march to: the capturable coastal tile, reachable
+   * by sea from any of the attacker's coasts, that lies nearest the clicked tile.
    *
    * The player should be able to click a target area — even its interior — and
-   * have a boat sail to the area's nearest reachable shore, rather than having
-   * to pixel-hunt for a tile that is *both* coastal and in range. The set of
-   * reachable shores is read straight from the precomputed {@link SeaLinks}
-   * graph (every owned coast tile's opposite banks), and the one closest to the
-   * click wins (Euclidean; ties broken by shortest crossing, then `TileRef`).
+   * have a boat sail to the area's nearest reachable shore, rather than having to
+   * pixel-hunt for a tile that is both coastal and in range. Like OpenFront's
+   * `closestShoreByWater`, this floods the open water outward from *every* tile
+   * the attacker holds (a single multi-source BFS) and, of all the enemy/neutral
+   * shores that flood reaches, keeps the one closest to the click (Euclidean;
+   * ties broken by `TileRef`). The flood is **unbounded** — a shore across a wide
+   * ocean is just as reachable as one across a one-tile strait, only farther to
+   * sail — so the only way to get `null` is a coast that no continuous water
+   * route connects to the attacker (e.g. a landlocked player, or a target on an
+   * unconnected body of water).
    *
    * Returns the landing tile (a valid {@link findSeaPath} destination), or
    * `null` if no shore is reachable across water.
    */
-  resolveSeaLanding(
-    attacker: PlayerId,
-    clickRef: TileRef,
-    maxDist: number = MAX_SEA_CROSSING_TILES,
-  ): TileRef | null {
+  resolveSeaLanding(attacker: PlayerId, clickRef: TileRef): TileRef | null {
     const cx = this.map.x(clickRef);
     const cy = this.map.y(clickRef);
+
+    // Generation-stamped scratch so we never clear the whole map between calls.
+    const stamp = (this.seaLandStamp ??= new Int32Array(this.map.size).fill(-1));
+    const generation = (this.seaLandGeneration = (this.seaLandGeneration ?? 0) + 1);
+    const queue: TileRef[] = [];
+
+    // Seed the flood with every open-water tile bordering one of the attacker's
+    // own tiles — the waters a ship could embark onto.
+    for (const ref of this.standing(attacker).tiles) {
+      for (const n of this.map.neighbors(ref)) {
+        if (this.map.isWater(n) && stamp[n] !== generation) {
+          stamp[n] = generation;
+          queue.push(n);
+        }
+      }
+    }
+
     let best: TileRef | null = null;
     let bestScore = Infinity;
-    for (const ref of this.standing(attacker).tiles) {
-      for (const landing of this.seaLinks.neighborsWithin(ref, maxDist)) {
-        if (this.owner[landing] === attacker || !this.isCapturable(landing)) continue;
-        const dx = this.map.x(landing) - cx;
-        const dy = this.map.y(landing) - cy;
-        const score = dx * dx + dy * dy;
-        if (score < bestScore || (score === bestScore && (best === null || landing < best))) {
-          bestScore = score;
-          best = landing;
+    for (let head = 0; head < queue.length; head += 1) {
+      const water = queue[head];
+      for (const n of this.map.neighbors(water)) {
+        if (this.map.isWater(n)) {
+          if (stamp[n] !== generation) {
+            stamp[n] = generation;
+            queue.push(n);
+          }
+        } else if (this.owner[n] !== attacker && this.isCapturable(n)) {
+          // A capturable far-bank shore the flood can reach — a landing candidate.
+          const dx = this.map.x(n) - cx;
+          const dy = this.map.y(n) - cy;
+          const score = dx * dx + dy * dy;
+          if (score < bestScore || (score === bestScore && (best === null || n < best))) {
+            bestScore = score;
+            best = n;
+          }
         }
       }
     }

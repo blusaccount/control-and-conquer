@@ -257,7 +257,9 @@ export class RasterConflict {
     if (troops > this.grid.troopsOf(attacker)) return "INSUFFICIENT_TROOPS";
     if (this.shipCountOf(attacker) >= MAX_TRANSPORT_SHIPS_PER_PLAYER) return "TOO_MANY_SHIPS";
 
-    const path = this.grid.findSeaPath(attacker, dest, this.grid.seaRangeOf(attacker));
+    // No crossing-width cap (OpenFront-style transport ships): the boat will sail
+    // any navigable water route to `dest`; only a total lack of one rejects here.
+    const path = this.grid.findSeaPath(attacker, dest);
     if (!path) return "NO_FRONTIER";
 
     this.grid.addTroops(attacker, -troops);
