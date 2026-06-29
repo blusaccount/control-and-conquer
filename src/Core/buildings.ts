@@ -14,10 +14,10 @@
  */
 
 /** The kinds of structure a player can build on a tile they own. */
-export type BuildingType = "city" | "port" | "fort";
+export type BuildingType = "city" | "port" | "fort" | "factory";
 
 /** All building types, in menu order. */
-export const BUILDING_TYPES: readonly BuildingType[] = ["city", "port", "fort"];
+export const BUILDING_TYPES: readonly BuildingType[] = ["city", "port", "fort", "factory"];
 
 /** Runtime guard: is `value` a known building type id? */
 export const isBuildingType = (value: unknown): value is BuildingType =>
@@ -76,6 +76,57 @@ export const PORT_SEA_RANGE_PER = 0.34;
 export const FORT_DEFENSE_STRENGTH = 2;
 export const FORT_DEFENSE_RADIUS = 4;
 
+// --- Railroads + trains ----------------------------------------------------
+//
+// OpenFront ties a rail economy to a **Factory**: place a factory near a city
+// or port and railroads auto-spawn linking them; trains then run the network
+// and pay out gold at each city/port they reach (see the Railroad/Train/Factory
+// wiki). We mirror that here — a factory is the catalyst that wires a player's
+// stations (factory/city/port) into a mesh, and only city/port stops earn gold.
+// Rails are routed automatically (the player never draws them), cardinal-only,
+// over land, with the same distance/length/fan-out caps OpenFront uses (scaled
+// to our smaller grids). Everything is deterministic: spawn cadence is a fixed
+// tick interval, never `Math.random`, so replays stay identical.
+
+/** Station building types that a railroad can link together. */
+export const RAIL_STATION_TYPES: readonly BuildingType[] = ["factory", "city", "port"];
+
+/** Station types a train pays gold at when it arrives (factories don't earn). */
+export const RAIL_PAYOUT_TYPES: readonly BuildingType[] = ["city", "port"];
+
+/**
+ * Greatest straight-line distance (tiles) between two stations that may be wired
+ * by a single railroad. OpenFront uses 80 on its larger maps; scaled down a
+ * touch for our grids so a rail links a regional cluster, not the whole map.
+ */
+export const RAIL_CONNECT_DISTANCE = 55;
+
+/**
+ * Longest a single railroad connection may run (tiles of track). Cardinal-only
+ * L-paths are longer than the straight-line distance, so this is a touch above
+ * {@link RAIL_CONNECT_DISTANCE}; a candidate whose routed path exceeds it (e.g.
+ * a long detour around water) is dropped.
+ */
+export const RAIL_MAX_LENGTH = 90;
+
+/** Most railroads any one station may anchor — caps fan-out into a mesh. */
+export const RAIL_MAX_CONNECTIONS = 4;
+
+/** Gold a train pays its owner each time it reaches a city or port station. */
+export const TRAIN_GOLD_PER_STATION = 10;
+
+/** Tiles of track a train advances per tick. */
+export const TRAIN_TILES_PER_TICK = 3;
+
+/** A new train is considered for spawning every this-many ticks. */
+export const TRAIN_SPAWN_INTERVAL_TICKS = 30;
+
+/** Stations a train visits before it retires (despawns) and frees its slot. */
+export const TRAIN_MAX_VISITS = 8;
+
+/** Hard ceiling on simultaneously live trains per player. */
+export const TRAIN_MAX_PER_PLAYER = 8;
+
 /** Static data for every building type, keyed by type id. */
 export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
   city: {
@@ -101,6 +152,14 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
     icon: "\u{1F6E1}\u{FE0F}", // 🛡️
     baseCost: 120,
     costGrowth: 1.7,
+  },
+  factory: {
+    type: "factory",
+    name: "Factory",
+    description: "Lays railroads to nearby cities and ports; trains earn gold.",
+    icon: "\u{1F3ED}", // 🏭
+    baseCost: 150,
+    costGrowth: 1.6,
   },
 };
 

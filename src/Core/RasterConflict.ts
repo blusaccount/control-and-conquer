@@ -5,6 +5,7 @@ import {
   CITY_TROOP_INCOME_PER_TICK,
   GOLD_PER_TILE_PER_TICK,
 } from "./buildings.js";
+import { RailSystem, type RailView, type TrainView } from "./railSystem.js";
 import {
   ATTACKER_EFFICIENCY,
   attackSpeedFactor,
@@ -168,6 +169,8 @@ export class RasterConflict {
   private readonly incomeAccumulator = new Map<PlayerId, number>();
   /** Fractional gold carried between ticks, flushed into the integer pool. */
   private readonly goldAccumulator = new Map<PlayerId, number>();
+  /** Auto-routed railroads + the trains that ride them, paying out gold. */
+  private readonly rails: RailSystem;
   /** Transport-ship landings resolved during the current tick. */
   private crossings: SeaCrossing[] = [];
   private tickCount = 0;
@@ -175,6 +178,17 @@ export class RasterConflict {
 
   constructor(grid: TerritoryGrid) {
     this.grid = grid;
+    this.rails = new RailSystem(grid);
+  }
+
+  /** Current railroad links, for the snapshot (empty until a factory wires up). */
+  railLinks(): RailView[] {
+    return this.rails.railViews();
+  }
+
+  /** Trains currently riding the network, for the snapshot. */
+  activeTrains(): TrainView[] {
+    return this.rails.trainViews();
   }
 
   get tick(): number {
@@ -300,6 +314,9 @@ export class RasterConflict {
     this.crossings = [];
     this.applyIncome();
     this.applyGoldIncome();
+    // Trains ride the auto-routed rail network and bank gold at city/port stops.
+    // Run after gold income so a payout lands in the same tick it is earned.
+    this.rails.advance(this.tickCount);
     this.advanceShips();
     this.advanceAttacks();
     this.checkVictory();

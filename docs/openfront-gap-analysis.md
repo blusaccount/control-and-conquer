@@ -1,7 +1,7 @@
 # OpenFront-ähnliche Roadmap: Repository Audit + Gap-Analyse
 
 > **Letztes Update:** 2026-06-29 (Economy & Gebäude: Gold als zweite Ressource +
-> Bau-Schicht — Städte, Häfen, Forts).
+> Bau-Schicht — Städte, Häfen, Forts, Fabriken; auto-verlegte Schienen + Züge).
 > Dieses Dokument spiegelt den Ist-Zustand auf `main` nach dem Umbau auf die
 > Pixel-Raster-Engine (commit „Rebuild as OpenFront-style raster game"). Die
 > ältere Polygon-/`MapState`-Engine existiert nicht mehr.
@@ -53,11 +53,23 @@
   (Gold ist eine Ausgabe-Ressource, gesenkt durch Bauwerke).
 - **Bau-Schicht** (`CLIENT_RASTER_BUILD` → `RasterGameSession.processBuild`): Gold wird
   auf eigenen Tiles in Strukturen investiert; Kosten skalieren geometrisch je Typ
-  (`buildingCost`), sodass Bauwerke knapp bleiben. Drei Typen:
+  (`buildingCost`), sodass Bauwerke knapp bleiben. Vier Typen:
   - **Stadt** 🏛️ — erhöht Gold- *und* Truppen-Einkommen (letzteres weiter durch den
     logistischen Soft-Cap begrenzt, bricht die Pool-Decke also nicht).
   - **Hafen** ⚓ — vergrößert die amphibische Reichweite (`seaRangeOf`, gedeckelt).
   - **Fort** 🛡️ — legt eine Defense-Post-Aura an (Capture-Kosten ↑ im Umkreis).
+  - **Fabrik** 🏭 — Katalysator des Schienen-Netzes (s. u.); ohne Fabrik werden keine
+    Gleise verlegt.
+- **Schienen & Züge** (`railNetwork.ts`, `railSystem.ts`): wie OpenFront verlegt der
+  Spieler **keine** Gleise von Hand — eine Fabrik nahe Stadt/Hafen lässt automatisch
+  Schienen entstehen. `computeRailNetwork` verdrahtet die eigenen Stationen
+  (Fabrik/Stadt/Hafen) deterministisch zu einem Mesh: nur **kardinale** L-Pfade über
+  Land, Distanz-/Längen-/Anschluss-Limits (`RAIL_CONNECT_DISTANCE`, `RAIL_MAX_LENGTH`,
+  `RAIL_MAX_CONNECTIONS`) wie bei OpenFront (auf unsere Gridgrößen skaliert). `RailSystem`
+  lässt **Züge** auf dem Netz fahren (fixe Spawn-Kadenz, kein RNG) und zahlt dem Besitzer
+  Gold an jeder Stadt/jedem Hafen aus (`TRAIN_GOLD_PER_STATION`). `RasterConflict` tickt
+  das System; Netz + Züge gehen als `rails`/`trains` in den Snapshot und werden im Client
+  als Gleis-Polylinien und fahrende Punkte gezeichnet.
 - **Bauwerke leben mit ihrem Tile:** wird ein Tile erobert oder neutralisiert, fällt
   die Struktur (und eine Fort-Aura) — der Eroberer erbt nacktes Land (`claim` → `destroyBuilding`).
 - **Bots reinvestieren** Gold ab einer Mindestgröße in Städte (`maybeBuildCity`),

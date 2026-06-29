@@ -39,6 +39,8 @@ export interface RasterPlayerInfo {
   ports: number;
   /** Forts this player owns (border fortification). */
   forts: number;
+  /** Factories this player owns (railroad + train economy). */
+  factories: number;
   /** Number of capturable tiles currently owned. */
   tiles: number;
   /**
@@ -110,6 +112,28 @@ export interface RasterBuilding {
 }
 
 /**
+ * An auto-routed railroad link this snapshot: a cardinal L-path belonging to
+ * `playerId`, given as ordered tile corner points (`[x, y]`). The client strokes
+ * straight track between consecutive points. Rails appear once a player builds a
+ * factory near a city/port and vanish when the stations are lost.
+ */
+export interface RasterRail {
+  playerId: number;
+  points: Array<[number, number]>;
+}
+
+/**
+ * A train riding the rail network this snapshot: belonging to `playerId` at
+ * fractional tile position (`x`,`y`). Trains earn their owner gold at each city
+ * or port they reach; the client draws them as small moving dots.
+ */
+export interface RasterTrain {
+  playerId: number;
+  x: number;
+  y: number;
+}
+
+/**
  * The phase a raster match is in.
  *  - `spawn`: the opening start phase — every player picks where their nation is
  *    founded and nobody can take territory yet. A countdown runs.
@@ -174,6 +198,10 @@ export interface RasterSnapshot {
   ships: RasterShip[];
   /** Structures placed on the map (empty when none have been built). */
   buildings: RasterBuilding[];
+  /** Auto-routed railroads (empty until a factory wires up a city/port). */
+  rails: RasterRail[];
+  /** Trains riding the rail network this snapshot (empty when none are running). */
+  trains: RasterTrain[];
   /**
    * Active land-attack fronts this tick (empty when nobody is pushing a border).
    * Drives the on-map troop-count labels so contested borders read at a glance.
