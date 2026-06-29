@@ -429,6 +429,45 @@ export class TerritoryGrid {
   }
 
   /**
+   * Pick the best amphibious landing for a click that fell anywhere on a
+   * landmass the attacker can't march to: the capturable coastal tile reachable
+   * by sea (within `maxDist`) that lies nearest the clicked tile.
+   *
+   * The player should be able to click a target area — even its interior — and
+   * have a boat sail to the area's nearest reachable shore, rather than having
+   * to pixel-hunt for a tile that is *both* coastal and in range. The set of
+   * reachable shores is read straight from the precomputed {@link SeaLinks}
+   * graph (every owned coast tile's opposite banks), and the one closest to the
+   * click wins (Euclidean; ties broken by shortest crossing, then `TileRef`).
+   *
+   * Returns the landing tile (a valid {@link findSeaPath} destination), or
+   * `null` if no shore is reachable across water.
+   */
+  resolveSeaLanding(
+    attacker: PlayerId,
+    clickRef: TileRef,
+    maxDist: number = MAX_SEA_CROSSING_TILES,
+  ): TileRef | null {
+    const cx = this.map.x(clickRef);
+    const cy = this.map.y(clickRef);
+    let best: TileRef | null = null;
+    let bestScore = Infinity;
+    for (const ref of this.standing(attacker).tiles) {
+      for (const landing of this.seaLinks.neighborsWithin(ref, maxDist)) {
+        if (this.owner[landing] === attacker || !this.isCapturable(landing)) continue;
+        const dx = this.map.x(landing) - cx;
+        const dy = this.map.y(landing) - cy;
+        const score = dx * dx + dy * dy;
+        if (score < bestScore || (score === bestScore && (best === null || landing < best))) {
+          bestScore = score;
+          best = landing;
+        }
+      }
+    }
+    return best;
+  }
+
+  /**
    * Capturable tiles owned by `target` that `attacker` could expand into this
    * tick — adjacent across a land border, or reachable by an amphibious landing
    * across a narrow sea. Returned in ascending `TileRef` order for determinism.

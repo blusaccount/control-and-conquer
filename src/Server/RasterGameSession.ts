@@ -563,13 +563,17 @@ export class RasterGameSession {
           : "Your border doesn't touch that opponent yet.",
       };
     }
-    if (this.grid.findSeaPath(attacker, ref, this.grid.seaRangeOf(attacker))) {
-      return { kind: "sea", intent: { attacker, dest: ref, troops } };
+    // The click is on a different landmass. Rather than demanding the player hit
+    // an exact in-range coastal tile, land the boat on the reachable shore
+    // nearest the click (its own tile wins when that tile is itself reachable).
+    const landing = this.grid.resolveSeaLanding(attacker, ref, this.grid.seaRangeOf(attacker));
+    if (landing !== null) {
+      return { kind: "sea", intent: { attacker, dest: landing, troops } };
     }
     return {
       kind: "rejected",
       reason: "NO_FRONTIER",
-      message: "No water route reaches that tile (it may be too far across open water).",
+      message: "No water route reaches that area (it may be too far across open water).",
     };
   }
 

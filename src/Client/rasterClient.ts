@@ -700,8 +700,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       `<strong>Troop pool:</strong> ${runtime.pool}<br/>` +
       `<strong>Tiles:</strong> ${runtime.myTiles} / ${runtime.capturableTotal} (${pct}%)<br/>` +
       `<strong>Ships at sea:</strong> ${runtime.myShips} / 3<br/>` +
-      `<em>Click adjacent land to expand. Click across water to send a transport ship ` +
-      `(one per click, max 3 at sea) along the shortest route. Drag to pan, scroll to zoom.</em>`;
+      `<em>Click adjacent land to expand. Click any landmass across water to send a transport ship ` +
+      `to its nearest reachable shore (one per click, max 3 at sea). Drag to pan, scroll to zoom.</em>`;
 
     ui.eventsPanel.innerHTML = runtime.recentEvents
       .map((ev) => `<div class="event">${escapeHtml(ev)}</div>`)
