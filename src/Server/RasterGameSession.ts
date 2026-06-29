@@ -3,7 +3,7 @@ import { buildRealMap, getRealMap } from "../Core/realMaps.js";
 import { buildHeightmapGameMap, getHeightmapMap } from "./heightmapMaps.js";
 import { NEUTRAL_PLAYER, TerritoryGrid, type PlayerId } from "../Core/TerritoryGrid.js";
 import type { GameMap, TileRef } from "../Core/GameMap.js";
-import { RasterConflict, type AttackIntent } from "../Core/RasterConflict.js";
+import { RasterConflict, type AttackIntent, type AttackRejectReason, type SeaAttackIntent } from "../Core/RasterConflict.js";
 import type {
   RasterActionRejectedEvent,
   RasterCrossing,
@@ -12,6 +12,7 @@ import type {
   RasterRejectReason,
   RasterRunStats,
   RasterServerMessage,
+  RasterShip,
 } from "../Core/types.js";
 import { PERK_OFFER_INTERVAL_SECONDS, RASTER_MATCH_DURATION_SECONDS } from "../Core/rasterCombatConfig.js";
 import {
@@ -29,6 +30,7 @@ import {
 } from "../Core/playerClasses.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import { buildRasterSnapshot, encodeOwnerDelta, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
+import { MAX_TRANSPORT_SHIPS_PER_PLAYER } from "../Core/rasterCombatConfig.js";
 
 export type RasterMessageHandler = (message: RasterServerMessage) => void;
 
@@ -139,8 +141,10 @@ export class RasterGameSession {
   private readonly subscribers = new Map<string, RasterSubscriber>();
   private readonly pendingExpands: PendingExpand[] = [];
   private recentEvents: string[] = ["Match started."];
-  /** Amphibious crossings from the most recent tick, broadcast for animation. */
+  /** Transport-ship landings from the most recent tick, broadcast for animation. */
   private lastCrossings: RasterCrossing[] = [];
+  /** Transport ships in flight as of the most recent tick, broadcast for animation. */
+  private lastShips: RasterShip[] = [];
   /** Determines spawn placement: each new subscriber takes the next slot. */
   private nextPlayerId: PlayerId = 1;
   private matchEndedBroadcast = false;
@@ -340,23 +344,33 @@ export class RasterGameSession {
     if (this.matchEndedBroadcast) return;
 
     const intents: AttackIntent[] = [];
+    const eventLines: string[] = [];
     const rejections: Array<{ clientId: string; rejection: RasterActionRejectedEvent }> = [];
 
     for (const pending of this.pendingExpands) {
       const subscriber = this.subscribers.get(pending.clientId);
       if (!subscriber) continue;
-      const result = this.validateAndBuildIntent(subscriber.playerId, pending.intent);
+      const attacker = subscriber.playerId;
+      const result = this.validateAndBuildIntent(attacker, pending.intent);
       if (result.kind === "rejected") {
         rejections.push({
           clientId: pending.clientId,
-          rejection: {
-            reason: result.reason,
-            message: result.message,
-            intent: pending.intent,
-          },
+          rejection: { reason: result.reason, message: result.message, intent: pending.intent },
         });
-      } else {
+      } else if (result.kind === "land") {
         intents.push(result.intent);
+        eventLines.push(this.landEventLine(result.intent));
+      } else {
+        // Sea assault: dispatch a transport ship now (it persists across ticks).
+        const reason = this.conflict.launchShip(result.intent);
+        if (reason) {
+          rejections.push({
+            clientId: pending.clientId,
+            rejection: { ...this.shipRejection(attacker, reason), intent: pending.intent },
+          });
+        } else {
+          eventLines.push(this.shipEventLine(result.intent));
+        }
       }
     }
     this.pendingExpands.length = 0;
@@ -369,7 +383,8 @@ export class RasterGameSession {
       if (tiles > (this.peakTiles.get(id) ?? 0)) this.peakTiles.set(id, tiles);
     }
 
-    // Convert this tick's amphibious landings to wire coordinates for animation.
+    // Convert this tick's transport-ship landings to wire coordinates for the
+    // landing flash, and snapshot every ship still in flight for animation.
     this.lastCrossings = tickResult.crossings.map((c) => ({
       playerId: c.attacker,
       fromX: this.map.x(c.from),
@@ -377,17 +392,17 @@ export class RasterGameSession {
       toX: this.map.x(c.to),
       toY: this.map.y(c.to),
     }));
+    this.lastShips = this.conflict.activeShips().map((s) => ({
+      shipId: s.id,
+      playerId: s.attacker,
+      x: this.map.x(s.tile),
+      y: this.map.y(s.tile),
+      troops: s.troops,
+    }));
 
-    // Append a single event line per capture-rich tick if anything happened.
-    if (intents.length > 0) {
-      const lines = intents.map((i) => {
-        const attackerName = this.playerMeta.get(i.attacker)?.name ?? `Player ${i.attacker}`;
-        const targetName = i.target === NEUTRAL_PLAYER
-          ? "neutral land"
-          : this.playerMeta.get(i.target)?.name ?? `Player ${i.target}`;
-        return `${attackerName} committed ${i.troops} troops toward ${targetName}.`;
-      });
-      this.recentEvents = [...lines.reverse(), ...this.recentEvents].slice(0, MAX_EVENTS);
+    // Append a single event line per command issued this tick, newest first.
+    if (eventLines.length > 0) {
+      this.recentEvents = [...eventLines.reverse(), ...this.recentEvents].slice(0, MAX_EVENTS);
     }
 
     // A capital captured this tick eliminates its owner: the rest of their
@@ -590,10 +605,22 @@ export class RasterGameSession {
     return lines;
   }
 
+  /**
+   * Classify a clicked tile into a land attack or a transport-ship assault.
+   *
+   * A target the attacker shares a land border with becomes a contiguous land
+   * push; one reachable only across water becomes a single transport ship sailing
+   * the shortest route to that exact tile. The ship's full validation (path, the
+   * three-ship cap, troop count) is left to {@link RasterConflict.launchShip} so
+   * a path is only searched once — here we just route and size the commitment.
+   */
   private validateAndBuildIntent(
     attacker: PlayerId,
     intent: RasterExpandIntent,
-  ): { kind: "ok"; intent: AttackIntent } | { kind: "rejected"; reason: RasterRejectReason; message: string } {
+  ):
+    | { kind: "land"; intent: AttackIntent }
+    | { kind: "sea"; intent: SeaAttackIntent }
+    | { kind: "rejected"; reason: RasterRejectReason; message: string } {
     if (this.conflict.winner !== null) {
       return { kind: "rejected", reason: "MATCH_ENDED", message: "The match has already ended." };
     }
@@ -614,15 +641,6 @@ export class RasterGameSession {
     if (target === attacker) {
       return { kind: "rejected", reason: "INVALID_TILE", message: "You already own that tile." };
     }
-    if (!this.grid.hasFrontier(attacker, target)) {
-      return {
-        kind: "rejected",
-        reason: "NO_FRONTIER",
-        message: target === NEUTRAL_PLAYER
-          ? "Your border doesn't touch any neutral land."
-          : "Your border doesn't touch that opponent.",
-      };
-    }
 
     const pool = this.grid.troopsOf(attacker);
     const troops = Math.max(1, Math.floor((pool * intent.percent) / 100));
@@ -630,7 +648,64 @@ export class RasterGameSession {
       return { kind: "rejected", reason: "INSUFFICIENT_TROOPS", message: "Not enough troops in your pool." };
     }
 
-    return { kind: "ok", intent: { attacker, target, troops } };
+    // Same landmass as the attacker → a contiguous land attack can march to it.
+    // A different landmass (across open water) → dispatch a transport ship to the
+    // exact clicked tile instead.
+    if (this.grid.ownsLandComponentOf(attacker, ref)) {
+      if (this.grid.hasLandBorderWith(attacker, target)) {
+        return { kind: "land", intent: { attacker, target, troops } };
+      }
+      return {
+        kind: "rejected",
+        reason: "NO_FRONTIER",
+        message: target === NEUTRAL_PLAYER
+          ? "Your border doesn't touch any neutral land there yet."
+          : "Your border doesn't touch that opponent yet.",
+      };
+    }
+    if (this.grid.findSeaPath(attacker, ref, this.grid.seaRangeOf(attacker))) {
+      return { kind: "sea", intent: { attacker, dest: ref, troops } };
+    }
+    return {
+      kind: "rejected",
+      reason: "NO_FRONTIER",
+      message: "No water route reaches that tile (it may be too far across open water).",
+    };
+  }
+
+  /** Event-log line for a committed land attack. */
+  private landEventLine(intent: AttackIntent): string {
+    const attackerName = this.playerMeta.get(intent.attacker)?.name ?? `Player ${intent.attacker}`;
+    const targetName = intent.target === NEUTRAL_PLAYER
+      ? "neutral land"
+      : this.playerMeta.get(intent.target)?.name ?? `Player ${intent.target}`;
+    return `${attackerName} committed ${intent.troops} troops toward ${targetName}.`;
+  }
+
+  /** Event-log line for a dispatched transport ship. */
+  private shipEventLine(intent: SeaAttackIntent): string {
+    const attackerName = this.playerMeta.get(intent.attacker)?.name ?? `Player ${intent.attacker}`;
+    return `${attackerName} launched a transport ship with ${intent.troops} troops.`;
+  }
+
+  /** Map a ship-launch reject reason to a wire rejection (without the intent). */
+  private shipRejection(
+    attacker: PlayerId,
+    reason: AttackRejectReason,
+  ): { reason: RasterRejectReason; message: string } {
+    switch (reason) {
+      case "TOO_MANY_SHIPS":
+        return {
+          reason: "TOO_MANY_SHIPS",
+          message: `You already have ${this.conflict.shipCountOf(attacker)} transport ships at sea (max ${MAX_TRANSPORT_SHIPS_PER_PLAYER}).`,
+        };
+      case "INSUFFICIENT_TROOPS":
+        return { reason: "INSUFFICIENT_TROOPS", message: "Not enough troops in your pool." };
+      case "NO_FRONTIER":
+        return { reason: "NO_FRONTIER", message: "No water route reaches that tile." };
+      default:
+        return { reason: "INVALID_TILE", message: "That tile can't be reached by sea." };
+    }
   }
 
   private sendSnapshotTo(subscriber: RasterSubscriber): void {
@@ -662,6 +737,7 @@ export class RasterGameSession {
       winnerPlayerId: this.conflict.winner,
       recentEvents: this.recentEvents,
       crossings: this.lastCrossings,
+      ships: this.lastShips,
       ownerDeltaBase64,
       capitals: this.capitals,
       eliminated: this.eliminated,

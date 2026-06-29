@@ -7,8 +7,10 @@ import {
   EXPANSION_SPEND_FRACTION,
   INCOME_PER_TILE_PER_TICK,
   MAX_POOL_PER_TILE,
+  MAX_TRANSPORT_SHIPS_PER_PLAYER,
   NEUTRAL_CAPTURE_COST,
   SEA_CROSSING_SURCHARGE,
+  SHIP_TILES_PER_TICK,
 } from "./rasterCombatConfig.js";
 
 /** A request to expand from `attacker`'s territory into `target`'s tiles. */
@@ -20,22 +22,47 @@ export interface AttackIntent {
   troops: number;
 }
 
+/**
+ * A request to send a transport ship across water to land on (and capture) a
+ * specific tile. Unlike an {@link AttackIntent} this targets one destination
+ * rather than a whole player's frontier — the ship sails the shortest water
+ * route to `dest` and disembarks there.
+ */
+export interface SeaAttackIntent {
+  attacker: PlayerId;
+  /** The capturable tile the ship sails to and lands on. */
+  dest: TileRef;
+  /** Troops loaded onto the ship from the attacker's pool. Positive integer. */
+  troops: number;
+}
+
 export type AttackRejectReason =
   | "UNKNOWN_PLAYER"
   | "INVALID_TARGET"
   | "INVALID_TROOP_COUNT"
   | "INSUFFICIENT_TROOPS"
-  | "NO_FRONTIER";
+  | "NO_FRONTIER"
+  | "TOO_MANY_SHIPS";
 
 /**
  * A single amphibious landing resolved this tick: a player captured tile `to`
  * by crossing water from its coastal tile `from`. Surfaced so the client can
- * animate troops travelling over the water/river.
+ * flash the moment a transport ship disembarks.
  */
 export interface SeaCrossing {
   attacker: PlayerId;
   from: TileRef;
   to: TileRef;
+}
+
+/** Public view of one transport ship in flight, for snapshotting/animation. */
+export interface TransportShipState {
+  id: number;
+  attacker: PlayerId;
+  /** The tile the ship currently occupies along its route. */
+  tile: TileRef;
+  /** Troops aboard. */
+  troops: number;
 }
 
 export interface RasterTickResult {
@@ -45,7 +72,7 @@ export interface RasterTickResult {
   rejections: Array<{ intent: AttackIntent; reason: AttackRejectReason }>;
   /** Number of attacks still in progress after this tick. */
   activeAttacks: number;
-  /** Amphibious landings that happened this tick (empty on most ticks). */
+  /** Transport-ship landings that happened this tick (empty on most ticks). */
   crossings: SeaCrossing[];
 }
 
@@ -54,6 +81,18 @@ interface RasterAttack {
   attacker: PlayerId;
   target: PlayerId;
   committed: number;
+}
+
+/** A transport ship en route to its landing tile. */
+interface TransportShip {
+  id: number;
+  attacker: PlayerId;
+  /** Troops aboard, disembarked on arrival. */
+  troops: number;
+  /** Land→water…→land route: [embarkation coast, …open water…, dest]. */
+  path: TileRef[];
+  /** Index into `path` of the ship's current position. */
+  progress: number;
 }
 
 /**
@@ -71,8 +110,12 @@ interface RasterAttack {
 export class RasterConflict {
   private readonly grid: TerritoryGrid;
   private readonly attacks: RasterAttack[] = [];
+  /** Transport ships currently at sea, in launch order. */
+  private readonly ships: TransportShip[] = [];
+  /** Monotonic id source so each ship has a stable handle for the client. */
+  private nextShipId = 1;
   private readonly incomeAccumulator = new Map<PlayerId, number>();
-  /** Amphibious landings resolved during the current tick. */
+  /** Transport-ship landings resolved during the current tick. */
   private crossings: SeaCrossing[] = [];
   private tickCount = 0;
   private winnerId: PlayerId | null = null;
@@ -93,6 +136,23 @@ export class RasterConflict {
     return this.attacks.length;
   }
 
+  /** Transport ships `attacker` currently has at sea. */
+  shipCountOf(attacker: PlayerId): number {
+    let count = 0;
+    for (const ship of this.ships) if (ship.attacker === attacker) count += 1;
+    return count;
+  }
+
+  /** Snapshot of every transport ship in flight, for serialization/animation. */
+  activeShips(): TransportShipState[] {
+    return this.ships.map((s) => ({
+      id: s.id,
+      attacker: s.attacker,
+      tile: s.path[s.progress],
+      troops: s.troops,
+    }));
+  }
+
   /**
    * Validate and register an attack intent. On success the committed troops
    * leave the attacker's pool immediately (preventing double-spend) and either
@@ -107,7 +167,9 @@ export class RasterConflict {
     if (target !== NEUTRAL_PLAYER && !this.grid.hasPlayer(target)) return "INVALID_TARGET";
     if (!Number.isInteger(troops) || troops <= 0) return "INVALID_TROOP_COUNT";
     if (troops > this.grid.troopsOf(attacker)) return "INSUFFICIENT_TROOPS";
-    if (!this.grid.hasFrontier(attacker, target)) return "NO_FRONTIER";
+    // A land attack pushes a contiguous front; it never crosses water (that is
+    // the transport ship's job), so it requires a shared land border.
+    if (!this.grid.hasLandBorderWith(attacker, target)) return "NO_FRONTIER";
 
     this.grid.addTroops(attacker, -troops);
     const existing = this.attacks.find((a) => a.attacker === attacker && a.target === target);
@@ -116,6 +178,30 @@ export class RasterConflict {
     } else {
       this.attacks.push({ attacker, target, committed: troops });
     }
+    return null;
+  }
+
+  /**
+   * Validate and dispatch one transport ship toward `dest`. On success the
+   * loaded troops leave the attacker's pool immediately and the ship begins
+   * sailing the shortest water route next tick. A player may have at most
+   * {@link MAX_TRANSPORT_SHIPS_PER_PLAYER} ships at sea; further launches are
+   * rejected. Returns a reject reason without mutating state on failure.
+   */
+  launchShip(intent: SeaAttackIntent): AttackRejectReason | null {
+    const { attacker, dest, troops } = intent;
+
+    if (!this.grid.hasPlayer(attacker)) return "UNKNOWN_PLAYER";
+    if (!this.grid.isCapturable(dest) || this.grid.ownerOf(dest) === attacker) return "INVALID_TARGET";
+    if (!Number.isInteger(troops) || troops <= 0) return "INVALID_TROOP_COUNT";
+    if (troops > this.grid.troopsOf(attacker)) return "INSUFFICIENT_TROOPS";
+    if (this.shipCountOf(attacker) >= MAX_TRANSPORT_SHIPS_PER_PLAYER) return "TOO_MANY_SHIPS";
+
+    const path = this.grid.findSeaPath(attacker, dest, this.grid.seaRangeOf(attacker));
+    if (!path) return "NO_FRONTIER";
+
+    this.grid.addTroops(attacker, -troops);
+    this.ships.push({ id: this.nextShipId++, attacker, troops, path, progress: 0 });
     return null;
   }
 
@@ -135,6 +221,7 @@ export class RasterConflict {
 
     this.crossings = [];
     this.applyIncome();
+    this.advanceShips();
     this.advanceAttacks();
     this.checkVictory();
 
@@ -149,44 +236,30 @@ export class RasterConflict {
   }
 
   /**
-   * The attacker-owned coastal tile a landing on `ref` set out from: the
-   * sea-linked neighbour of `ref` owned by the attacker that is closest to it.
-   * Returns -1 if none (should not happen for a genuine sea capture).
+   * Troop cost to capture a single tile across a land border, factoring terrain
+   * and ownership. Transport-ship landings price their beachhead separately via
+   * {@link beachheadCost}.
    */
-  private nearestSeaOrigin(attacker: PlayerId, ref: TileRef): TileRef {
-    const map = this.grid.map;
-    const tx = map.x(ref);
-    const ty = map.y(ref);
-    let best = -1;
-    let bestDist = Infinity;
-    for (const n of this.grid.seaLinks.neighborsOf(ref)) {
-      if (this.grid.ownerOf(n) !== attacker) continue;
-      const dist = Math.hypot(map.x(n) - tx, map.y(n) - ty);
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = n;
-      }
-    }
-    return best;
-  }
-
-  /**
-   * Troop cost to capture a single tile, factoring terrain, ownership and
-   * whether the tile is taken across a land border or by an amphibious landing
-   * (`viaSea`), which carries an extra surcharge.
-   */
-  private captureCost(ref: TileRef, attacker: PlayerId, target: PlayerId, viaSea: boolean): number {
+  private captureCost(ref: TileRef, target: PlayerId): number {
     const base = target === NEUTRAL_PLAYER
       ? NEUTRAL_CAPTURE_COST
       : NEUTRAL_CAPTURE_COST + ENEMY_CAPTURE_SURCHARGE;
     const elevationCost = this.grid.map.magnitude(ref) * ELEVATION_COST_PER_LEVEL;
-    // Faster boats (Sea God) lower the crossing surcharge — an effectively
-    // quicker landing.
-    const seaCost = viaSea ? SEA_CROSSING_SURCHARGE / this.grid.modifiersOf(attacker).seaSpeed : 0;
-    let cost = base + elevationCost + seaCost;
+    let cost = base + elevationCost;
     // The defender's Fortress Wall raises the cost to capture their tiles.
     if (target !== NEUTRAL_PLAYER) cost *= this.grid.modifiersOf(target).defense;
     return Math.ceil(cost);
+  }
+
+  /**
+   * Troops a transport ship spends to seize its landing tile — the normal
+   * capture cost plus the amphibious {@link SEA_CROSSING_SURCHARGE}, so an
+   * opposed landing is dearer than walking the same tile over land. The
+   * attacker's Sea God perk (seaSpeed) lowers that surcharge.
+   */
+  private beachheadCost(ref: TileRef, attacker: PlayerId, target: PlayerId): number {
+    const surcharge = Math.ceil(SEA_CROSSING_SURCHARGE / this.grid.modifiersOf(attacker).seaSpeed);
+    return this.captureCost(ref, target) + surcharge;
   }
 
   /**
@@ -214,16 +287,78 @@ export class RasterConflict {
   }
 
   /**
+   * Advance every transport ship one step along its water route. A ship that
+   * reaches its destination disembarks: it captures the landing tile (paying the
+   * beachhead cost and bleeding the defender), then commits whatever troops
+   * remain as a land attack radiating from the new beachhead. Landings are
+   * recorded as {@link SeaCrossing}s for the client to flash.
+   */
+  private advanceShips(): void {
+    const survivors: TransportShip[] = [];
+
+    for (const ship of this.ships) {
+      const lastIndex = ship.path.length - 1;
+      // Sea God (seaSpeed) makes ships glide faster along their route.
+      const step = Math.max(1, Math.round(SHIP_TILES_PER_TICK * this.grid.modifiersOf(ship.attacker).seaSpeed));
+      ship.progress = Math.min(lastIndex, ship.progress + step);
+      if (ship.progress < lastIndex) {
+        survivors.push(ship);
+        continue;
+      }
+
+      // Arrival. `dest` is the final path tile; `from` the open water it sailed
+      // in from (or the embarkation coast for a one-hop river).
+      const dest = ship.path[lastIndex];
+      const from = ship.path[Math.max(0, lastIndex - 1)];
+      this.crossings.push({ attacker: ship.attacker, from, to: dest });
+
+      const owner = this.grid.ownerOf(dest);
+      if (owner === ship.attacker) {
+        // The beachhead is already ours (captured by land while the ship sailed);
+        // the troops simply reinforce the pool.
+        this.grid.addTroops(ship.attacker, ship.troops);
+        continue;
+      }
+
+      const cost = this.beachheadCost(dest, ship.attacker, owner);
+      if (ship.troops < cost) {
+        // Too few troops to force a landing — the assault is repelled and the
+        // survivors fall back into the pool rather than vanishing.
+        this.grid.addTroops(ship.attacker, ship.troops);
+        continue;
+      }
+
+      if (owner !== NEUTRAL_PLAYER) this.grid.addTroops(owner, -DEFENDER_LOSS_PER_TILE);
+      this.grid.claim(dest, ship.attacker);
+      const remaining = ship.troops - cost;
+      if (remaining >= NEUTRAL_CAPTURE_COST) {
+        // Push the survivors inland: a land attack against the tile's former
+        // owner, expanding from the freshly-taken beachhead.
+        const existing = this.attacks.find((a) => a.attacker === ship.attacker && a.target === owner);
+        if (existing) existing.committed += remaining;
+        else this.attacks.push({ attacker: ship.attacker, target: owner, committed: remaining });
+      } else {
+        this.grid.addTroops(ship.attacker, remaining);
+      }
+    }
+
+    this.ships.length = 0;
+    this.ships.push(...survivors);
+  }
+
+  /**
    * Run one expansion step per active attack. Each attack captures tiles from a
-   * snapshot of its current frontier, in deterministic order, until its per-tick
-   * spend budget is used up or it can no longer afford the cheapest tile. Stalled
-   * attacks (no frontier, or troops too low) end and refund their leftover troops.
+   * snapshot of its current land frontier, in deterministic order, until its
+   * per-tick spend budget is used up or it can no longer afford the cheapest
+   * tile. Stalled attacks (no land frontier, or troops too low) end and refund
+   * their leftover troops. Water is never crossed here — that is the transport
+   * ship's role.
    */
   private advanceAttacks(): void {
     const survivors: RasterAttack[] = [];
 
     for (const attack of this.attacks) {
-      const frontier = this.grid.frontierOf(attack.attacker, attack.target);
+      const frontier = this.grid.landFrontierOf(attack.attacker, attack.target);
 
       // No reachable target tiles: the front is blocked or the target is gone.
       if (frontier.length === 0) {
@@ -242,20 +377,12 @@ export class RasterConflict {
         // A tile may have been captured already if a player relinquished it; skip
         // anything no longer owned by the target.
         if (this.grid.ownerOf(ref) !== attack.target) continue;
-        // Reached only via an amphibious landing if no land border touches it.
-        const viaSea = !this.grid.hasLandFrontier(attack.attacker, ref);
-        const cost = this.captureCost(ref, attack.attacker, attack.target, viaSea);
+        const cost = this.captureCost(ref, attack.target);
         if (attack.committed < cost || spent + cost > budget) continue;
 
         if (attack.target !== NEUTRAL_PLAYER) {
           // Fortress Wall also blunts the defender's troop bleed per tile lost.
           this.grid.addTroops(attack.target, -DEFENDER_LOSS_PER_TILE / this.grid.modifiersOf(attack.target).defense);
-        }
-        if (viaSea) {
-          // Record the landing so the client can animate the crossing. The
-          // origin is the attacker's coastal tile on the near bank.
-          const from = this.nearestSeaOrigin(attack.attacker, ref);
-          if (from >= 0) this.crossings.push({ attacker: attack.attacker, from, to: ref });
         }
         this.grid.claim(ref, attack.attacker);
         attack.committed -= cost;

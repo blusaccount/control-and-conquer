@@ -107,9 +107,13 @@ test("RasterBot prefers cheap neutral land over an evenly-matched rival", () => 
 });
 
 test("A field of varied bots drives toward a decisive outcome", () => {
-  // Four personalities on a continent should not deadlock: territory keeps
-  // consolidating, so the leader controls a meaningful share over time.
-  const session = new RasterGameSession({ width: 40, height: 28, seed: 9 });
+  // Four personalities on a connected continent should not deadlock: territory
+  // keeps consolidating, so the leader controls a meaningful share over time.
+  // The seed is chosen to be genuinely continental — since transport ships are
+  // rationed (max 3 per player), evenly-matched bots separated by open water can
+  // legitimately stand off, so a decisive outcome is only guaranteed where the
+  // landmass lets fronts meet on land.
+  const session = new RasterGameSession({ width: 40, height: 28, seed: 20 });
   const bots = [0, 1, 2, 3].map((i) =>
     new RasterBotController({
       botId: `bot-${i}`,
