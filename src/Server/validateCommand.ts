@@ -1,39 +1,4 @@
-import { AttackOrder, ClientMessage, RasterClientMessage, RasterExpandIntent } from "../Core/types.js";
-
-const isNonEmptyString = (value: unknown): value is string =>
-  typeof value === "string" && value.trim().length > 0;
-
-const isPositiveInteger = (value: unknown): value is number =>
-  typeof value === "number" && Number.isInteger(value) && value > 0;
-
-const asTrimmedString = (value: unknown): string =>
-  typeof value === "string" ? value.trim() : "";
-
-const parseAttackOrder = (payload: unknown): AttackOrder => {
-  if (typeof payload !== "object" || payload === null) {
-    throw new Error("CLIENT_ATTACK_REQUEST.payload must be an object.");
-  }
-
-  const attack = payload as Record<string, unknown>;
-
-  if (!isNonEmptyString(attack.sourceTerritoryId)) {
-    throw new Error("sourceTerritoryId must be a non-empty string.");
-  }
-
-  if (!isNonEmptyString(attack.targetTerritoryId)) {
-    throw new Error("targetTerritoryId must be a non-empty string.");
-  }
-
-  if (!isPositiveInteger(attack.troops)) {
-    throw new Error("troops must be a positive integer.");
-  }
-
-  return {
-    sourceTerritoryId: asTrimmedString(attack.sourceTerritoryId),
-    targetTerritoryId: asTrimmedString(attack.targetTerritoryId),
-    troops: attack.troops,
-  };
-};
+import { RasterClientMessage, RasterExpandIntent } from "../Core/types.js";
 
 const parseRasterExpand = (payload: unknown): RasterExpandIntent => {
   if (typeof payload !== "object" || payload === null) {
@@ -52,16 +17,13 @@ const parseRasterExpand = (payload: unknown): RasterExpandIntent => {
   return { targetX: intent.targetX, targetY: intent.targetY, percent: intent.percent };
 };
 
-export const validateCommand = (raw: unknown): ClientMessage | RasterClientMessage => {
+export const validateCommand = (raw: unknown): RasterClientMessage => {
   if (typeof raw !== "object" || raw === null) {
     throw new Error("Message must be a JSON object.");
   }
 
   const message = raw as Record<string, unknown>;
 
-  if (message.type === "CLIENT_ATTACK_REQUEST") {
-    return { type: "CLIENT_ATTACK_REQUEST", payload: parseAttackOrder(message.payload) };
-  }
   if (message.type === "CLIENT_RASTER_EXPAND") {
     return { type: "CLIENT_RASTER_EXPAND", payload: parseRasterExpand(message.payload) };
   }

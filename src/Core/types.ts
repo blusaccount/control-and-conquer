@@ -1,130 +1,12 @@
-export type TeamId = "blue" | "red";
-
-export interface Point {
-  x: number;
-  y: number;
-}
-
-export interface Territory {
-  id: string;
-  name: string;
-  ownerId: TeamId;
-  troops: number;
-  neighbors: string[];
-  polygon: Point[];
-  center: Point;
-}
-
-export interface TeamState {
-  id: TeamId;
-  name: string;
-  color: string;
-}
-
-/**
- * Authored, data-driven description of a single territory. This is the raw
- * input format (e.g. from a JSON map file) before centers are computed and the
- * map is validated into runtime `Territory` objects by the map loader.
- */
-export interface MapTerritoryDefinition {
-  id: string;
-  name: string;
-  ownerId: TeamId;
-  troops: number;
-  neighbors: string[];
-  polygon: Point[];
-}
-
-/** A complete, authored map: a name plus its territory definitions. */
-export interface MapDefinition {
-  name: string;
-  territories: MapTerritoryDefinition[];
-}
-
-export interface GameStateSnapshot {
-  tick: number;
-  mapName: string;
-  teams: Record<TeamId, TeamState>;
-  territories: Record<string, Territory>;
-  territoryOrder: string[];
-  recentEvents: string[];
-  activeConflicts: ActiveConflict[];
-  /** Set once a single team owns every territory. `null` while the match is live. */
-  winnerTeamId: TeamId | null;
-}
-
-export interface AttackOrder {
-  sourceTerritoryId: string;
-  targetTerritoryId: string;
-  troops: number;
-}
-
-export interface ActiveConflict {
-  id: string;
-  attackerTeamId: TeamId;
-  defenderTeamId: TeamId;
-  sourceTerritoryId: string;
-  targetTerritoryId: string;
-  /** Remaining attacker troops engaged in the fight. */
-  attackingTroops: number;
-  /** Remaining defender troops in the contested territory. */
-  defendingTroops: number;
-  /** 0.0 = front at the border, 1.0 = territory fully overrun. */
-  progress: number;
-}
-
-export type ActionRejectedReason =
-  | "INVALID_MESSAGE_FORMAT"
-  | "INVALID_TERRITORY"
-  | "NOT_OWNER"
-  | "NOT_ADJACENT"
-  | "INSUFFICIENT_TROOPS"
-  | "SAME_OWNER"
-  | "INVALID_TROOP_COUNT"
-  | "TERRITORY_CONTESTED"
-  | "MATCH_ENDED";
-
-export interface ActionRejectedEvent {
-  reason: ActionRejectedReason;
-  message: string;
-  order: AttackOrder;
-}
-
-export type ClientMessage = {
-  type: "CLIENT_ATTACK_REQUEST";
-  payload: AttackOrder;
-};
-
-export type ServerMessage =
-  | {
-      type: "SERVER_LOBBY_WAITING";
-    }
-  | {
-      type: "SERVER_PLAYER_ASSIGNED";
-      payload: { teamId: TeamId };
-    }
-  | {
-      type: "SERVER_STATE_SNAPSHOT";
-      payload: GameStateSnapshot;
-    }
-  | {
-      type: "SERVER_ACTION_REJECTED";
-      payload: ActionRejectedEvent;
-    }
-  | {
-      type: "SERVER_MATCH_ENDED";
-      payload: { winnerTeamId: TeamId };
-    };
-
-
 // ---------------------------------------------------------------------------
-// Raster mode protocol (PR #2: openfront-style pixel terrain + tile ownership).
+// Raster (openfront-style) protocol.
 //
-// In raster mode the snapshot stops shipping polygon territories and instead
-// ships:
+// The game is a pixel-raster territorial RTS. The server holds the master
+// terrain + ownership state and ships:
 //   - terrain bytes (one-time, base64-encoded — terrain never changes mid-match)
 //   - owner array (every tick, base64-encoded Uint16 little-endian)
 //   - per-player standings (troops pool, tile count)
+//   - amphibious crossings resolved that tick (for client-side boat animation)
 //
 // The terrain hash lets the client cache the static raster and detect when a
 // new match is started on the same socket. Client expand intents address tiles
@@ -143,6 +25,19 @@ export interface RasterPlayerInfo {
   troops: number;
   /** Number of capturable tiles currently owned. */
   tiles: number;
+}
+
+/**
+ * An amphibious landing resolved on a tick: troops crossed water from the
+ * coastal tile (`fromX`,`fromY`) to land on (`toX`,`toY`). The client uses these
+ * to animate boats travelling over the water/rivers.
+ */
+export interface RasterCrossing {
+  playerId: number;
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
 }
 
 /** Snapshot of a raster-mode match. */
@@ -174,6 +69,8 @@ export interface RasterSnapshot {
   winnerPlayerId: number | null;
   /** Most recent gameplay events, newest first. */
   recentEvents: string[];
+  /** Amphibious landings resolved this tick (empty on most ticks). */
+  crossings: RasterCrossing[];
 }
 
 /** Reasons the server can reject a raster expand intent. */
@@ -201,20 +98,20 @@ export interface RasterActionRejectedEvent {
   intent: RasterExpandIntent;
 }
 
-/** Assignment payload for raster mode (different shape than TeamId). */
+/** Assignment payload for raster mode. */
 export interface RasterPlayerAssignedPayload {
   playerId: number;
   name: string;
   color: string;
 }
 
-/** Discriminated union extending ClientMessage for raster mode. */
+/** Messages the client can send to the server. */
 export type RasterClientMessage = {
   type: "CLIENT_RASTER_EXPAND";
   payload: RasterExpandIntent;
 };
 
-/** Discriminated union extending ServerMessage for raster mode. */
+/** Messages the server can send to the client. */
 export type RasterServerMessage =
   | { type: "SERVER_RASTER_LOBBY_WAITING" }
   | { type: "SERVER_RASTER_PLAYER_ASSIGNED"; payload: RasterPlayerAssignedPayload }

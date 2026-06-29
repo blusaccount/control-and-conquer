@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import type { GameMap } from "../Core/GameMap.js";
 import type { TerritoryGrid } from "../Core/TerritoryGrid.js";
-import type { RasterPlayerInfo, RasterSnapshot } from "../Core/types.js";
+import type { RasterCrossing, RasterPlayerInfo, RasterSnapshot } from "../Core/types.js";
 
 /**
  * Serialize a `GameMap`'s static terrain into base64 plus a stable hash.
@@ -52,10 +52,12 @@ export interface BuildSnapshotInput {
   terrainBase64: string;
   winnerPlayerId: number | null;
   recentEvents: string[];
+  /** Amphibious landings resolved this tick (for client boat animation). */
+  crossings: RasterCrossing[];
 }
 
 export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot => {
-  const { tick, mapName, map, grid, playerMeta, includeTerrain, terrainHash, terrainBase64, winnerPlayerId, recentEvents } = input;
+  const { tick, mapName, map, grid, playerMeta, includeTerrain, terrainHash, terrainBase64, winnerPlayerId, recentEvents, crossings } = input;
 
   const players: RasterPlayerInfo[] = [];
   for (const id of grid.players()) {
@@ -81,5 +83,6 @@ export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
     capturableCount: grid.capturableCount,
     winnerPlayerId,
     recentEvents,
+    crossings,
   };
 };
