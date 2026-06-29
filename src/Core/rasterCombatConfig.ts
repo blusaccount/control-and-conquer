@@ -134,16 +134,33 @@ export const defenderLossPerTile = (troops: number, tiles: number): number => {
  * otherwise-equal tiles — its span is kept small so terrain dominates order.
  */
 export const FRONTIER_MAGNITUDE_WEIGHT = 0.5;
-export const FRONTIER_SURROUND_WEIGHT = 0.25;
+export const FRONTIER_SURROUND_WEIGHT = 0.6;
 export const FRONTIER_PRIORITY_FLOOR = 0.05;
-export const FRONTIER_JITTER_SPAN = 0.5;
+export const FRONTIER_JITTER_SPAN = 0.15;
 
 /**
  * Fraction of an attack's remaining committed troops that may be spent in a
  * single tick. Spreading the spend over multiple ticks is what makes the front
  * advance gradually (ring by ring) instead of teleporting across the map.
+ *
+ * Kept deliberately low so even a huge committed army advances as a thin,
+ * smoothly-creeping front (the OpenFront feel) rather than swallowing a big
+ * chunk of land in one tick. The {@link NEUTRAL_CAPTURE_COST} budget floor in
+ * the engine still guarantees at least one tile of progress per tick, so a
+ * small assault never stalls despite the low fraction.
  */
-export const EXPANSION_SPEND_FRACTION = 0.25;
+export const EXPANSION_SPEND_FRACTION = 0.12;
+
+/**
+ * Radius (in tiles, Chebyshev) within which a click that lands on un-ownable
+ * terrain — open water or impassable rock — snaps to the nearest capturable
+ * land tile before the attack is resolved. This is what lets a player target a
+ * *territory* rather than pixel-hunt: a click just off a coastline (or on a
+ * mountain pixel inside an enemy's land) resolves to the land they obviously
+ * meant. Beyond this radius the click is treated as deliberate empty space and
+ * rejected, so a tap in the open ocean still does nothing.
+ */
+export const CLICK_SNAP_RADIUS = 4;
 
 /**
  * Maximum width of open water (in tiles) a transport ship can cross. A coastal

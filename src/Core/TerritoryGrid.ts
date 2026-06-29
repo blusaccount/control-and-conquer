@@ -1,5 +1,6 @@
 import type { GameMap, TileRef } from "./GameMap.js";
 import {
+  CLICK_SNAP_RADIUS,
   DEFENSE_POST_RADIUS,
   DEFENSE_POST_STRENGTH,
   MAX_SEA_CROSSING_TILES,
@@ -164,6 +165,42 @@ export class TerritoryGrid {
   /** True when a tile can be owned (passable land). */
   isCapturable(ref: TileRef): boolean {
     return this.map.isLand(ref) && !this.map.isImpassable(ref);
+  }
+
+  /**
+   * The capturable land tile nearest `ref`, searched within `maxRadius` tiles
+   * (Chebyshev), or `null` if the neighbourhood is all water/rock. `ref` itself
+   * is returned when it is already capturable.
+   *
+   * This lets a click target a *territory* instead of an exact pixel: a tap that
+   * lands just off a coastline, or on an impassable mountain pixel inside a
+   * player's land, snaps to the land the player obviously meant before the
+   * attack is routed. Nearest is by Euclidean distance (ties broken by shortest
+   * crossing, then `TileRef`), and the search is a bounded box scan — `maxRadius`
+   * is small, so this stays cheap and fully deterministic.
+   */
+  nearestCapturable(ref: TileRef, maxRadius: number = CLICK_SNAP_RADIUS): TileRef | null {
+    if (this.isCapturable(ref)) return ref;
+    const cx = this.map.x(ref);
+    const cy = this.map.y(ref);
+    let best: TileRef | null = null;
+    let bestScore = Infinity;
+    for (let dy = -maxRadius; dy <= maxRadius; dy += 1) {
+      const y = cy + dy;
+      if (y < 0 || y >= this.map.height) continue;
+      for (let dx = -maxRadius; dx <= maxRadius; dx += 1) {
+        const x = cx + dx;
+        if (x < 0 || x >= this.map.width) continue;
+        const candidate = this.map.ref(x, y);
+        if (!this.isCapturable(candidate)) continue;
+        const score = dx * dx + dy * dy;
+        if (score < bestScore || (score === bestScore && (best === null || candidate < best))) {
+          bestScore = score;
+          best = candidate;
+        }
+      }
+    }
+    return best;
   }
 
   /** Register a player with a starting troop pool. Throws on bad/duplicate id. */

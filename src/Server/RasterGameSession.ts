@@ -649,9 +649,14 @@ export class RasterGameSession {
       return { kind: "rejected", reason: "INVALID_PERCENT", message: "Percent must be an integer 1..100." };
     }
 
-    const ref = this.map.ref(intent.targetX, intent.targetY);
-    if (!this.grid.isCapturable(ref)) {
-      return { kind: "rejected", reason: "INVALID_TILE", message: "Target tile is not capturable land." };
+    // Snap a click that fell on un-ownable terrain (open water or impassable
+    // rock) to the nearest land the player plausibly meant, so targeting works
+    // by territory rather than by exact pixel — a tap just off a coastline or on
+    // a mountain pixel inside enemy land resolves to the obvious land. A click
+    // far out in empty space snaps to nothing and is rejected.
+    const ref = this.grid.nearestCapturable(this.map.ref(intent.targetX, intent.targetY));
+    if (ref === null) {
+      return { kind: "rejected", reason: "INVALID_TILE", message: "No land near there to target." };
     }
 
     const target = this.grid.ownerOf(ref);
