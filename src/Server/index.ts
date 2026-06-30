@@ -2,8 +2,11 @@ import { createServer } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { performance } from "node:perf_hooks";
+import { gzipSync } from "node:zlib";
+import { Buffer } from "node:buffer";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
+import { resolveCatalogSessionMap } from "./sessionMap.js";
 import { MatchRegistry, DIFFICULTY_BOT_COUNT, MAX_RASTER_BOTS } from "./MatchRegistry.js";
 import { isRasterDifficulty } from "../Core/messages.js";
 import { validateCommand } from "./validateCommand.js";
@@ -122,6 +125,27 @@ const server = createServer(async (request, response) => {
     if (requestUrl.pathname.startsWith("/api/games")) {
       const handled = await handleAiApiRequest(request, response, registry.aiSessions);
       if (handled) return;
+    }
+
+    // Solo map asset: prebuilt terrain for a catalogue map, so a browser Web
+    // Worker can host a solo match locally (OpenFront-style client-side sim)
+    // without decoding the PNG itself. Body: [width u32 LE][height u32 LE][terrain
+    // bytes], gzip-encoded (the fetch API transparently inflates it).
+    if (requestUrl.pathname === "/api/solo/map") {
+      const choice = resolveMapChoice(requestUrl.searchParams.get("id") ?? undefined);
+      const { map, name } = resolveCatalogSessionMap(choice.options, choice.name);
+      const header = Buffer.alloc(8);
+      header.writeUInt32LE(map.width, 0);
+      header.writeUInt32LE(map.height, 4);
+      const body = gzipSync(Buffer.concat([header, Buffer.from(map.terrain)]));
+      response.writeHead(200, {
+        "content-type": "application/octet-stream",
+        "content-encoding": "gzip",
+        "cache-control": "public, max-age=86400",
+        "x-map-name": encodeURIComponent(name),
+      });
+      response.end(body);
+      return;
     }
 
     if (requestUrl.pathname.startsWith("/assets/")) {
