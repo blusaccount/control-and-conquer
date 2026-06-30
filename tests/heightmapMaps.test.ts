@@ -100,7 +100,9 @@ test("speckle cleanup leaves no tiny island dots on the earth map", () => {
 
 test("a RasterGameSession runs on the earth heightmap map", async () => {
   const { RasterGameSession } = await import("../src/Server/RasterGameSession.js");
-  const session = new RasterGameSession({ realMapId: "earth", mapSize: 128 });
+  const { resolveHeightmapSessionMap } = await import("../src/Server/sessionMap.js");
+  const resolved = resolveHeightmapSessionMap("earth", 128)!;
+  const session = new RasterGameSession({ prebuiltMap: resolved.map, mapName: resolved.name });
   session.subscribe("human", () => {});
   session.tick();
   const map = session.peekMap();

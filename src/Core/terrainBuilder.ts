@@ -30,7 +30,10 @@ export interface TerrainMask {
 /**
  * Flood-fill the connected component containing `start` over `mask` (matching
  * tiles share `mask[i] === target`), writing `componentId` into `labels` for
- * every visited tile. Returns the component's tile count. 4-connected.
+ * every visited tile and appending each visited tile ref to `out`. The caller
+ * reuses one `out` array per component (clearing it first) so the speckle
+ * cleanup can recolour / inspect exactly the component's tiles instead of
+ * rescanning the whole grid. Returns the component's tile count. 4-connected.
  */
 const fillComponent = (
   width: number,
@@ -40,13 +43,13 @@ const fillComponent = (
   start: number,
   target: number,
   componentId: number,
+  out: number[],
 ): number => {
   const stack = [start];
   labels[start] = componentId;
-  let count = 0;
   while (stack.length > 0) {
     const ref = stack.pop() as number;
-    count += 1;
+    out.push(ref);
     const x = ref % width;
     const y = (ref - x) / width;
     if (x > 0 && mask[ref - 1] === target && labels[ref - 1] < 0) {
@@ -66,7 +69,7 @@ const fillComponent = (
       stack.push(ref + width);
     }
   }
-  return count;
+  return out.length;
 };
 
 /**
@@ -91,6 +94,11 @@ export const cleanupMask = (
 ): void => {
   const size = width * height;
   const labels = new Int32Array(size).fill(-1);
+  // One scratch buffer reused across components: every flood appends its tiles
+  // here so we recolour / inspect just the component instead of rescanning the
+  // whole grid (which made this pass O(size × components) — seconds on a
+  // million-tile map full of speckle).
+  const tiles: number[] = [];
   let nextId = 0;
 
   // Sink tiny land islands.
@@ -98,12 +106,10 @@ export const cleanupMask = (
     if (mask[i] === 1 && labels[i] < 0) {
       const id = nextId;
       nextId += 1;
-      const start = i;
-      const count = fillComponent(width, height, mask, labels, start, 1, id);
+      tiles.length = 0;
+      const count = fillComponent(width, height, mask, labels, i, 1, id, tiles);
       if (count < minIslandTiles) {
-        for (let j = start; j < size; j += 1) {
-          if (labels[j] === id) mask[j] = 0;
-        }
+        for (let k = 0; k < tiles.length; k += 1) mask[tiles[k]] = 0;
       }
     }
   }
@@ -116,11 +122,11 @@ export const cleanupMask = (
     if (mask[i] === 0 && labels[i] < 0) {
       const id = nextId;
       nextId += 1;
-      const start = i;
-      const count = fillComponent(width, height, mask, labels, start, 0, id);
+      tiles.length = 0;
+      const count = fillComponent(width, height, mask, labels, i, 0, id, tiles);
       let touchesBorder = false;
-      for (let j = start; j < size && !touchesBorder; j += 1) {
-        if (labels[j] !== id) continue;
+      for (let k = 0; k < tiles.length && !touchesBorder; k += 1) {
+        const j = tiles[k];
         const x = j % width;
         const y = (j - x) / width;
         if (x === 0 || y === 0 || x === width - 1 || y === height - 1) {
@@ -128,9 +134,7 @@ export const cleanupMask = (
         }
       }
       if (!touchesBorder && count < minLakeTiles) {
-        for (let j = start; j < size; j += 1) {
-          if (labels[j] === id) mask[j] = 1;
-        }
+        for (let k = 0; k < tiles.length; k += 1) mask[tiles[k]] = 1;
       }
     }
   }

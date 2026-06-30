@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { RasterGameSession } from "../src/Server/RasterGameSession.js";
+import { resolveHeightmapSessionMap } from "../src/Server/sessionMap.js";
 import { NEUTRAL_PLAYER } from "../src/Core/TerritoryGrid.js";
 import type { RasterServerMessage, RasterSnapshot } from "../src/Core/types.js";
 
@@ -205,7 +206,8 @@ test("a far coast across water on the SAME continent dispatches a boat, not a si
   // a far coast of that *same* landmass that sits across open water. The old
   // "same landmass ⇒ march" rule launched nothing visible (a creep the long way
   // round); the OpenFront-style bounded land-reach rule must instead send a boat.
-  const session = new RasterGameSession({ realMapId: "earth", mapSize: 1024, startingTroops: 5000 });
+  const earth = resolveHeightmapSessionMap("earth", 1024)!;
+  const session = new RasterGameSession({ prebuiltMap: earth.map, mapName: earth.name, startingTroops: 5000 });
   const messages: RasterServerMessage[] = [];
   session.subscribe("human", (m) => messages.push(m), /*autoSpawn*/ false);
   const map = session.peekMap();

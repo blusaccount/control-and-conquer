@@ -1,6 +1,5 @@
 import { generateTerrain } from "../Core/terrainGenerator.js";
 import { buildRealMap, getRealMap } from "../Core/realMaps.js";
-import { buildHeightmapGameMap, getHeightmapMap } from "./heightmapMaps.js";
 import { NEUTRAL_PLAYER, TerritoryGrid, type PlayerId } from "../Core/TerritoryGrid.js";
 import type { GameMap, TileRef } from "../Core/GameMap.js";
 import { RasterConflict, type AttackIntent, type AttackRejectReason, type SeaAttackIntent } from "../Core/RasterConflict.js";
@@ -106,11 +105,20 @@ export interface RasterGameSessionOptions {
   startingTroops?: number;
   /**
    * When set to a known map id, the match runs on that map instead of
-   * procedural terrain. Resolved in order: heightmap maps (`heightmapMaps`,
-   * e.g. `earth`), then hand-authored ASCII maps (`realMaps`, e.g.
-   * `mediterranean`). Unknown ids fall back to procedural generation.
+   * procedural terrain. Resolved against the hand-authored ASCII maps
+   * (`realMaps`, e.g. `world`); unknown ids fall back to procedural generation.
+   * Heightmap maps (e.g. `earth`) are **not** built here — the caller resolves
+   * those via {@link resolveHeightmapSessionMap} and passes the result as
+   * {@link prebuiltMap}, keeping this class free of the Node fs/zlib loaders.
    */
   realMapId?: string;
+  /**
+   * A fully built {@link GameMap} to run the match on, bypassing all built-in
+   * map resolution. Used for heightmap maps (resolved server-side) and for a
+   * browser Web Worker that builds its map from fetched terrain. Takes
+   * precedence over `realMapId`, `width`/`height` and `seed`.
+   */
+  prebuiltMap?: GameMap;
   /**
    * Target width in tiles for heightmap maps (height is derived to keep a
    * geographic aspect ratio). Ignored for ASCII and procedural maps. `0` uses
@@ -134,7 +142,7 @@ export interface RasterGameSessionOptions {
   spawnPhaseTicks?: number;
 }
 
-const DEFAULT_OPTIONS: Required<RasterGameSessionOptions> = {
+const DEFAULT_OPTIONS: Required<Omit<RasterGameSessionOptions, "prebuiltMap">> = {
   width: 64,
   height: 40,
   seed: 1,
@@ -224,21 +232,22 @@ export class RasterGameSession {
 
   public constructor(options: RasterGameSessionOptions = {}) {
     const opts = { ...DEFAULT_OPTIONS, ...options };
-    const heightmapDef = opts.realMapId ? getHeightmapMap(opts.realMapId) : undefined;
-    const realMap = !heightmapDef && opts.realMapId ? getRealMap(opts.realMapId) : undefined;
+    // Heightmap maps arrive pre-built via `prebuiltMap` (resolved server-side);
+    // only ASCII real maps are resolved from an id here.
+    const realMap = !options.prebuiltMap && opts.realMapId ? getRealMap(opts.realMapId) : undefined;
     // Prefer the map's own name unless the caller explicitly set one.
-    this.mapName =
-      options.mapName ?? (heightmapDef ? heightmapDef.name : realMap ? realMap.name : opts.mapName);
+    this.mapName = options.mapName ?? (realMap ? realMap.name : opts.mapName);
     this.startingTroops = opts.startingTroops;
     this.maxDurationTicks = Math.max(1, Math.floor(opts.maxDurationTicks));
     this.spawnPhaseTicks = Math.max(0, Math.floor(opts.spawnPhaseTicks));
     this.phase = this.spawnPhaseTicks > 0 ? "spawn" : "playing";
 
     let map;
-    if (heightmapDef) {
-      // Heightmap maps are downsampled from a real-world topology raster to the
-      // requested size; they always contain ample playable land.
-      map = buildHeightmapGameMap(heightmapDef, opts.mapSize || undefined);
+    if (options.prebuiltMap) {
+      // A fully built map supplied by the caller — heightmap maps (resolved
+      // server-side via `resolveHeightmapSessionMap`) and the browser worker's
+      // fetched-terrain map both take this path. They always carry playable land.
+      map = options.prebuiltMap;
     } else if (realMap) {
       // Real-world maps already guarantee playable land, so use them verbatim.
       map = buildRealMap(realMap);

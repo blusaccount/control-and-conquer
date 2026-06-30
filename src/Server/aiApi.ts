@@ -38,7 +38,7 @@ import type {
   RasterAllianceRequest,
 } from "../Core/types.js";
 import { SPAWN_PHASE_SECONDS, SIMULATION_TICK_RATE } from "./simulationConfig.js";
-import { buildHeightmapGameMap, getHeightmapMap } from "./heightmapMaps.js";
+import { resolveHeightmapSessionMap } from "./sessionMap.js";
 import { getMapChoice } from "../Core/mapCatalog.js";
 
 export const MAX_AI_SESSIONS = 50;
@@ -411,6 +411,14 @@ export const handleAiApiRequest = async (
       // Fallback: small procedural map good for fast AI testing
       sessionOpts.width = 80;
       sessionOpts.height = 50;
+    }
+
+    // Heightmap maps (e.g. "earth") are built here and injected as a prebuilt map,
+    // so the session class stays free of the Node map loaders.
+    const heightmap = resolveHeightmapSessionMap(sessionOpts.realMapId, sessionOpts.mapSize);
+    if (heightmap) {
+      sessionOpts.prebuiltMap = heightmap.map;
+      sessionOpts.mapName = sessionOpts.mapName ?? heightmap.name;
     }
 
     sessionSequence += 1;
