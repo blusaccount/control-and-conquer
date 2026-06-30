@@ -5,7 +5,7 @@ import type { TerritoryGrid } from "../Core/TerritoryGrid.js";
 import { troopsPerSecond } from "../Core/rasterCombatConfig.js";
 import { goldPerSecond } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
-import type { RasterAttackFront, RasterBuilding, RasterCrossing, RasterMatchPhase, RasterPlayerInfo, RasterRail, RasterShip, RasterSnapshot, RasterTrain } from "../Core/types.js";
+import type { RasterAlliancePair, RasterAllianceRequest, RasterAttackFront, RasterBuilding, RasterCrossing, RasterMatchPhase, RasterPlayerInfo, RasterRail, RasterShip, RasterSnapshot, RasterTrain } from "../Core/types.js";
 
 /**
  * Serialize a `GameMap`'s static terrain into base64 plus a stable hash.
@@ -110,10 +110,14 @@ export interface BuildSnapshotInput {
   omitOwner?: boolean;
   /** Players who have been wiped off the map (no tiles left). */
   eliminated?: Set<number>;
+  /** Active alliances as canonical `[lowId, highId]` pairs. */
+  alliances?: RasterAlliancePair[];
+  /** Pending alliance proposals (directed `from` → `to`). */
+  allianceRequests?: RasterAllianceRequest[];
 }
 
 export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot => {
-  const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, includeTerrain, terrainHash, terrainBase64, winnerPlayerId, recentEvents, crossings, ships, fronts, rails = [], trains = [], ownerDeltaBase64, omitOwner, eliminated } = input;
+  const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, includeTerrain, terrainHash, terrainBase64, winnerPlayerId, recentEvents, crossings, ships, fronts, rails = [], trains = [], ownerDeltaBase64, omitOwner, eliminated, alliances = [], allianceRequests = [] } = input;
 
   const players: RasterPlayerInfo[] = [];
   for (const id of grid.players()) {
@@ -172,5 +176,7 @@ export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
     rails,
     trains,
     fronts,
+    alliances,
+    allianceRequests,
   };
 };

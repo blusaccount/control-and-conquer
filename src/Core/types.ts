@@ -13,8 +13,23 @@
 // directly: "expand my border toward (x, y) with N percent of my pool".
 // ---------------------------------------------------------------------------
 
-import type { RasterJoinClientMessage, RasterSpawnClientMessage } from "./messages.js";
+import type {
+  RasterAllyBreakClientMessage,
+  RasterAllyProposeClientMessage,
+  RasterAllyRespondClientMessage,
+  RasterJoinClientMessage,
+  RasterSpawnClientMessage,
+} from "./messages.js";
 import type { BuildingType } from "./buildings.js";
+
+/** An active alliance as a canonical `[lowId, highId]` player-id pair. */
+export type RasterAlliancePair = [number, number];
+
+/** A pending, directed alliance proposal awaiting the recipient's response. */
+export interface RasterAllianceRequest {
+  from: number;
+  to: number;
+}
 
 /** Per-player snapshot row for raster mode. */
 export interface RasterPlayerInfo {
@@ -207,6 +222,16 @@ export interface RasterSnapshot {
    * Drives the on-map troop-count labels so contested borders read at a glance.
    */
   fronts: RasterAttackFront[];
+  /**
+   * Active alliances as canonical `[lowId, highId]` pairs. Allied nations can't
+   * attack each other; the client marks them and offers a "break" action.
+   */
+  alliances: RasterAlliancePair[];
+  /**
+   * Pending alliance proposals (directed `from` → `to`). The client filters this
+   * for offers addressed to it (to accept/decline) and its own outgoing offers.
+   */
+  allianceRequests: RasterAllianceRequest[];
 }
 
 /** Reasons the server can reject a raster expand or build intent. */
@@ -225,7 +250,9 @@ export type RasterRejectReason =
   /** The player can't afford the structure. */
   | "INSUFFICIENT_GOLD"
   /** The requested building type is unknown. */
-  | "INVALID_BUILDING";
+  | "INVALID_BUILDING"
+  /** The targeted tile belongs to a current ally — allies can't be attacked. */
+  | "ALLIED";
 
 /** Sent by the client to expand its border toward a clicked tile. */
 export interface RasterExpandIntent {
@@ -306,7 +333,10 @@ export type RasterClientMessage =
   | { type: "CLIENT_RASTER_EXPAND"; payload: RasterExpandIntent }
   | { type: "CLIENT_RASTER_BUILD"; payload: RasterBuildIntent }
   | RasterJoinClientMessage
-  | RasterSpawnClientMessage;
+  | RasterSpawnClientMessage
+  | RasterAllyProposeClientMessage
+  | RasterAllyRespondClientMessage
+  | RasterAllyBreakClientMessage;
 
 /** Messages the server can send to the client. */
 export type RasterServerMessage =

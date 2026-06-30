@@ -173,6 +173,10 @@ export class RasterBotController {
     // expansion.
     this.maybeBuild(grid, map);
 
+    // Diplomacy: answer pending offers, sue for peace with a dangerous rival, or
+    // (for the ruthless) betray a pact that has boxed it in. One move per tick.
+    this.manageDiplomacy(grid);
+
     if (grid.troopsOf(this.myPlayerId) < this.config.personality.minPool) return;
 
     this.decide(grid, map);
@@ -225,6 +229,74 @@ export class RasterBotController {
     return false;
   }
 
+  /**
+   * Run at most one diplomacy move per decision, in priority order:
+   *  1. **Answer** the lowest-id pending alliance offer. Defensive personalities
+   *     welcome any ally; aggressive ones accept only an offer from someone at
+   *     least as strong (never a weakling they could simply eat).
+   *  2. **Propose** peace to the strongest rival on its border that clearly
+   *     outguns it — only defensive bots sue for peace, and only against a real
+   *     threat.
+   *  3. **Betray:** a ruthless bot hemmed in *only* by allies (no neutral land,
+   *     no other rival to fight) turns on the weakest ally it decisively outguns
+   *     rather than stagnate behind its own pacts.
+   * Deterministic throughout (ascending-id tiebreaks, no RNG).
+   */
+  private manageDiplomacy(grid: TerritoryGrid): void {
+    const me = this.myPlayerId;
+    const session = this.session;
+    if (me === null || !session) return;
+    const alliances = session.peekAlliances();
+    const p = this.config.personality;
+    const myPool = grid.troopsOf(me);
+
+    // 1) Respond to a pending offer.
+    const incoming = alliances.incomingProposals(me);
+    if (incoming.length > 0) {
+      const from = incoming[0];
+      const accept = p.aggression < 0.5 || grid.troopsOf(from) >= myPool;
+      session.respondAlliance(this.config.botId, from, accept);
+      return;
+    }
+
+    const bordering = grid.frontierTargets(me).filter((t) => t.target !== NEUTRAL_PLAYER);
+
+    // 2) Defensive bots sue for peace with a clearly stronger bordering rival.
+    if (p.aggression < 0.5) {
+      let threat: PlayerId | null = null;
+      let threatPool = -1;
+      for (const t of bordering) {
+        if (alliances.areAllied(me, t.target) || alliances.hasProposal(me, t.target)) continue;
+        const theirPool = grid.troopsOf(t.target);
+        if (theirPool > myPool * 1.5 && theirPool > threatPool) {
+          threatPool = theirPool;
+          threat = t.target;
+        }
+      }
+      if (threat !== null) session.proposeAlliance(this.config.botId, threat);
+      return;
+    }
+
+    // 3) Betrayal — only for the ruthless, and only when fully hemmed in by allies.
+    if (p.aggression >= 0.9) {
+      const hasOpenTarget = grid.frontierTargets(me).some(
+        (t) => t.target === NEUTRAL_PLAYER || !alliances.areAllied(me, t.target),
+      );
+      if (hasOpenTarget) return;
+      let prey: PlayerId | null = null;
+      let preyPool = Infinity;
+      for (const t of bordering) {
+        if (!alliances.areAllied(me, t.target)) continue;
+        const theirPool = grid.troopsOf(t.target);
+        if (myPool >= theirPool * (p.attackPoolRatio + 0.5) && theirPool < preyPool) {
+          preyPool = theirPool;
+          prey = t.target;
+        }
+      }
+      if (prey !== null) session.breakAlliance(this.config.botId, prey);
+    }
+  }
+
   /** Pick and queue one expand intent for this decision tick (or bank troops). */
   private decide(grid: TerritoryGrid, map: GameMap): void {
     const me = this.myPlayerId;
@@ -232,12 +304,17 @@ export class RasterBotController {
     if (me === null || !session) return;
     const p = this.config.personality;
     const pool = grid.troopsOf(me);
+    const alliances = session.peekAlliances();
 
     const targets = grid.frontierTargets(me);
     if (targets.length === 0) return; // Fully boxed in — nothing reachable; bank income.
 
     const neutral = targets.find((t) => t.target === NEUTRAL_PLAYER) ?? null;
-    const enemies = targets.filter((t) => t.target !== NEUTRAL_PLAYER);
+    // Allies are off the table — a pact bars attacking them, so they never enter
+    // the target-selection maths (the engine would reject such an intent anyway).
+    const enemies = targets.filter(
+      (t) => t.target !== NEUTRAL_PLAYER && !alliances.areAllied(me, t.target),
+    );
 
     // Weakest rival we can currently beat on troop pool (deterministic tiebreak:
     // lowest pool, then lowest target id thanks to ascending `targets` order).
@@ -271,6 +348,8 @@ export class RasterBotController {
       // Boxed in by stronger rivals only. Banking income is the right call —
       // unless the pool is saturating (capped at tiles * MAX_POOL_PER_TILE), in
       // which case further income is lost, so spend down on the softest target.
+      // With nothing left to fight (only allies or neutral-free borders), bank.
+      if (enemies.length === 0) return;
       const cap = grid.tileCountOf(me) * MAX_POOL_PER_TILE;
       if (pool < cap * 0.9) return;
       const softest = enemies.reduce((a, b) => (grid.troopsOf(b.target) < grid.troopsOf(a.target) ? b : a));

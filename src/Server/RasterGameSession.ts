@@ -4,6 +4,7 @@ import { buildHeightmapGameMap, getHeightmapMap } from "./heightmapMaps.js";
 import { NEUTRAL_PLAYER, TerritoryGrid, type PlayerId } from "../Core/TerritoryGrid.js";
 import type { GameMap, TileRef } from "../Core/GameMap.js";
 import { RasterConflict, type AttackIntent, type AttackRejectReason, type SeaAttackIntent } from "../Core/RasterConflict.js";
+import { AllianceRegistry } from "../Core/alliances.js";
 import type {
   RasterActionRejectedEvent,
   RasterAttackFront,
@@ -158,6 +159,8 @@ const DEFAULT_OPTIONS: Required<RasterGameSessionOptions> = {
 export class RasterGameSession {
   private readonly map: GameMap;
   private readonly grid: TerritoryGrid;
+  /** Diplomacy state: who is allied, and pending alliance proposals. */
+  private readonly alliances = new AllianceRegistry();
   private readonly conflict: RasterConflict;
   private readonly mapName: string;
   private readonly startingTroops: number;
@@ -255,7 +258,7 @@ export class RasterGameSession {
     }
     this.map = map;
     this.grid = new TerritoryGrid(this.map);
-    this.conflict = new RasterConflict(this.grid);
+    this.conflict = new RasterConflict(this.grid, this.alliances);
     const { terrainBase64, terrainHash } = encodeTerrain(this.map);
     this.terrainBase64 = terrainBase64;
     this.terrainHash = terrainHash;
@@ -471,6 +474,68 @@ export class RasterGameSession {
   public queueBuild(clientId: string, intent: RasterBuildIntent): void {
     if (!this.subscribers.has(clientId)) return;
     this.pendingBuilds.push({ clientId, intent });
+  }
+
+  /** Prepend a line to the shared event log, trimmed to the most recent few. */
+  private pushEvent(line: string): void {
+    this.recentEvents = [line, ...this.recentEvents].slice(0, MAX_EVENTS);
+  }
+
+  /**
+   * Resolve a diplomacy command's two parties: the sender (from their socket)
+   * and the named counterparty. Returns `null` — silently dropping the command —
+   * unless both are real, seated, living players and distinct from each other.
+   * Diplomacy is settled the instant it is issued (unlike expand/build, which
+   * queue for the next tick), so this runs synchronously off the message.
+   */
+  private resolveDiplomacy(clientId: string, targetId: PlayerId): PlayerId | null {
+    if (this.matchEndedBroadcast) return null;
+    const subscriber = this.subscribers.get(clientId);
+    if (!subscriber) return null;
+    const me = subscriber.playerId;
+    if (targetId === me) return null;
+    if (!this.grid.hasPlayer(me) || this.eliminated.has(me)) return null;
+    if (!this.grid.hasPlayer(targetId) || this.eliminated.has(targetId)) return null;
+    return me;
+  }
+
+  /**
+   * Offer an alliance to `targetId` on behalf of `clientId`. A crossing offer
+   * (the target had already proposed to us) seals the pact at once; otherwise it
+   * is parked pending their response. No-op on an invalid/dead counterparty or an
+   * existing pact.
+   */
+  public proposeAlliance(clientId: string, targetId: PlayerId): void {
+    const me = this.resolveDiplomacy(clientId, targetId);
+    if (me === null) return;
+    const outcome = this.alliances.propose(me, targetId);
+    if (outcome === "proposed") {
+      this.pushEvent(`${this.nameOf(me)} proposed an alliance to ${this.nameOf(targetId)}.`);
+    } else if (outcome === "accepted") {
+      this.pushEvent(`${this.nameOf(me)} and ${this.nameOf(targetId)} formed an alliance.`);
+    }
+  }
+
+  /** Accept (`accept: true`) or decline a pending alliance offer from `targetId`. */
+  public respondAlliance(clientId: string, targetId: PlayerId, accept: boolean): void {
+    const me = this.resolveDiplomacy(clientId, targetId);
+    if (me === null) return;
+    if (accept) {
+      if (this.alliances.accept(me, targetId)) {
+        this.pushEvent(`${this.nameOf(me)} and ${this.nameOf(targetId)} formed an alliance.`);
+      }
+    } else if (this.alliances.decline(me, targetId)) {
+      this.pushEvent(`${this.nameOf(me)} declined ${this.nameOf(targetId)}'s alliance offer.`);
+    }
+  }
+
+  /** Break an existing alliance with `targetId` — a betrayal, effective at once. */
+  public breakAlliance(clientId: string, targetId: PlayerId): void {
+    const me = this.resolveDiplomacy(clientId, targetId);
+    if (me === null) return;
+    if (this.alliances.breakAlliance(me, targetId)) {
+      this.pushEvent(`${this.nameOf(me)} broke their alliance with ${this.nameOf(targetId)}.`);
+    }
   }
 
   /**
@@ -726,6 +791,11 @@ export class RasterGameSession {
     return this.map;
   }
 
+  /** Test/bot helper: peek at the diplomacy state (alliances + proposals). */
+  public peekAlliances(): AllianceRegistry {
+    return this.alliances;
+  }
+
   /**
    * Eliminate any player that now holds no territory — a nation is beaten only
    * when its *entire* territory has been captured; there is no capital shortcut.
@@ -746,6 +816,9 @@ export class RasterGameSession {
       this.eliminated.add(playerId);
       eliminated.push(playerId);
       this.eliminationTick.set(playerId, this.conflict.tick);
+      // A wiped-out nation leaves the diplomacy graph — its pacts and any pending
+      // offers dissolve with it.
+      this.alliances.removePlayer(playerId);
 
       // Credit the player now holding the eliminated nation's last sampled tile.
       const sample = this.lastTileSeen.get(playerId);
@@ -822,6 +895,14 @@ export class RasterGameSession {
     const target = this.grid.ownerOf(ref);
     if (target === attacker) {
       return { kind: "rejected", reason: "INVALID_TILE", message: "You already own that tile." };
+    }
+    // A non-aggression pact bars attacking an ally's ground — by land or by sea.
+    if (target !== NEUTRAL_PLAYER && this.alliances.areAllied(attacker, target)) {
+      return {
+        kind: "rejected",
+        reason: "ALLIED",
+        message: `You're allied with ${this.nameOf(target)} — break the alliance to attack.`,
+      };
     }
 
     // Same landmass as the attacker → a contiguous land attack can march to it.
@@ -942,6 +1023,8 @@ export class RasterGameSession {
         };
       case "INSUFFICIENT_TROOPS":
         return { reason: "INSUFFICIENT_TROOPS", message: "Not enough troops in your pool." };
+      case "ALLIED":
+        return { reason: "ALLIED", message: "That shore belongs to an ally — break the alliance to attack." };
       case "NO_FRONTIER":
         return { reason: "NO_FRONTIER", message: "No water route reaches that tile." };
       default:
@@ -996,6 +1079,8 @@ export class RasterGameSession {
       ownerDeltaBase64,
       omitOwner: !subscriber.wantsRaster,
       eliminated: this.eliminated,
+      alliances: this.alliances.pairs(),
+      allianceRequests: this.alliances.proposals(),
     });
     subscriber.send({ type: "SERVER_RASTER_SNAPSHOT", payload: snapshot });
     if (includeTerrain) {
