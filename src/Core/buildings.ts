@@ -14,10 +14,22 @@
  */
 
 /** The kinds of structure a player can build on a tile they own. */
-export type BuildingType = "city" | "port" | "fort" | "factory";
+export type BuildingType = "city" | "port" | "fort" | "factory" | "warship";
 
 /** All building types, in menu order. */
-export const BUILDING_TYPES: readonly BuildingType[] = ["city", "port", "fort", "factory"];
+export const BUILDING_TYPES: readonly BuildingType[] = ["city", "port", "fort", "factory", "warship"];
+
+/** Building types that must sit on a coastal (shore) tile. */
+export const COASTAL_BUILDING_TYPES: readonly BuildingType[] = ["port", "warship"];
+
+/**
+ * How far (Chebyshev tiles) a warship's guns reach: an enemy transport ship
+ * passing within this range of a warship is sunk. A coast-defence rendition of
+ * OpenFront's warship, which patrols and engages hostile shipping — here it holds
+ * its harbour and interdicts amphibious assaults rather than roaming (mobile
+ * patrol + trade-raiding is a documented follow-up).
+ */
+export const WARSHIP_INTERCEPT_RANGE = 12;
 
 /** Runtime guard: is `value` a known building type id? */
 export const isBuildingType = (value: unknown): value is BuildingType =>
@@ -239,6 +251,16 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
     baseCost: 125_000,
     costGrowth: 2,
     costCap: 1_000_000,
+  },
+  warship: {
+    type: "warship",
+    name: "Warship",
+    description: "Guards the coast: sinks enemy transport ships in range (must sit on a shore).",
+    icon: "\u{1F6A2}", // 🚢
+    baseCost: 250_000,
+    costGrowth: 1,
+    costCap: 1_000_000,
+    costLinear: true,
   },
 };
 

@@ -20,7 +20,7 @@ import type {
   RasterTrain,
 } from "../Core/types.js";
 import { LAND_ATTACK_REACH, RASTER_MATCH_DURATION_SECONDS, SPAWN_IMMUNITY_SECONDS } from "../Core/rasterCombatConfig.js";
-import { BUILDING_DEFS, buildingCost, STRUCTURE_MIN_DIST } from "../Core/buildings.js";
+import { BUILDING_DEFS, buildingCost, COASTAL_BUILDING_TYPES, STRUCTURE_MIN_DIST } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import type { RasterMatchPhase } from "../Core/types.js";
 import { attachOwnership, buildSharedSnapshot, encodeOwnerDelta, encodeOwners, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
@@ -999,10 +999,10 @@ export class RasterGameSession {
     if (this.grid.hasBuilding(ref)) {
       return { kind: "rejected", reason: "TILE_OCCUPIED", message: "That tile already has a building." };
     }
-    // A port is a coastal trade hub (OpenFront snaps it to a shore tile); it can
-    // only stand where the land meets navigable water.
-    if (intent.building === "port" && !this.map.isShore(ref)) {
-      return { kind: "rejected", reason: "NOT_BUILDABLE", message: "A port must be built on a coastal tile." };
+    // Coastal structures (ports, warships) can only stand where the land meets
+    // navigable water — OpenFront snaps them to a shore tile.
+    if (COASTAL_BUILDING_TYPES.includes(intent.building) && !this.map.isShore(ref)) {
+      return { kind: "rejected", reason: "NOT_BUILDABLE", message: `A ${def.name.toLowerCase()} must be built on a coastal tile.` };
     }
     // Structures can't be packed together: enforce OpenFront's minimum spacing
     // (Euclidean) against the builder's other buildings.

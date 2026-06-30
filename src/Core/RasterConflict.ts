@@ -6,6 +6,7 @@ import {
   GOLD_BASE_PER_TICK,
   GOLD_PER_TILE_PER_TICK,
   PORT_GOLD_PER_TICK,
+  WARSHIP_INTERCEPT_RANGE,
 } from "./buildings.js";
 import { RailSystem, type RailView, type TrainView } from "./railSystem.js";
 import { TradeSystem, type TradeView } from "./tradeSystem.js";
@@ -371,6 +372,8 @@ export class RasterConflict {
     this.rails.advance(this.tickCount);
     // Trade ships sail between ports and pay both ends gold on arrival.
     this.trade.advance(this.tickCount);
+    // Warship coastal batteries sink enemy transports before they advance/land.
+    this.interceptTransports();
     this.advanceShips();
     this.advanceAttacks();
     this.checkVictory();
@@ -599,6 +602,44 @@ export class RasterConflict {
    * remain as a land attack radiating from the new beachhead. Landings are
    * recorded as {@link SeaCrossing}s for the client to flash.
    */
+  /**
+   * Sink every enemy transport ship currently within {@link WARSHIP_INTERCEPT_RANGE}
+   * (Chebyshev) of a warship not owned by — and not allied to — the ship's owner.
+   * A sunk transport's troops are lost outright (no refund): a coast defended by
+   * warships turns an unescorted landing into a gamble, the strategic point of a
+   * navy. Run before {@link advanceShips} so an interdicted ship dies mid-voyage
+   * rather than completing its landing this tick.
+   */
+  private interceptTransports(): void {
+    if (this.ships.length === 0) return;
+    const warships: TileRef[] = [];
+    for (const [ref, type] of this.grid.buildingEntries()) {
+      if (type === "warship") warships.push(ref);
+    }
+    if (warships.length === 0) return;
+
+    const map = this.grid.map;
+    const survivors: TransportShip[] = [];
+    for (const ship of this.ships) {
+      const tile = ship.path[ship.progress];
+      const sx = map.x(tile);
+      const sy = map.y(tile);
+      let sunk = false;
+      for (const w of warships) {
+        const owner = this.grid.ownerOf(w);
+        if (owner === ship.attacker) continue;
+        if (owner !== NEUTRAL_PLAYER && this.allies.areAllied(ship.attacker, owner)) continue;
+        if (Math.max(Math.abs(map.x(w) - sx), Math.abs(map.y(w) - sy)) <= WARSHIP_INTERCEPT_RANGE) {
+          sunk = true;
+          break;
+        }
+      }
+      if (!sunk) survivors.push(ship);
+    }
+    this.ships.length = 0;
+    this.ships.push(...survivors);
+  }
+
   private advanceShips(): void {
     const survivors: TransportShip[] = [];
 
