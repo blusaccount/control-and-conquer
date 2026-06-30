@@ -65,6 +65,23 @@ interface ShipDot {
   seen: number;
 }
 
+/**
+ * A brief expanding ring drawn at the world-space tile the player just clicked
+ * to order an expansion (or a spawn). Gives immediate visual confirmation that
+ * the click registered before the server responds. Fades and grows outward like
+ * a sonar ping in the player's hue.
+ */
+interface ClickRipple {
+  /** Tile column of the click target. */
+  x: number;
+  /** Tile row of the click target. */
+  y: number;
+  /** CSS colour of the ring (player colour for expand, white for spawn). */
+  color: string;
+  /** performance.now() when the ripple started. */
+  start: number;
+}
+
 /** A short-lived flash where a transport ship disembarked and took its beachhead. */
 interface Landing {
   x: number;
@@ -160,6 +177,8 @@ interface RasterRuntime {
   allianceRequests: RasterAllianceRequest[];
   /** Recently-captured tiles still glowing, for the conquest-ripple animation. */
   captureFlashes: CaptureFlash[];
+  /** Expanding rings confirming recent expand/spawn clicks. */
+  clickRipples: ClickRipple[];
   /** Tile the local player picked to spawn on, for the start-of-run auto-zoom. */
   spawnX: number;
   spawnY: number;
@@ -174,6 +193,9 @@ interface RasterRuntime {
   /** Whole seconds left in the start phase (0 once the game phase is live). */
   spawnRemainingSeconds: number;
 }
+
+/** How long a click-ripple ring expands before vanishing, in milliseconds. */
+const CLICK_RIPPLE_MS = 450;
 
 /** How long a landing flash lasts, in milliseconds. */
 const LANDING_DURATION_MS = 700;
@@ -346,6 +368,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     alliances: [],
     allianceRequests: [],
     captureFlashes: [],
+    clickRipples: [],
     spawnX: -1,
     spawnY: -1,
     nameAnchors: [],
@@ -877,6 +900,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       drawTrains(ctx, scale);
       drawShips(ctx, scale);
       drawLandings(now, ctx, scale);
+      drawClickRipples(now, ctx, scale);
       drawFronts(ctx, scale);
     }
     drawMinimap();
@@ -1272,6 +1296,41 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     }
   };
 
+  /**
+   * Draw a sonar-ping ring at each recently-clicked tile: a quick confirmation
+   * that the expand (or spawn) order registered before the server responds.
+   * Two staggered rings expand from the tile centre in the player's colour.
+   */
+  const drawClickRipples = (now: number, ctx: CanvasRenderingContext2D, scale: number): void => {
+    if (runtime.clickRipples.length === 0) return;
+    const survivors: ClickRipple[] = [];
+    for (const ripple of runtime.clickRipples) {
+      const t = (now - ripple.start) / CLICK_RIPPLE_MS;
+      if (t >= 1) continue;
+      survivors.push(ripple);
+      const ease = 1 - (1 - t) * (1 - t); // ease-out
+      const c = worldToScreen(ripple.x + 0.5, ripple.y + 0.5);
+      ctx.save();
+      // Outer ring: starts at tile edge, expands to ~3× tile width
+      ctx.globalAlpha = (1 - t) * 0.85;
+      ctx.strokeStyle = ripple.color;
+      ctx.lineWidth = Math.max(1.5, scale * 0.25);
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, Math.max(4, scale * (0.5 + ease * 2.5)), 0, Math.PI * 2);
+      ctx.stroke();
+      // Inner ring (delayed by 80 ms, so it trails the outer one)
+      const t2 = Math.max(0, t - 0.18);
+      const ease2 = 1 - (1 - t2) * (1 - t2);
+      ctx.globalAlpha = (1 - t2) * 0.55;
+      ctx.lineWidth = Math.max(1, scale * 0.18);
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, Math.max(2, scale * (0.3 + ease2 * 1.5)), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+    runtime.clickRipples = survivors;
+  };
+
   // Draw an expanding, fading ring at each landing point for a brief moment.
   const drawLandings = (now: number, ctx: CanvasRenderingContext2D, scale: number): void => {
     if (runtime.landings.length === 0) return;
@@ -1555,6 +1614,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     // position freely until the countdown ends.
     if (runtime.phase === "spawn") {
       sendSelectSpawn(tileX, tileY);
+      runtime.clickRipples.push({ x: tileX, y: tileY, color: "rgba(255,255,255,0.9)", start: performance.now() });
       setStatus(ui, runtime.spawned ? `Moving spawn to (${tileX}, ${tileY})…` : `Founding at (${tileX}, ${tileY})…`);
       return;
     }
@@ -1563,6 +1623,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     // but in a session with no start phase the first click still founds us.
     if (!runtime.spawned) {
       sendSelectSpawn(tileX, tileY);
+      runtime.clickRipples.push({ x: tileX, y: tileY, color: "rgba(255,255,255,0.9)", start: performance.now() });
       setStatus(ui, `Founding at (${tileX}, ${tileY})…`);
       return;
     }
@@ -1571,12 +1632,14 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     if (runtime.buildMode) {
       const def = BUILDING_DEFS[runtime.buildMode];
       sendBuild(tileX, tileY, runtime.buildMode);
+      runtime.clickRipples.push({ x: tileX, y: tileY, color: runtime.myColor, start: performance.now() });
       setStatus(ui, `Building ${def.name} at (${tileX}, ${tileY})…`);
       return;
     }
 
     const percent = Number(ui.attackPercentInput.value);
     sendExpand(tileX, tileY, percent);
+    runtime.clickRipples.push({ x: tileX, y: tileY, color: runtime.myColor, start: performance.now() });
     setStatus(ui, `Expanding toward (${tileX}, ${tileY}) with ${percent}% of pool.`);
   };
 
