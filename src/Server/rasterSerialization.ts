@@ -176,6 +176,8 @@ export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
     const tiles = grid.tileCountOf(id);
     const cities = grid.buildingCountOf(id, "city");
     const ports = grid.buildingCountOf(id, "port");
+    // Only finished cities lift the population cap (under-construction ones don't yet).
+    const activeCities = grid.activeBuildingCountOf(id, "city");
     players.push({
       playerId: id,
       name: meta.name,
@@ -188,8 +190,8 @@ export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
       forts: grid.buildingCountOf(id, "fort"),
       factories: grid.buildingCountOf(id, "factory"),
       tiles,
-      troopsPerSecond: troopsPerSecond(tiles, grid.troopsOf(id), SIMULATION_TICK_RATE, grid.incomeMultiplierOf(id), cities, grid.modifiersOf(id).troopCapMultiplier),
-      maxTroops: Math.floor(maxTroops(tiles, cities) * grid.modifiersOf(id).troopCapMultiplier),
+      troopsPerSecond: troopsPerSecond(tiles, grid.troopsOf(id), SIMULATION_TICK_RATE, grid.incomeMultiplierOf(id), activeCities, grid.modifiersOf(id).troopCapMultiplier),
+      maxTroops: Math.floor(maxTroops(tiles, activeCities) * grid.modifiersOf(id).troopCapMultiplier),
       eliminated: eliminated?.has(id) ?? false,
     });
   }
@@ -200,6 +202,8 @@ export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
     x: map.x(ref),
     y: map.y(ref),
     type,
+    underConstruction: grid.isUnderConstruction(ref),
+    buildProgress: grid.constructionProgress(ref, tick),
   }));
 
   return {

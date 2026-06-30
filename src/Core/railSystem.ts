@@ -132,7 +132,7 @@ export class RailSystem {
   /** Snapshot the station buildings (factory/city/port) with owner + kind. */
   private collectStations(): RailStation[] {
     const out: RailStation[] = [];
-    for (const [ref, type] of this.grid.buildingEntries()) {
+    for (const [ref, type] of this.grid.activeBuildingEntries()) {
       if (RAIL_STATION_TYPES.includes(type)) {
         out.push({ ref, owner: this.grid.ownerOf(ref), type });
       }

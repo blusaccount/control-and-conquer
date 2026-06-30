@@ -1316,6 +1316,9 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         continue;
       }
 
+      // A structure still going up is drawn dimmed, with a progress bar below.
+      if (b.underConstruction) ctx.globalAlpha = 0.5;
+
       // 1. Cast shadow — a soft ellipse below the marker so it sits ON the land
       //    and casts a shadow, instead of floating flat on top of it.
       ctx.beginPath();
@@ -1358,6 +1361,22 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ctx.strokeStyle = "rgba(0, 0, 0, 0.8)";
       ctx.strokeText(BUILDING_DEFS[b.type].icon, sx, sy);
       ctx.fillText(BUILDING_DEFS[b.type].icon, sx, sy);
+
+      // 6. Build-progress bar under a structure still under construction.
+      if (b.underConstruction) {
+        ctx.globalAlpha = 1;
+        const bw = radius * 1.8;
+        const bh = Math.max(2.5, radius * 0.22);
+        const bx = sx - bw / 2;
+        const by = sy + radius + bh * 1.4;
+        ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+        ctx.fillRect(bx - 1, by - 1, bw + 2, bh + 2);
+        ctx.fillStyle = "rgba(70, 72, 82, 0.95)";
+        ctx.fillRect(bx, by, bw, bh);
+        ctx.fillStyle = "rgba(250, 204, 21, 0.95)"; // amber fill
+        ctx.fillRect(bx, by, bw * Math.max(0, Math.min(1, b.buildProgress)), bh);
+      }
+      ctx.globalAlpha = 1;
     }
     ctx.restore();
   };

@@ -166,6 +166,33 @@ test("gold accrues at the flat base rate each tick, regardless of territory (Ope
   assert.equal(grid.goldOf(1), GOLD_BASE_PER_TICK * 100, `expected ${GOLD_BASE_PER_TICK * 100} gold, got ${grid.goldOf(1)}`);
 });
 
+test("a building under construction counts for cost but not effect until it finishes", () => {
+  const grid = landStrip(20);
+  grid.addPlayer(1, 0);
+  const refs = claimRun(grid, 1, 10);
+  // Built at tick 0, ready at tick 5.
+  grid.placeBuilding(refs[0], "city", 0, 5);
+  assert.equal(grid.buildingCountOf(1, "city"), 1, "counts toward the cost ramp at once");
+  assert.equal(grid.activeBuildingCountOf(1, "city"), 0, "but does not lift the cap yet");
+  assert.equal(grid.isUnderConstruction(refs[0]), true);
+
+  grid.activateDue(4);
+  assert.equal(grid.activeBuildingCountOf(1, "city"), 0, "still building at tick 4");
+  grid.activateDue(5);
+  assert.equal(grid.activeBuildingCountOf(1, "city"), 1, "active once the window elapses");
+  assert.equal(grid.isUnderConstruction(refs[0]), false);
+});
+
+test("a fort's defense aura only switches on once it finishes building", () => {
+  const grid = landStrip(6);
+  grid.addPlayer(1, 0);
+  const refs = claimRun(grid, 1, 3);
+  grid.placeBuilding(refs[1], "fort", 0, 4); // under construction
+  assert.equal(grid.defenseFactorAt(refs[1]), 1, "no aura while building");
+  grid.activateDue(4);
+  assert.ok(grid.defenseFactorAt(refs[1]) > 1, "aura is up once the fort finishes");
+});
+
 test("a city raises the troop ceiling but pays no gold (OpenFront)", () => {
   const makeGrid = (withCity: boolean): TerritoryGrid => {
     const grid = landStrip(20);

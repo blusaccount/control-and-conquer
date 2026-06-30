@@ -358,6 +358,9 @@ export class RasterConflict {
     }
 
     this.crossings = [];
+    // Switch on any structures whose construction window has elapsed, so their
+    // effects (city cap, stations, fort aura) count from this tick on.
+    this.grid.activateDue(this.tickCount);
     this.applyIncome();
     this.applyGoldIncome();
     // Trains ride the auto-routed rail network and bank gold at city/port stops.
@@ -549,7 +552,7 @@ export class RasterConflict {
       // OpenFront's territory-scaled ceiling, lifted by each city and scaled by
       // the player's difficulty cap multiplier (weaker AI get a lower ceiling);
       // the bell-curve growth tapers to zero as the pool nears it.
-      const cap = maxTroops(tiles, this.grid.buildingCountOf(id, "city")) *
+      const cap = maxTroops(tiles, this.grid.activeBuildingCountOf(id, "city")) *
         this.grid.modifiersOf(id).troopCapMultiplier;
       const troops = this.grid.troopsOf(id);
       if (troops >= cap) {
@@ -599,7 +602,7 @@ export class RasterConflict {
   private interceptTransports(): void {
     if (this.ships.length === 0) return;
     const warships: TileRef[] = [];
-    for (const [ref, type] of this.grid.buildingEntries()) {
+    for (const [ref, type] of this.grid.activeBuildingEntries()) {
       if (type === "warship") warships.push(ref);
     }
     if (warships.length === 0) return;

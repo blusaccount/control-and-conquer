@@ -105,7 +105,7 @@ export class TradeSystem {
   /** Snapshot the ports with owner + the sea body they open onto. */
   private collectPorts(): TradePort[] {
     const out: TradePort[] = [];
-    for (const [ref, type] of this.grid.buildingEntries()) {
+    for (const [ref, type] of this.grid.activeBuildingEntries()) {
       if (type !== "port") continue;
       let sea = -1;
       for (const n of this.grid.map.neighbors(ref)) {

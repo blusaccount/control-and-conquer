@@ -350,7 +350,7 @@ export class RasterBotController {
       // in which case further income is lost, so spend down on the softest target.
       // With nothing left to fight (only allies or neutral-free borders), bank.
       if (enemies.length === 0) return;
-      const cap = maxTroops(grid.tileCountOf(me), grid.buildingCountOf(me, "city")) *
+      const cap = maxTroops(grid.tileCountOf(me), grid.activeBuildingCountOf(me, "city")) *
         grid.modifiersOf(me).troopCapMultiplier;
       if (pool < cap * 0.9) return;
       const softest = enemies.reduce((a, b) => (grid.troopsOf(b.target) < grid.troopsOf(a.target) ? b : a));

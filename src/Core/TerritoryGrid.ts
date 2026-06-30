@@ -120,6 +120,14 @@ export class TerritoryGrid {
    * engine, which reads {@link buildingCountOf}).
    */
   private readonly buildings = new Map<TileRef, BuildingType>();
+  /**
+   * Buildings still under construction: tile → its build window `{start, ready}`
+   * in engine ticks. A building counts toward its owner's cost ramp the moment it
+   * is placed, but its *effects* (city population cap, rail/trade station, fort
+   * aura, warship interception) only switch on once it leaves this map at
+   * {@link activateDue}. Empty = nothing building.
+   */
+  private readonly construction = new Map<TileRef, { start: number; ready: number }>();
 
   // Lazily-allocated, generation-stamped scratch buffers reused by every
   // {@link findSeaPath} call so per-launch pathfinding stays allocation-free.
@@ -598,7 +606,7 @@ export class TerritoryGrid {
    * through the counts maintained here. Throws if the tile isn't owned by a real
    * player or already holds a building (one structure per tile).
    */
-  placeBuilding(ref: TileRef, type: BuildingType): void {
+  placeBuilding(ref: TileRef, type: BuildingType, startTick = 0, readyTick = 0): void {
     const owner = this.owner[ref];
     if (owner === NEUTRAL_PLAYER || !this.isCapturable(ref)) {
       throw new Error(`Tile ${ref} must be owned land to hold a building.`);
@@ -609,7 +617,61 @@ export class TerritoryGrid {
     this.buildings.set(ref, type);
     const counts = this.standing(owner).buildingCounts;
     counts.set(type, (counts.get(type) ?? 0) + 1);
-    if (type === "fort") this.addDefensePost(ref, FORT_DEFENSE_RADIUS, FORT_DEFENSE_STRENGTH);
+    if (readyTick > startTick) {
+      // Under construction: effects switch on later, at activateDue.
+      this.construction.set(ref, { start: startTick, ready: readyTick });
+    } else if (type === "fort") {
+      // Instantly active (the default, used by tests/direct placement).
+      this.addDefensePost(ref, FORT_DEFENSE_RADIUS, FORT_DEFENSE_STRENGTH);
+    }
+  }
+
+  /**
+   * Switch on every building whose construction window has elapsed by `tick`,
+   * applying its deferred effects (currently the fort's defense aura). Called once
+   * per tick by the engine. Cheap: only buildings still constructing are scanned.
+   */
+  activateDue(tick: number): void {
+    if (this.construction.size === 0) return;
+    const ready: TileRef[] = [];
+    for (const [ref, window] of this.construction) if (tick >= window.ready) ready.push(ref);
+    for (const ref of ready) {
+      this.construction.delete(ref);
+      if (this.buildings.get(ref) === "fort") this.addDefensePost(ref, FORT_DEFENSE_RADIUS, FORT_DEFENSE_STRENGTH);
+    }
+  }
+
+  /** True while `ref`'s building is still being built (effects not yet active). */
+  isUnderConstruction(ref: TileRef): boolean {
+    return this.construction.has(ref);
+  }
+
+  /** Build progress of `ref` at `tick` in [0,1]; 1 if built (or not constructing). */
+  constructionProgress(ref: TileRef, tick: number): number {
+    const window = this.construction.get(ref);
+    if (!window) return 1;
+    const span = window.ready - window.start;
+    if (span <= 0) return 1;
+    return Math.min(1, Math.max(0, (tick - window.start) / span));
+  }
+
+  /**
+   * How many *active* (finished) buildings of `type` `player` owns — the count
+   * that drives effects (city population cap, stations). Differs from
+   * {@link buildingCountOf} (which includes still-constructing ones for the cost
+   * ramp) only while something of that type is being built.
+   */
+  activeBuildingCountOf(player: PlayerId, type: BuildingType): number {
+    let pending = 0;
+    for (const ref of this.construction.keys()) {
+      if (this.buildings.get(ref) === type && this.owner[ref] === player) pending += 1;
+    }
+    return Math.max(0, this.buildingCountOf(player, type) - pending);
+  }
+
+  /** Every *active* (finished) building as `[tile, type]`, ascending — for stations/effects. */
+  activeBuildingEntries(): Array<[TileRef, BuildingType]> {
+    return this.buildingEntries().filter(([ref]) => !this.construction.has(ref));
   }
 
   /**
@@ -623,6 +685,7 @@ export class TerritoryGrid {
     const type = this.buildings.get(ref);
     if (type === undefined) return false;
     this.buildings.delete(ref);
+    this.construction.delete(ref);
     if (previousOwner !== NEUTRAL_PLAYER) {
       const counts = this.standing(previousOwner).buildingCounts;
       const next = (counts.get(type) ?? 0) - 1;

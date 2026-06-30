@@ -130,6 +130,10 @@ export interface RasterBuilding {
   x: number;
   y: number;
   type: BuildingType;
+  /** True while the structure is still being built (its effects aren't active yet). */
+  underConstruction: boolean;
+  /** Construction progress in [0,1]; 1 once finished. Drives the build-progress bar. */
+  buildProgress: number;
 }
 
 /**

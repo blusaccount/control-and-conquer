@@ -20,7 +20,7 @@ import type {
   RasterTrain,
 } from "../Core/types.js";
 import { LAND_ATTACK_REACH, RASTER_MATCH_DURATION_SECONDS, SPAWN_IMMUNITY_SECONDS } from "../Core/rasterCombatConfig.js";
-import { BUILDING_DEFS, buildingCost, COASTAL_BUILDING_TYPES, CONQUER_GOLD_FRACTION_AI, CONQUER_GOLD_FRACTION_HUMAN, costCounterTypes, STRUCTURE_MIN_DIST } from "../Core/buildings.js";
+import { BUILDING_CONSTRUCTION_TICKS, BUILDING_DEFS, buildingCost, COASTAL_BUILDING_TYPES, CONQUER_GOLD_FRACTION_AI, CONQUER_GOLD_FRACTION_HUMAN, costCounterTypes, STRUCTURE_MIN_DIST } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import type { RasterDifficulty } from "../Core/messages.js";
 import { IDENTITY_MODIFIERS } from "../Core/playerModifiers.js";
@@ -1085,7 +1085,10 @@ export class RasterGameSession {
     }
 
     this.grid.addGold(attacker, -cost);
-    this.grid.placeBuilding(ref, intent.building);
+    // The structure goes up over time: it counts toward the cost ramp at once,
+    // but its effects only switch on after its construction window elapses.
+    const start = this.conflict.tick;
+    this.grid.placeBuilding(ref, intent.building, start, start + BUILDING_CONSTRUCTION_TICKS[intent.building]);
     const builderName = this.playerMeta.get(attacker)?.name ?? `Player ${attacker}`;
     return {
       kind: "ok",

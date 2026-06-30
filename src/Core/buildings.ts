@@ -132,6 +132,20 @@ export const FORT_DEFENSE_RADIUS = 30;
  */
 export const STRUCTURE_MIN_DIST = 15;
 
+/**
+ * Ticks a structure spends **under construction** before its effects switch on,
+ * mirroring OpenFront's `constructionDuration` (2/5/10·10-tick windows at 10
+ * ticks/s). Until it finishes a building counts toward its cost ramp but pays no
+ * city population cap, runs no station and raises no fort/warship effect.
+ */
+export const BUILDING_CONSTRUCTION_TICKS: Readonly<Record<BuildingType, number>> = {
+  city: 20,
+  factory: 20,
+  port: 50,
+  fort: 50,
+  warship: 30,
+};
+
 // --- Railroads + trains ----------------------------------------------------
 //
 // OpenFront ties a rail economy to a **Factory**: place a factory near a city
