@@ -23,6 +23,17 @@
 | **P3 — Trade-Schiffe + Warships** (Trade: Port→Port-Gold-Sigmoid, beide Häfen kassieren, Flotten-Cap; Warship: küstengebundene Struktur versenkt feindliche Transporter in Reichweite) | ✅ **umgesetzt & getestet** · Nukes/SAM, mobile Warship-Jagd auf Trade, Boote-`floor(troops/5)` noch offen |
 | **P4 — Spawn-Immunität** (geschütztes Eröffnungsfenster `SPAWN_IMMUNITY_SECONDS`, Angriffe/Boote auf immune Nationen abgewiesen) | ✅ **umgesetzt & getestet** · Bot/Nation-Split, Radial-UI/Hotkeys, Visualisierung noch offen (UI-/Render-lastig) |
 
+> **Update (Ökonomie-Angleichung):** Gold ist jetzt **flach wie OpenFront** —
+> `goldAdditionRate` = 100/Tick, **unabhängig** von Tiles/Städten/Häfen. Städte
+> geben **0 Gold** (nur Pop-Cap), Häfen geben **0 Pauschal-Gold** (nur Trade).
+> Dazu das **Eroberungs-Bounty** (`conquerGoldAmount`): Sieger erbt das Gold einer
+> besiegten Nation (KI 100 %, Mensch 50 %). Truppen-Wachstumsformel war seit P0
+> schon exakt. Damit deckt sich Ökonomie **und** Population/Wachstum wertgenau mit
+> OpenFront. **Bot/Nation-Schwierigkeits-Skalierung jetzt ebenfalls drin:** KI
+> nimmt OpenFronts Nations-Handicaps je Stufe — Start 12 500/18 750/25 000,
+> Pop-Cap ×0.5/0.75/1.0, Wachstum ×0.9/0.95/1.0 (leicht/mittel/schwer); der
+> Mensch spielt immer auf voller Stärke.
+
 Der **Balancing-Kern** (Truppen/Population, Land-Kampf, Wirtschaft/Gebäude) ist
 damit wertgenau auf OpenFront umgestellt; 238 Unit-Tests grün. P3/P4 sind als
 eigenständige Folge-PRs vorgesehen, weil sie neue Systeme (Trade/Warship/Nukes)

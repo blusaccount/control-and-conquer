@@ -26,6 +26,35 @@ export const DIFFICULTY_BOT_COUNT: Record<RasterDifficulty, number> = {
   hard: 8,
 };
 
+// --- AI strength by difficulty ---------------------------------------------
+//
+// Our AI opponents behave like OpenFront's **nations** (they expand, build and
+// fight), so they take OpenFront's per-difficulty nation handicaps rather than
+// the passive-bot ÷3. Mapped to our easy/medium/hard onto OpenFront's
+// Easy/Medium/Hard tiers: a weaker tier starts smaller, has a lower population
+// ceiling, and grows a touch slower. (Hard = full strength, exactly a human.)
+
+/** Starting troops an AI nation is seated with, by difficulty (OpenFront's `startManpower`). */
+export const NATION_START_MANPOWER: Record<RasterDifficulty, number> = {
+  easy: 12_500,
+  medium: 18_750,
+  hard: 25_000,
+};
+
+/** Multiplier on an AI nation's max-population ceiling, by difficulty. */
+export const NATION_TROOP_CAP_MULTIPLIER: Record<RasterDifficulty, number> = {
+  easy: 0.5,
+  medium: 0.75,
+  hard: 1,
+};
+
+/** Multiplier on an AI nation's troop growth (the income modifier), by difficulty. */
+export const NATION_GROWTH_MULTIPLIER: Record<RasterDifficulty, number> = {
+  easy: 0.9,
+  medium: 0.95,
+  hard: 1,
+};
+
 /**
  * Land-per-nation density as a square-root divisor, by difficulty: the field
  * grows with the square root of the capturable land divided by this, so a 4×

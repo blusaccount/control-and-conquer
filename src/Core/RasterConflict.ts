@@ -1,13 +1,7 @@
 import type { TileRef } from "./GameMap.js";
 import { NEUTRAL_PLAYER, type PlayerId, type TerritoryGrid } from "./TerritoryGrid.js";
 import { NO_ALLIANCES, type AllianceView } from "./alliances.js";
-import {
-  CITY_GOLD_PER_TICK,
-  GOLD_BASE_PER_TICK,
-  GOLD_PER_TILE_PER_TICK,
-  PORT_GOLD_PER_TICK,
-  WARSHIP_INTERCEPT_RANGE,
-} from "./buildings.js";
+import { GOLD_BASE_PER_TICK, WARSHIP_INTERCEPT_RANGE } from "./buildings.js";
 import { RailSystem, type RailView, type TrainView } from "./railSystem.js";
 import { TradeSystem, type TradeView } from "./tradeSystem.js";
 import {
@@ -20,6 +14,7 @@ import {
   FRONTIER_PRIORITY_FLOOR,
   FRONTIER_SURROUND_WEIGHT,
   FRONTIER_TOWARD_WEIGHT,
+  largeDefenderLossFactor,
   maxTroops,
   troopGrowth,
   MAX_TRANSPORT_SHIPS_PER_PLAYER,
@@ -179,8 +174,6 @@ export class RasterConflict {
   /** Monotonic id source so each ship has a stable handle for the client. */
   private nextShipId = 1;
   private readonly incomeAccumulator = new Map<PlayerId, number>();
-  /** Fractional gold carried between ticks, flushed into the integer pool. */
-  private readonly goldAccumulator = new Map<PlayerId, number>();
   /**
    * Tick (exclusive) until which a freshly-seated player is immune from attack.
    * Set by {@link grantImmunity} when the session seats a player; checked before
@@ -365,6 +358,9 @@ export class RasterConflict {
     }
 
     this.crossings = [];
+    // Switch on any structures whose construction window has elapsed, so their
+    // effects (city cap, stations, fort aura) count from this tick on.
+    this.grid.activateDue(this.tickCount);
     this.applyIncome();
     this.applyGoldIncome();
     // Trains ride the auto-routed rail network and bank gold at city/port stops.
@@ -537,7 +533,8 @@ export class RasterConflict {
     // surcharge, so an opposed landing is dearer than walking the same tile.
     const defTroops = target === NEUTRAL_PLAYER ? 0 : this.grid.troopsOf(target);
     const defDensity = target === NEUTRAL_PLAYER ? 0 : this.defenderDensityOf(target);
-    return Math.ceil(this.attackerTileLoss(ref, target, attackerForce, defTroops, defDensity)) + surcharge;
+    const largeFactor = target === NEUTRAL_PLAYER ? 1 : largeDefenderLossFactor(this.grid.tileCountOf(target));
+    return Math.ceil(this.attackerTileLoss(ref, target, attackerForce, defTroops, defDensity) * largeFactor) + surcharge;
   }
 
   /**
@@ -552,9 +549,11 @@ export class RasterConflict {
         this.incomeAccumulator.set(id, 0);
         continue;
       }
-      // OpenFront's territory-scaled ceiling, lifted by each city, capping the
-      // pool; the bell-curve growth above tapers to zero as the pool nears it.
-      const cap = maxTroops(tiles, this.grid.buildingCountOf(id, "city"));
+      // OpenFront's territory-scaled ceiling, lifted by each city and scaled by
+      // the player's difficulty cap multiplier (weaker AI get a lower ceiling);
+      // the bell-curve growth tapers to zero as the pool nears it.
+      const cap = maxTroops(tiles, this.grid.activeBuildingCountOf(id, "city")) *
+        this.grid.modifiersOf(id).troopCapMultiplier;
       const troops = this.grid.troopsOf(id);
       if (troops >= cap) {
         this.incomeAccumulator.set(id, 0);
@@ -573,25 +572,15 @@ export class RasterConflict {
   }
 
   /**
-   * Each player earns gold proportional to the tiles they hold, plus a flat
-   * dividend per city, accumulated fractionally and flushed into the integer
-   * gold pool. Unlike troops, gold is uncapped — it is a spend resource, drained
-   * by building structures — so there is no logistic soft cap here.
+   * Each player earns a **flat** passive gold trickle every tick, exactly like
+   * OpenFront's `goldAdditionRate` — independent of territory, cities and ports.
+   * Gold is otherwise grown through trade ships, trains and conquest, not a
+   * per-tile/per-building dividend. Uncapped (a spend resource), so no soft cap.
    */
   private applyGoldIncome(): void {
     for (const id of this.grid.players()) {
-      const tiles = this.grid.tileCountOf(id);
-      const cities = this.grid.buildingCountOf(id, "city");
-      const ports = this.grid.buildingCountOf(id, "port");
-      const rate =
-        GOLD_BASE_PER_TICK +
-        tiles * GOLD_PER_TILE_PER_TICK +
-        cities * CITY_GOLD_PER_TICK +
-        ports * PORT_GOLD_PER_TICK;
-      const accumulated = (this.goldAccumulator.get(id) ?? 0) + rate;
-      const whole = Math.floor(accumulated);
-      if (whole > 0) this.grid.addGold(id, whole);
-      this.goldAccumulator.set(id, accumulated - whole);
+      if (this.grid.tileCountOf(id) <= 0) continue; // eliminated — earns nothing
+      this.grid.addGold(id, GOLD_BASE_PER_TICK);
     }
   }
 
@@ -613,7 +602,7 @@ export class RasterConflict {
   private interceptTransports(): void {
     if (this.ships.length === 0) return;
     const warships: TileRef[] = [];
-    for (const [ref, type] of this.grid.buildingEntries()) {
+    for (const [ref, type] of this.grid.activeBuildingEntries()) {
       if (type === "warship") warships.push(ref);
     }
     if (warships.length === 0) return;
@@ -770,6 +759,10 @@ export class RasterConflict {
       // so capturing many tiles this advance doesn't compound either mid-front.
       const defenderDensity = vsPlayer ? this.defenderDensityOf(attack.target) : 0;
       const defenderBleed = vsPlayer ? this.defenderLossFor(attack.target) : 0;
+      // A sprawling nation defends each tile worse (OpenFront's defenseSig), so
+      // its tiles cost the attacker less — an anti-snowball lever. Snapshotted
+      // once for the tick from the defender's current territory.
+      const largeFactor = vsPlayer ? largeDefenderLossFactor(this.grid.tileCountOf(attack.target)) : 1;
 
       // Tiles this front may take this tick (OpenFront's `attackTilesPerTick`):
       // it scales with the attacker's troop advantage and the contested border
@@ -789,7 +782,7 @@ export class RasterConflict {
         if (this.grid.ownerOf(ref) !== attack.target) continue;
         // OpenFront's per-tile attacker loss: the ratio shifts as the assault is
         // spent down, so a front that bleeds out grinds to a halt on the spot.
-        const loss = this.attackerTileLoss(ref, attack.target, attack.committed, defenderTroops, defenderDensity);
+        const loss = this.attackerTileLoss(ref, attack.target, attack.committed, defenderTroops, defenderDensity) * largeFactor;
         if (attack.committed < loss) break;
 
         if (vsPlayer) this.grid.addTroops(attack.target, -defenderBleed);

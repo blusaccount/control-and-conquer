@@ -64,6 +64,31 @@ test("capturing a nation's entire territory eliminates it; the conqueror keeps t
   );
 });
 
+test("conquering a nation seizes a share of its gold (conquer bounty)", () => {
+  const session = new RasterGameSession({ width: 48, height: 32, seed: 9 });
+  collect(session, "alice"); // player 1 (a human subscriber)
+  collect(session, "bob"); // player 2 (a human subscriber)
+  const grid = session.peekGrid();
+
+  grantExtraTiles(session, 1, 2);
+  // One tick first so the engine samples player 1's tiles — the conqueror is
+  // credited via the last tile seen held, which must be populated before the wipe.
+  session.tick();
+  grid.setGold(1, 10_000); // the soon-to-fall nation's treasury
+  const conquerorGoldBefore = grid.goldOf(2);
+
+  // Player 2 takes every one of player 1's tiles, then a tick resolves the wipe-out.
+  const before = grid.tilesOf(1);
+  for (const ref of before) grid.claim(ref, 2);
+  session.tick();
+
+  // Player 1 is a human, so the victor inherits half its gold (the rest is lost);
+  // the fallen nation's treasury is emptied.
+  assert.equal(grid.goldOf(1), 0, "the fallen nation's treasury is emptied");
+  const gained = grid.goldOf(2) - conquerorGoldBefore;
+  assert.ok(gained >= 5000 && gained < 5500, `victor gains the 50% human bounty (plus one tick of passive gold), gained ${gained}`);
+});
+
 test("a nation still holding one tile is not eliminated", () => {
   const session = new RasterGameSession({ width: 48, height: 32, seed: 9 });
   const a = collect(session, "alice");

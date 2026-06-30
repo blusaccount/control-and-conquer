@@ -71,8 +71,9 @@ export const troopsPerSecond = (
   ticksPerSecond: number,
   incomeMultiplier = 1,
   cities = 0,
+  troopCapMultiplier = 1,
 ): number =>
-  troopGrowth(troops, maxTroops(tiles, cities)) * incomeMultiplier * ticksPerSecond;
+  troopGrowth(troops, maxTroops(tiles, cities) * troopCapMultiplier) * incomeMultiplier * ticksPerSecond;
 
 /**
  * Maximum wall-clock length of a single roguelite run, in seconds. When the
@@ -225,6 +226,25 @@ export const attackerLossPerTile = (
 
 /** Troops the attacker loses to claim one neutral tile of magnitude `mag` (mag/5). */
 export const neutralLossPerTile = (mag: number): number => mag / NEUTRAL_LOSS_DIVISOR;
+
+/**
+ * Large-empire defence debuff, mirroring OpenFront's `defenseSig`: a sprawling
+ * nation defends each of its tiles *worse*, so the attacker's per-tile loss is
+ * scaled down toward {@link LARGE_DEFENDER_LOSS_FLOOR} as the defender's territory
+ * grows past {@link LARGE_DEFENDER_MIDPOINT}. This is a deliberate anti-snowball
+ * lever: a runaway empire becomes cheaper to chip away at, so it can't harden
+ * into an unbeatable turtle. Returns 1 for a small empire (no effect), easing to
+ * the floor for a huge one.
+ */
+export const LARGE_DEFENDER_MIDPOINT = 150_000;
+export const LARGE_DEFENDER_DECAY = Math.LN2 / 50_000;
+export const LARGE_DEFENDER_LOSS_FLOOR = 0.7;
+const sigmoid = (value: number, decay: number, midpoint: number): number =>
+  1 / (1 + Math.exp(-decay * (value - midpoint)));
+export const largeDefenderLossFactor = (defenderTiles: number): number => {
+  const defenseSig = 1 - sigmoid(Math.max(0, defenderTiles), LARGE_DEFENDER_DECAY, LARGE_DEFENDER_MIDPOINT);
+  return LARGE_DEFENDER_LOSS_FLOOR + (1 - LARGE_DEFENDER_LOSS_FLOOR) * defenseSig;
+};
 
 /**
  * Tiles a front may capture in a single tick, mirroring OpenFront's

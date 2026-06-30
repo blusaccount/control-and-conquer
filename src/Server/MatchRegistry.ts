@@ -54,6 +54,7 @@ export class MatchRegistry {
     // still override the length via `options.spawnPhaseTicks`.
     const session = new RasterGameSession({
       spawnPhaseTicks: SPAWN_PHASE_SECONDS * SIMULATION_TICK_RATE,
+      difficulty,
       ...options,
       ...(heightmap ? { prebuiltMap: heightmap.map, mapName: options.mapName ?? heightmap.name } : {}),
     });
