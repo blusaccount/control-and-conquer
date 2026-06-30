@@ -155,6 +155,17 @@ export interface RasterTrain {
 }
 
 /**
+ * A trade ship sailing between two ports this snapshot, belonging to `playerId`
+ * at fractional tile position (`x`,`y`). On arrival it pays both ports gold; the
+ * client draws it as a small moving dot, like a train but at sea.
+ */
+export interface RasterTrade {
+  playerId: number;
+  x: number;
+  y: number;
+}
+
+/**
  * The phase a raster match is in.
  *  - `spawn`: the opening start phase — every player picks where their nation is
  *    founded and nobody can take territory yet. A countdown runs.
@@ -223,6 +234,8 @@ export interface RasterSnapshot {
   rails: RasterRail[];
   /** Trains riding the rail network this snapshot (empty when none are running). */
   trains: RasterTrain[];
+  /** Trade ships sailing between ports this snapshot (empty when none are at sea). */
+  tradeShips: RasterTrade[];
   /**
    * Active land-attack fronts this tick (empty when nobody is pushing a border).
    * Drives the on-map troop-count labels so contested borders read at a glance.

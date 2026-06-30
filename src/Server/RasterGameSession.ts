@@ -16,6 +16,7 @@ import type {
   RasterRunStats,
   RasterServerMessage,
   RasterShip,
+  RasterTrade,
   RasterTrain,
 } from "../Core/types.js";
 import { LAND_ATTACK_REACH, RASTER_MATCH_DURATION_SECONDS } from "../Core/rasterCombatConfig.js";
@@ -191,6 +192,8 @@ export class RasterGameSession {
   private lastRails: RasterRail[] = [];
   /** Trains riding the rails as of the most recent tick, for the client to draw. */
   private lastTrains: RasterTrain[] = [];
+  /** Trade ships sailing between ports as of the most recent tick. */
+  private lastTradeShips: RasterTrade[] = [];
   /** Determines spawn placement: each new subscriber takes the next slot. */
   private nextPlayerId: PlayerId = 1;
   private matchEndedBroadcast = false;
@@ -674,6 +677,7 @@ export class RasterGameSession {
     // client can draw the track network and the moving trains over the map.
     this.lastRails = this.conflict.railLinks().map((r) => ({ playerId: r.owner, points: r.points }));
     this.lastTrains = this.conflict.activeTrains().map((t) => ({ playerId: t.owner, x: t.x, y: t.y }));
+    this.lastTradeShips = this.conflict.tradeShips().map((t) => ({ playerId: t.owner, x: t.x, y: t.y }));
 
     // Append a single event line per command issued this tick, newest first.
     if (eventLines.length > 0) {
@@ -1095,6 +1099,7 @@ export class RasterGameSession {
       fronts: this.lastFronts,
       rails: this.lastRails,
       trains: this.lastTrains,
+      tradeShips: this.lastTradeShips,
       eliminated: this.eliminated,
       alliances: this.alliances.pairs(),
       allianceRequests: this.alliances.proposals(),

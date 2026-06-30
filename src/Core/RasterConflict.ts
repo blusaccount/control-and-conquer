@@ -8,6 +8,7 @@ import {
   PORT_GOLD_PER_TICK,
 } from "./buildings.js";
 import { RailSystem, type RailView, type TrainView } from "./railSystem.js";
+import { TradeSystem, type TradeView } from "./tradeSystem.js";
 import {
   attackerLossPerTile,
   attackTilesPerTick,
@@ -179,6 +180,8 @@ export class RasterConflict {
   private readonly goldAccumulator = new Map<PlayerId, number>();
   /** Auto-routed railroads + the trains that ride them, paying out gold. */
   private readonly rails: RailSystem;
+  /** Port-to-port trade ships, paying both ends gold per completed trip. */
+  private readonly trade: TradeSystem;
   /** Transport-ship landings resolved during the current tick. */
   private crossings: SeaCrossing[] = [];
   private tickCount = 0;
@@ -188,6 +191,12 @@ export class RasterConflict {
     this.grid = grid;
     this.allies = allies;
     this.rails = new RailSystem(grid);
+    this.trade = new TradeSystem(grid);
+  }
+
+  /** Live trade ships, for the snapshot (empty until two ports share a sea). */
+  tradeShips(): TradeView[] {
+    return this.trade.tradeViews();
   }
 
   /** Current railroad links, for the snapshot (empty until a factory wires up). */
@@ -332,6 +341,8 @@ export class RasterConflict {
     // Trains ride the auto-routed rail network and bank gold at city/port stops.
     // Run after gold income so a payout lands in the same tick it is earned.
     this.rails.advance(this.tickCount);
+    // Trade ships sail between ports and pay both ends gold on arrival.
+    this.trade.advance(this.tickCount);
     this.advanceShips();
     this.advanceAttacks();
     this.checkVictory();

@@ -15,6 +15,7 @@ import type {
   RasterServerMessage,
   RasterShip,
   RasterSnapshot,
+  RasterTrade,
   RasterTrain,
 } from "../Core/types.js";
 import { hideMenu, setStatus, type UiElements } from "./dom.js";
@@ -154,6 +155,8 @@ interface RasterRuntime {
   rails: RasterRail[];
   /** Trains riding the rails this snapshot, drawn as moving dots. */
   trains: RasterTrain[];
+  /** Trade ships sailing between ports this snapshot, drawn as moving sea dots. */
+  tradeShips: RasterTrade[];
   capturableTotal: number;
   /** Full player standings from the latest snapshot, for the leaderboard. */
   players: RasterPlayerInfo[];
@@ -361,6 +364,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     buildings: [],
     rails: [],
     trains: [],
+    tradeShips: [],
     capturableTotal: 0,
     players: [],
     recentEvents: [],
@@ -699,6 +703,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.buildings = snapshot.buildings ?? [];
     runtime.rails = snapshot.rails ?? [];
     runtime.trains = snapshot.trains ?? [];
+    runtime.tradeShips = snapshot.tradeShips ?? [];
 
     // The first snapshot in which we hold land marks the end of the spawn phase:
     // zoom the camera in on the tile we founded on so the run starts at home.
@@ -926,6 +931,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       drawRails(ctx, scale);
       drawBuildings(ctx, scale);
       drawTrains(ctx, scale);
+      drawTradeShips(ctx, scale);
       drawShips(ctx, scale);
       drawLandings(now, ctx, scale);
       drawClickRipples(now, ctx, scale);
@@ -1161,6 +1167,33 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ctx.beginPath();
       ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
       ctx.fillStyle = rgbaToCss(playerColor(train.playerId));
+      ctx.fill();
+    }
+    ctx.restore();
+  };
+
+  /**
+   * Draw each trade ship as an owner-coloured dot ringed in gold, at its
+   * fractional position along the sea lane between two ports. A completed trip
+   * pays both ports gold, so a busy sea lane is the visible payoff of a port
+   * network — distinguished from trains by the gold ring.
+   */
+  const drawTradeShips = (ctx: CanvasRenderingContext2D, scale: number): void => {
+    if (runtime.tradeShips.length === 0 || scale < 2) return;
+    const cw = ui.mapCanvas.width;
+    const ch = ui.mapCanvas.height;
+    const radius = Math.max(1.6, scale * 0.28);
+    ctx.save();
+    for (const ship of runtime.tradeShips) {
+      const p = worldToScreen(ship.x + 0.5, ship.y + 0.5);
+      if (p.x < -radius || p.y < -radius || p.x > cw + radius || p.y > ch + radius) continue;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, radius + 1.4, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(234, 179, 8, 0.85)"; // gold halo marks a trade run
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+      ctx.fillStyle = rgbaToCss(playerColor(ship.playerId));
       ctx.fill();
     }
     ctx.restore();
