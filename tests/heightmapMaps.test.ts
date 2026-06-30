@@ -58,6 +58,46 @@ test("buildHeightmapGameMap is deterministic for a given size", () => {
   }
 });
 
+test("speckle cleanup leaves no tiny island dots on the earth map", () => {
+  const def = getHeightmapMap("earth")!;
+  const map = buildHeightmapGameMap(def, 256);
+  const { width, height, size } = map;
+
+  // Flood-fill every land component (4-connected) and find the smallest.
+  const seen = new Uint8Array(size);
+  let smallest = Infinity;
+  let components = 0;
+  for (let start = 0; start < size; start += 1) {
+    if (!map.isLand(start) || seen[start]) continue;
+    components += 1;
+    let count = 0;
+    const stack = [start];
+    seen[start] = 1;
+    while (stack.length > 0) {
+      const ref = stack.pop()!;
+      count += 1;
+      const x = ref % width;
+      const y = (ref - x) / width;
+      const push = (j: number): void => {
+        if (map.isLand(j) && !seen[j]) {
+          seen[j] = 1;
+          stack.push(j);
+        }
+      };
+      if (x > 0) push(ref - 1);
+      if (x < width - 1) push(ref + 1);
+      if (y > 0) push(ref - width);
+      if (y < height - 1) push(ref + width);
+    }
+    if (count < smallest) smallest = count;
+  }
+
+  assert.ok(components > 0, "the earth map has land");
+  // The cleanup floor is 6 tiles; no surviving landmass may be smaller (those
+  // are the bright single-pixel dots we strip from the ocean).
+  assert.ok(smallest >= 6, `smallest island ${smallest} should be >= 6 tiles`);
+});
+
 test("a RasterGameSession runs on the earth heightmap map", async () => {
   const { RasterGameSession } = await import("../src/Server/RasterGameSession.js");
   const session = new RasterGameSession({ realMapId: "earth", mapSize: 128 });

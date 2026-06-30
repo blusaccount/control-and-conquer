@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { buildTerrainFromMask } from "../Core/terrainBuilder.js";
+import { buildTerrainFromMask, cleanupMask } from "../Core/terrainBuilder.js";
 import { IMPASSABLE_MAGNITUDE } from "../Core/terrainCodec.js";
 import type { GameMap } from "../Core/GameMap.js";
 import { decodePngToGray, type DecodedGray } from "./pngDecode.js";
@@ -100,6 +100,26 @@ export const resolveHeightmapSize = (
 };
 
 /**
+ * Minimum island / lake sizes (in tiles) for the speckle cleanup, scaled to the
+ * grid so the result reads the same whatever `RASTER_MAP_SIZE` resolves to. A
+ * landmass below `minIslandTiles` is sunk to ocean (so a lone topography pixel
+ * does not become a glowing dot); an enclosed water body below `minLakeTiles` is
+ * filled to land. Thresholds are a fixed fraction of the grid area with small
+ * floors, so the default 1024-wide Earth (~0.4 M tiles) clears 1–10-tile noise
+ * while real islands (Iceland, Cuba, …) and named lakes stay put.
+ */
+const speckleThresholds = (
+  width: number,
+  height: number,
+): { minIslandTiles: number; minLakeTiles: number } => {
+  const size = width * height;
+  return {
+    minIslandTiles: Math.max(6, Math.round(size / 40000)),
+    minLakeTiles: Math.max(6, Math.round(size / 40000)),
+  };
+};
+
+/**
  * Build (or fetch from cache) a fully-classified {@link GameMap} for a heightmap
  * map at the given target size.
  */
@@ -156,6 +176,17 @@ export const buildHeightmapGameMap = (def: HeightmapMapDef, requestedWidth?: num
     }
   }
 
+  // Strip speckle the raw topography is full of: single-pixel islets and
+  // pinprick lakes that survive the land-fraction vote and would otherwise
+  // render as bright sandy dots ringed by shallow-water glow scattered across
+  // the ocean. OpenFront's map generator removes the same noise (islands < 30
+  // tiles, lakes < 200) before shipping a map; we scale the thresholds with the
+  // grid so the cleanup is consistent at every `RASTER_MAP_SIZE`. Done *before*
+  // carving rivers so the thin river channels are never mistaken for a lake and
+  // filled back in.
+  const { minIslandTiles, minLakeTiles } = speckleThresholds(width, height);
+  cleanupMask(width, height, land, minIslandTiles, minLakeTiles);
+
   // Overlay rivers as water before the finishing pass. The topography source
   // carries no hydrography, so this is the only step that puts rivers on the
   // map; it is a hard override of the land/water classification above.
@@ -170,6 +201,12 @@ export const buildHeightmapGameMap = (def: HeightmapMapDef, requestedWidth?: num
       rivers: loadEarthRivers(),
       halfWidth: riverHalfWidthFor(width),
     });
+
+    // Carving a channel can slice a thin cape off the mainland, leaving a fresh
+    // one- or two-tile islet the first pass never saw. Re-sink those — islands
+    // only (minLakeTiles 0 disables lake filling) so the rivers we just carved
+    // are never refilled.
+    cleanupMask(width, height, land, minIslandTiles, 0);
   }
 
   const map = buildTerrainFromMask({ width, height, land, elevation });
