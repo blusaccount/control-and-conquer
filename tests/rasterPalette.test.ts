@@ -41,6 +41,20 @@ test("ocean and lake of equal depth render differently", () => {
   assert.notDeepEqual(ocean, lake);
 });
 
+test("shallow inland water (rivers/lakes) is muted, not a bright glow", () => {
+  // A 1-tile carved river is shoreline water: depth 1, non-ocean. It must read
+  // far darker than the ocean's bright shallow colour so a single-tile channel
+  // does not glow and look bloated on the relief.
+  const river = terrainColor(water(1, false));
+  const oceanShallow = terrainColor(water(1, true));
+  assert.ok(river.b < oceanShallow.b, "inland shallow water should be darker than ocean shallow");
+  assert.ok(
+    river.r + river.g + river.b < oceanShallow.r + oceanShallow.g + oceanShallow.b - 120,
+    "inland shallow water should be substantially dimmer overall than ocean shallow",
+  );
+  assert.ok(river.b > river.r, "inland water should still be blue-dominant");
+});
+
 test("playerColor wraps the palette for ids beyond its length", () => {
   assert.deepEqual(playerColor(1), { ...DEFAULT_PLAYER_PALETTE[0] });
   const wrapped = DEFAULT_PLAYER_PALETTE.length + 1;
