@@ -14,6 +14,7 @@ import {
   FRONTIER_PRIORITY_FLOOR,
   FRONTIER_SURROUND_WEIGHT,
   FRONTIER_TOWARD_WEIGHT,
+  largeDefenderLossFactor,
   maxTroops,
   troopGrowth,
   MAX_TRANSPORT_SHIPS_PER_PLAYER,
@@ -529,7 +530,8 @@ export class RasterConflict {
     // surcharge, so an opposed landing is dearer than walking the same tile.
     const defTroops = target === NEUTRAL_PLAYER ? 0 : this.grid.troopsOf(target);
     const defDensity = target === NEUTRAL_PLAYER ? 0 : this.defenderDensityOf(target);
-    return Math.ceil(this.attackerTileLoss(ref, target, attackerForce, defTroops, defDensity)) + surcharge;
+    const largeFactor = target === NEUTRAL_PLAYER ? 1 : largeDefenderLossFactor(this.grid.tileCountOf(target));
+    return Math.ceil(this.attackerTileLoss(ref, target, attackerForce, defTroops, defDensity) * largeFactor) + surcharge;
   }
 
   /**
@@ -754,6 +756,10 @@ export class RasterConflict {
       // so capturing many tiles this advance doesn't compound either mid-front.
       const defenderDensity = vsPlayer ? this.defenderDensityOf(attack.target) : 0;
       const defenderBleed = vsPlayer ? this.defenderLossFor(attack.target) : 0;
+      // A sprawling nation defends each tile worse (OpenFront's defenseSig), so
+      // its tiles cost the attacker less — an anti-snowball lever. Snapshotted
+      // once for the tick from the defender's current territory.
+      const largeFactor = vsPlayer ? largeDefenderLossFactor(this.grid.tileCountOf(attack.target)) : 1;
 
       // Tiles this front may take this tick (OpenFront's `attackTilesPerTick`):
       // it scales with the attacker's troop advantage and the contested border
@@ -773,7 +779,7 @@ export class RasterConflict {
         if (this.grid.ownerOf(ref) !== attack.target) continue;
         // OpenFront's per-tile attacker loss: the ratio shifts as the assault is
         // spent down, so a front that bleeds out grinds to a halt on the spot.
-        const loss = this.attackerTileLoss(ref, attack.target, attack.committed, defenderTroops, defenderDensity);
+        const loss = this.attackerTileLoss(ref, attack.target, attack.committed, defenderTroops, defenderDensity) * largeFactor;
         if (attack.committed < loss) break;
 
         if (vsPlayer) this.grid.addTroops(attack.target, -defenderBleed);

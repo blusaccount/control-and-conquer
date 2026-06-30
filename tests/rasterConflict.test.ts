@@ -15,6 +15,9 @@ import {
   TERRAIN_COMBAT_PLAINS,
   attackTilesPerTick,
   attackerLossPerTile,
+  largeDefenderLossFactor,
+  LARGE_DEFENDER_MIDPOINT,
+  LARGE_DEFENDER_LOSS_FLOOR,
   defenderLossPerTile,
   defenderStrengthFactor,
   neutralLossPerTile,
@@ -183,6 +186,19 @@ test("defenderStrengthFactor clamps the troop ratio into its band", () => {
   assert.equal(defenderStrengthFactor(1000, 10), DEFENDER_STRENGTH_MAX);
   assert.equal(defenderStrengthFactor(1, 1000), DEFENDER_STRENGTH_MIN);
   assert.equal(defenderStrengthFactor(50, 0), DEFENDER_STRENGTH_MAX);
+});
+
+test("largeDefenderLossFactor eases a huge empire's tiles cheaper to take (anti-snowball)", () => {
+  // A small empire defends at ~full strength; a huge one eases toward the floor.
+  assert.ok(largeDefenderLossFactor(0) > 0.95 && largeDefenderLossFactor(0) <= 1, "a tiny empire is barely debuffed");
+  // At the midpoint the sigmoid is 0.5, so the factor is 0.7 + 0.3·0.5 = 0.85.
+  assert.ok(Math.abs(largeDefenderLossFactor(LARGE_DEFENDER_MIDPOINT) - 0.85) < 1e-9, "midpoint halves the debuff");
+  assert.ok(
+    largeDefenderLossFactor(1_000_000) >= LARGE_DEFENDER_LOSS_FLOOR && largeDefenderLossFactor(1_000_000) < 0.72,
+    "a huge empire eases toward the floor",
+  );
+  // Monotonic: the bigger the defender, the cheaper each of its tiles is to take.
+  assert.ok(largeDefenderLossFactor(500_000) < largeDefenderLossFactor(100_000), "bigger = cheaper to chip");
 });
 
 test("terrainCombat buckets elevation into plains/highland/mountain mag/speed bands", () => {
