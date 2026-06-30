@@ -187,12 +187,13 @@ const CAPTURE_FLASH_ALPHA = 0.65;
 const MAX_CAPTURE_FLASHES = 4000;
 
 /**
- * Zoom (screen pixels per tile) at or above which the base raster is drawn with
- * bilinear smoothing and crisp vector borders are overlaid — together they shed
- * the blocky, pixelated look when zoomed in. Below it, nearest-neighbour keeps
- * the far-out map sharp and cheap.
+ * Zoom (screen pixels per tile) at or above which anti-aliased vector nation
+ * borders are overlaid on top of the crisp pixel terrain. Below it the camera is
+ * far enough out that individual tile borders are sub-pixel, so the (per-visible-
+ * tile) overlay pass is skipped to stay cheap. This is purely a detail/perf gate
+ * — the base map itself is always drawn nearest-neighbour (see `renderFrame`).
  */
-const SMOOTH_ZOOM_SCALE = 2.5;
+const BORDER_DETAIL_SCALE = 2.5;
 
 /**
  * Skip the crisp border overlay when more than this many tiles are on screen:
@@ -806,12 +807,14 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, cw, ch);
     if (map && base) {
-      // Draw the base raster under the camera transform. When zoomed in, bilinear
-      // smoothing sheds the blocky pixel-grid look; far out, nearest-neighbour
-      // keeps the map crisp. Crisp vector borders are overlaid separately so the
-      // smoothing never blurs nation outlines away.
-      const smooth = scale >= SMOOTH_ZOOM_SCALE;
-      ctx.imageSmoothingEnabled = smooth;
+      // Draw the base raster under the camera transform with image smoothing
+      // OFF at every zoom level, exactly like OpenFront's TransformHandler
+      // (`context.imageSmoothingEnabled = false`). The base is one pixel per
+      // tile; bilinear upscaling smears that low-res grid into a blurry wash that
+      // reads as "pixelated", whereas nearest-neighbour keeps each tile a clean,
+      // crisp pixel. Anti-aliased vector borders are overlaid separately below so
+      // nation outlines still read smooth on diagonal edges.
+      ctx.imageSmoothingEnabled = false;
       ctx.setTransform(scale, 0, 0, scale, -x * scale, -y * scale);
       ctx.drawImage(base, 0, 0);
       drawCaptureFlashes(now, ctx);
@@ -1077,18 +1080,18 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   /**
-   * Overlay crisp, anti-aliased nation borders along the actual tile edges in
-   * the viewport. Because the base raster is drawn with smoothing when zoomed in
-   * (which softens the baked outline into a glow), this thin vector line on top
-   * keeps borders sharp — smooth *and* crisp, OpenFront-style. Each boundary
-   * edge is traced once and batched by colour so we stroke a handful of paths,
-   * not thousands of segments. Only runs when zoomed in enough that borders read
-   * and the visible-tile count stays within budget.
+   * Overlay anti-aliased nation borders along the actual tile edges in the
+   * viewport. The base terrain is drawn nearest-neighbour (crisp pixels), so its
+   * baked 1px outline is already sharp but stair-steps on diagonals; this thin
+   * vector line on top softens those diagonals into clean, continuous outlines —
+   * OpenFront-style. Each boundary edge is traced once and batched by colour so
+   * we stroke a handful of paths, not thousands of segments. Only runs when
+   * zoomed in enough that borders read and the visible-tile count stays in budget.
    */
   const drawBorders = (ctx: CanvasRenderingContext2D, scale: number): void => {
     const map = runtime.map;
     const owner = runtime.owner;
-    if (!map || !owner || scale < SMOOTH_ZOOM_SCALE) return;
+    if (!map || !owner || scale < BORDER_DETAIL_SCALE) return;
     const view = runtime.view;
     const x0 = Math.max(0, Math.floor(view.x));
     const y0 = Math.max(0, Math.floor(view.y));
