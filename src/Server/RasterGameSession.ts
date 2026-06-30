@@ -16,10 +16,11 @@ import type {
   RasterRunStats,
   RasterServerMessage,
   RasterShip,
+  RasterTrade,
   RasterTrain,
 } from "../Core/types.js";
-import { LAND_ATTACK_REACH, RASTER_MATCH_DURATION_SECONDS } from "../Core/rasterCombatConfig.js";
-import { BUILDING_DEFS, buildingCost, STRUCTURE_MIN_DIST } from "../Core/buildings.js";
+import { LAND_ATTACK_REACH, RASTER_MATCH_DURATION_SECONDS, SPAWN_IMMUNITY_SECONDS } from "../Core/rasterCombatConfig.js";
+import { BUILDING_DEFS, buildingCost, COASTAL_BUILDING_TYPES, STRUCTURE_MIN_DIST } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import type { RasterMatchPhase } from "../Core/types.js";
 import { attachOwnership, buildSharedSnapshot, encodeOwnerDelta, encodeOwners, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
@@ -191,6 +192,8 @@ export class RasterGameSession {
   private lastRails: RasterRail[] = [];
   /** Trains riding the rails as of the most recent tick, for the client to draw. */
   private lastTrains: RasterTrain[] = [];
+  /** Trade ships sailing between ports as of the most recent tick. */
+  private lastTradeShips: RasterTrade[] = [];
   /** Determines spawn placement: each new subscriber takes the next slot. */
   private nextPlayerId: PlayerId = 1;
   private matchEndedBroadcast = false;
@@ -475,6 +478,11 @@ export class RasterGameSession {
       const spawn = this.spawnTiles[subscriber.playerId - 1] ?? this.firstFreeSpawn();
       if (spawn !== undefined) this.seatPlayer(subscriber.playerId, spawn);
     }
+    // Grant every seated nation a post-spawn immunity window so the opening of
+    // the live game is a protected land-grab — nobody can be attacked until it
+    // elapses, so a fresh spawn establishes a border before combat opens.
+    const immunityTicks = Math.round(SPAWN_IMMUNITY_SECONDS * SIMULATION_TICK_RATE);
+    for (const id of this.grid.players()) this.conflict.grantImmunity(id, immunityTicks);
     this.phase = "playing";
     this.recentEvents = ["The start phase is over — seize territory!", ...this.recentEvents].slice(0, MAX_EVENTS);
   }
@@ -674,6 +682,7 @@ export class RasterGameSession {
     // client can draw the track network and the moving trains over the map.
     this.lastRails = this.conflict.railLinks().map((r) => ({ playerId: r.owner, points: r.points }));
     this.lastTrains = this.conflict.activeTrains().map((t) => ({ playerId: t.owner, x: t.x, y: t.y }));
+    this.lastTradeShips = this.conflict.tradeShips().map((t) => ({ playerId: t.owner, x: t.x, y: t.y }));
 
     // Append a single event line per command issued this tick, newest first.
     if (eventLines.length > 0) {
@@ -990,10 +999,10 @@ export class RasterGameSession {
     if (this.grid.hasBuilding(ref)) {
       return { kind: "rejected", reason: "TILE_OCCUPIED", message: "That tile already has a building." };
     }
-    // A port is a coastal trade hub (OpenFront snaps it to a shore tile); it can
-    // only stand where the land meets navigable water.
-    if (intent.building === "port" && !this.map.isShore(ref)) {
-      return { kind: "rejected", reason: "NOT_BUILDABLE", message: "A port must be built on a coastal tile." };
+    // Coastal structures (ports, warships) can only stand where the land meets
+    // navigable water — OpenFront snaps them to a shore tile.
+    if (COASTAL_BUILDING_TYPES.includes(intent.building) && !this.map.isShore(ref)) {
+      return { kind: "rejected", reason: "NOT_BUILDABLE", message: `A ${def.name.toLowerCase()} must be built on a coastal tile.` };
     }
     // Structures can't be packed together: enforce OpenFront's minimum spacing
     // (Euclidean) against the builder's other buildings.
@@ -1095,6 +1104,7 @@ export class RasterGameSession {
       fronts: this.lastFronts,
       rails: this.lastRails,
       trains: this.lastTrains,
+      tradeShips: this.lastTradeShips,
       eliminated: this.eliminated,
       alliances: this.alliances.pairs(),
       allianceRequests: this.alliances.proposals(),

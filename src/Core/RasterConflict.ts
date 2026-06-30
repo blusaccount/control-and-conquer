@@ -6,8 +6,10 @@ import {
   GOLD_BASE_PER_TICK,
   GOLD_PER_TILE_PER_TICK,
   PORT_GOLD_PER_TICK,
+  WARSHIP_INTERCEPT_RANGE,
 } from "./buildings.js";
 import { RailSystem, type RailView, type TrainView } from "./railSystem.js";
+import { TradeSystem, type TradeView } from "./tradeSystem.js";
 import {
   attackerLossPerTile,
   attackTilesPerTick,
@@ -67,7 +69,9 @@ export type AttackRejectReason =
   | "NO_FRONTIER"
   | "TOO_MANY_SHIPS"
   /** The target is a current ally — allied players can't attack each other. */
-  | "ALLIED";
+  | "ALLIED"
+  /** The target is under post-spawn immunity and can't be attacked yet. */
+  | "IMMUNE";
 
 /**
  * A single amphibious landing resolved this tick: a player captured tile `to`
@@ -177,8 +181,16 @@ export class RasterConflict {
   private readonly incomeAccumulator = new Map<PlayerId, number>();
   /** Fractional gold carried between ticks, flushed into the integer pool. */
   private readonly goldAccumulator = new Map<PlayerId, number>();
+  /**
+   * Tick (exclusive) until which a freshly-seated player is immune from attack.
+   * Set by {@link grantImmunity} when the session seats a player; checked before
+   * any land or sea assault lands on them. Absent = never immune.
+   */
+  private readonly immuneUntil = new Map<PlayerId, number>();
   /** Auto-routed railroads + the trains that ride them, paying out gold. */
   private readonly rails: RailSystem;
+  /** Port-to-port trade ships, paying both ends gold per completed trip. */
+  private readonly trade: TradeSystem;
   /** Transport-ship landings resolved during the current tick. */
   private crossings: SeaCrossing[] = [];
   private tickCount = 0;
@@ -188,6 +200,12 @@ export class RasterConflict {
     this.grid = grid;
     this.allies = allies;
     this.rails = new RailSystem(grid);
+    this.trade = new TradeSystem(grid);
+  }
+
+  /** Live trade ships, for the snapshot (empty until two ports share a sea). */
+  tradeShips(): TradeView[] {
+    return this.trade.tradeViews();
   }
 
   /** Current railroad links, for the snapshot (empty until a factory wires up). */
@@ -256,12 +274,30 @@ export class RasterConflict {
    * start a new attack or reinforce an existing attacker→target one. Returns a
    * reject reason without mutating state on failure.
    */
+  /**
+   * Protect `player` from attack until `ticks` ticks from now — the post-spawn
+   * immunity window. Called by the session when it seats a player. A later grant
+   * (e.g. a relocated spawn) extends the window.
+   */
+  grantImmunity(player: PlayerId, ticks: number): void {
+    if (ticks <= 0) return;
+    this.immuneUntil.set(player, this.tickCount + ticks);
+  }
+
+  /** Whether `player` is currently under post-spawn immunity. Neutral never is. */
+  isImmune(player: PlayerId): boolean {
+    if (player === NEUTRAL_PLAYER) return false;
+    return (this.immuneUntil.get(player) ?? 0) > this.tickCount;
+  }
+
   launchAttack(intent: AttackIntent): AttackRejectReason | null {
     const { attacker, target, troops } = intent;
 
     if (!this.grid.hasPlayer(attacker)) return "UNKNOWN_PLAYER";
     if (target === attacker) return "INVALID_TARGET";
     if (target !== NEUTRAL_PLAYER && !this.grid.hasPlayer(target)) return "INVALID_TARGET";
+    // A freshly-seated nation can't be attacked while its spawn immunity holds.
+    if (this.isImmune(target)) return "IMMUNE";
     // A standing alliance is a non-aggression pact: you can't push a front into
     // an ally's land. Breaking the alliance first reopens the option.
     if (target !== NEUTRAL_PLAYER && this.allies.areAllied(attacker, target)) return "ALLIED";
@@ -297,6 +333,8 @@ export class RasterConflict {
 
     if (!this.grid.hasPlayer(attacker)) return "UNKNOWN_PLAYER";
     if (!this.grid.isCapturable(dest) || this.grid.ownerOf(dest) === attacker) return "INVALID_TARGET";
+    // You can't storm a shore held by a nation still under spawn immunity.
+    if (this.isImmune(this.grid.ownerOf(dest))) return "IMMUNE";
     // You can't make an amphibious assault on an ally's shore either.
     const destOwner = this.grid.ownerOf(dest);
     if (destOwner !== NEUTRAL_PLAYER && this.allies.areAllied(attacker, destOwner)) return "ALLIED";
@@ -332,6 +370,10 @@ export class RasterConflict {
     // Trains ride the auto-routed rail network and bank gold at city/port stops.
     // Run after gold income so a payout lands in the same tick it is earned.
     this.rails.advance(this.tickCount);
+    // Trade ships sail between ports and pay both ends gold on arrival.
+    this.trade.advance(this.tickCount);
+    // Warship coastal batteries sink enemy transports before they advance/land.
+    this.interceptTransports();
     this.advanceShips();
     this.advanceAttacks();
     this.checkVictory();
@@ -560,6 +602,44 @@ export class RasterConflict {
    * remain as a land attack radiating from the new beachhead. Landings are
    * recorded as {@link SeaCrossing}s for the client to flash.
    */
+  /**
+   * Sink every enemy transport ship currently within {@link WARSHIP_INTERCEPT_RANGE}
+   * (Chebyshev) of a warship not owned by — and not allied to — the ship's owner.
+   * A sunk transport's troops are lost outright (no refund): a coast defended by
+   * warships turns an unescorted landing into a gamble, the strategic point of a
+   * navy. Run before {@link advanceShips} so an interdicted ship dies mid-voyage
+   * rather than completing its landing this tick.
+   */
+  private interceptTransports(): void {
+    if (this.ships.length === 0) return;
+    const warships: TileRef[] = [];
+    for (const [ref, type] of this.grid.buildingEntries()) {
+      if (type === "warship") warships.push(ref);
+    }
+    if (warships.length === 0) return;
+
+    const map = this.grid.map;
+    const survivors: TransportShip[] = [];
+    for (const ship of this.ships) {
+      const tile = ship.path[ship.progress];
+      const sx = map.x(tile);
+      const sy = map.y(tile);
+      let sunk = false;
+      for (const w of warships) {
+        const owner = this.grid.ownerOf(w);
+        if (owner === ship.attacker) continue;
+        if (owner !== NEUTRAL_PLAYER && this.allies.areAllied(ship.attacker, owner)) continue;
+        if (Math.max(Math.abs(map.x(w) - sx), Math.abs(map.y(w) - sy)) <= WARSHIP_INTERCEPT_RANGE) {
+          sunk = true;
+          break;
+        }
+      }
+      if (!sunk) survivors.push(ship);
+    }
+    this.ships.length = 0;
+    this.ships.push(...survivors);
+  }
+
   private advanceShips(): void {
     const survivors: TransportShip[] = [];
 

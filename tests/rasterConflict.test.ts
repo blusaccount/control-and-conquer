@@ -477,6 +477,27 @@ test("a defense post fortifies the ground around it, slowing a conquest", () => 
   assert.equal(fortConflict.winner, null);
 });
 
+test("a freshly-seated nation is immune from attack until its window elapses", () => {
+  const grid = new TerritoryGrid(flatLand(3, 1));
+  grid.addPlayer(1, 5000);
+  grid.addPlayer(2, 5000);
+  grid.claim(0, 1);
+  grid.claim(1, 2);
+  grid.claim(2, 2);
+  freezeIncome(grid);
+  const conflict = new RasterConflict(grid);
+
+  // Player 2 is granted a 5-tick spawn immunity: assaults on them are refused.
+  conflict.grantImmunity(2, 5);
+  assert.equal(conflict.isImmune(2), true, "player 2 is immune");
+  assert.equal(conflict.launchAttack({ attacker: 1, target: 2, troops: 5000 }), "IMMUNE");
+
+  // Once the window elapses, the same assault is accepted.
+  for (let i = 0; i < 5; i += 1) conflict.processTick();
+  assert.equal(conflict.isImmune(2), false, "immunity has lapsed");
+  assert.equal(conflict.launchAttack({ attacker: 1, target: 2, troops: 5000 }), null, "the attack is now allowed");
+});
+
 test("a finished match ignores further intents", () => {
   const grid = new TerritoryGrid(flatLand(2, 1));
   grid.addPlayer(1, 5);

@@ -193,3 +193,43 @@ test("a land attack never crosses water", () => {
 
   assert.equal(conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 10 }), "NO_FRONTIER");
 });
+
+test("a coastal warship sinks an enemy transport in range before it lands", () => {
+  // owned 0,1 | water 2,3 | player-2 shore 4,5 with a warship guarding tile 4.
+  const grid = new TerritoryGrid(rowMap("##  ##"));
+  grid.addPlayer(1, 200);
+  grid.addPlayer(2, 0);
+  grid.claim(0, 1);
+  grid.claim(1, 1);
+  grid.claim(4, 2);
+  grid.claim(5, 2);
+  grid.placeBuilding(4, "warship"); // player 2's coastal warship
+  freezeIncome(grid);
+  const conflict = new RasterConflict(grid);
+
+  assert.equal(conflict.launchShip({ attacker: 1, dest: 4, troops: 100 }), null);
+  for (let i = 0; i < 10; i += 1) conflict.processTick();
+
+  assert.equal(conflict.shipCountOf(1), 0, "the transport was sunk en route");
+  assert.equal(grid.ownerOf(4), 2, "the warship-guarded shore was never taken");
+});
+
+test("a warship never sinks its owner's own transport", () => {
+  // Same board, but the warship belongs to the attacker — it guards, never fires
+  // on, friendly shipping, so the landing goes through.
+  const grid = new TerritoryGrid(rowMap("##  ##"));
+  grid.addPlayer(1, 200);
+  grid.addPlayer(2, 0);
+  grid.claim(0, 1);
+  grid.claim(1, 1);
+  grid.claim(4, 2);
+  grid.claim(5, 2);
+  grid.placeBuilding(1, "warship"); // player 1's own coastal warship
+  freezeIncome(grid);
+  const conflict = new RasterConflict(grid);
+
+  assert.equal(conflict.launchShip({ attacker: 1, dest: 4, troops: 100 }), null);
+  for (let i = 0; i < 10; i += 1) conflict.processTick();
+
+  assert.equal(grid.ownerOf(4), 1, "the friendly transport landed and took the shore");
+});

@@ -15,6 +15,7 @@ import type {
   RasterServerMessage,
   RasterShip,
   RasterSnapshot,
+  RasterTrade,
   RasterTrain,
 } from "../Core/types.js";
 import { hideMenu, setStatus, type UiElements } from "./dom.js";
@@ -154,6 +155,8 @@ interface RasterRuntime {
   rails: RasterRail[];
   /** Trains riding the rails this snapshot, drawn as moving dots. */
   trains: RasterTrain[];
+  /** Trade ships sailing between ports this snapshot, drawn as moving sea dots. */
+  tradeShips: RasterTrade[];
   capturableTotal: number;
   /** Full player standings from the latest snapshot, for the leaderboard. */
   players: RasterPlayerInfo[];
@@ -361,6 +364,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     buildings: [],
     rails: [],
     trains: [],
+    tradeShips: [],
     capturableTotal: 0,
     players: [],
     recentEvents: [],
@@ -699,6 +703,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.buildings = snapshot.buildings ?? [];
     runtime.rails = snapshot.rails ?? [];
     runtime.trains = snapshot.trains ?? [];
+    runtime.tradeShips = snapshot.tradeShips ?? [];
 
     // The first snapshot in which we hold land marks the end of the spawn phase:
     // zoom the camera in on the tile we founded on so the run starts at home.
@@ -926,6 +931,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       drawRails(ctx, scale);
       drawBuildings(ctx, scale);
       drawTrains(ctx, scale);
+      drawTradeShips(ctx, scale);
       drawShips(ctx, scale);
       drawLandings(now, ctx, scale);
       drawClickRipples(now, ctx, scale);
@@ -1167,25 +1173,87 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   /**
-   * Draw each structure as its building icon (emoji) over the tile it stands on,
-   * in screen space so it stays a constant size. The icon only appears once a
-   * tile is large enough on screen to read; below that the map stays clean.
+   * Draw each trade ship as an owner-coloured dot ringed in gold, at its
+   * fractional position along the sea lane between two ports. A completed trip
+   * pays both ports gold, so a busy sea lane is the visible payoff of a port
+   * network — distinguished from trains by the gold ring.
    */
-  const drawBuildings = (ctx: CanvasRenderingContext2D, scale: number): void => {
-    if (runtime.buildings.length === 0) return;
-    const px = scale * 0.95;
-    if (px < 7) return; // Too small to read — skip to keep zoomed-out maps tidy.
+  const drawTradeShips = (ctx: CanvasRenderingContext2D, scale: number): void => {
+    if (runtime.tradeShips.length === 0 || scale < 2) return;
     const cw = ui.mapCanvas.width;
     const ch = ui.mapCanvas.height;
+    const radius = Math.max(1.6, scale * 0.28);
+    ctx.save();
+    for (const ship of runtime.tradeShips) {
+      const p = worldToScreen(ship.x + 0.5, ship.y + 0.5);
+      if (p.x < -radius || p.y < -radius || p.x > cw + radius || p.y > ch + radius) continue;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, radius + 1.4, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(234, 179, 8, 0.85)"; // gold halo marks a trade run
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+      ctx.fillStyle = rgbaToCss(playerColor(ship.playerId));
+      ctx.fill();
+    }
+    ctx.restore();
+  };
+
+  /**
+   * Draw each structure as an OpenFront-style marker: a filled **disc in the
+   * owner's colour** (darkened) with a brighter owner-colour ring, and the
+   * building icon laid on top. Anchoring the icon on a player-coloured base —
+   * rather than floating a bare emoji over the terrain — makes structures read
+   * as *owned* and legible against any ground, at a deliberately generous size.
+   *
+   * Zoom LOD keeps a crowded map tidy: below a readable size the marker collapses
+   * to a small owner-coloured dot (no icon), and when fully zoomed out it is
+   * hidden entirely — detail is *removed*, not shrunk into mush.
+   */
+  const drawBuildings = (ctx: CanvasRenderingContext2D, scale: number): void => {
+    if (runtime.buildings.length === 0 || scale < 2) return; // too far out — keep it clean
+    const cw = ui.mapCanvas.width;
+    const ch = ui.mapCanvas.height;
+    // Marker radius scales with zoom but clamps to a legible band; below the dot
+    // threshold we draw plain owner dots so the map doesn't clutter.
+    const dotMode = scale < 6;
+    const radius = dotMode ? Math.max(1.8, scale * 0.42) : Math.max(9, Math.min(scale * 0.62, 24));
+    const iconPx = radius * 1.25;
     ctx.save();
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.font = `${px}px serif`;
+    if (!dotMode) ctx.font = `${iconPx}px serif`;
     for (const b of runtime.buildings) {
       const { x: sx, y: sy } = worldToScreen(b.x + 0.5, b.y + 0.5);
-      if (sx < -px || sy < -px || sx > cw + px || sy > ch + px) continue;
-      ctx.lineWidth = Math.max(2, px * 0.16);
-      ctx.strokeStyle = "rgba(0, 0, 0, 0.7)";
+      if (sx < -radius || sy < -radius || sx > cw + radius || sy > ch + radius) continue;
+      const col = playerColor(b.playerId);
+
+      if (dotMode) {
+        // Zoomed out: a small owner-coloured dot with a dark halo — shows where
+        // structures stand without drawing unreadable icons.
+        ctx.beginPath();
+        ctx.arc(sx, sy, radius + 1, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+        ctx.fillStyle = rgbaToCss(col);
+        ctx.fill();
+        continue;
+      }
+
+      // Owner-coloured disc base (darkened so the icon pops) + brighter ring.
+      ctx.beginPath();
+      ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+      ctx.fillStyle = rgbaToCss({ r: col.r * 0.45, g: col.g * 0.45, b: col.b * 0.45 });
+      ctx.fill();
+      ctx.lineWidth = Math.max(1.5, radius * 0.16);
+      ctx.strokeStyle = rgbaToCss(col);
+      ctx.stroke();
+
+      // The building icon on top, with a dark outline so it reads on the disc.
+      ctx.lineWidth = Math.max(2, iconPx * 0.12);
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.75)";
       ctx.strokeText(BUILDING_DEFS[b.type].icon, sx, sy);
       ctx.fillText(BUILDING_DEFS[b.type].icon, sx, sy);
     }
