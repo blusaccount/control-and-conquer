@@ -4,6 +4,7 @@ import {
   type RasterBotPersonality,
 } from "./RasterBotController.js";
 import { RasterGameSession, type RasterMessageHandler, type RasterGameSessionOptions } from "./RasterGameSession.js";
+import { resolveHeightmapSessionMap } from "./sessionMap.js";
 import { RasterBuildIntent, RasterExpandIntent } from "../Core/types.js";
 import type { RasterDifficulty } from "../Core/messages.js";
 import { SIMULATION_TICK_RATE, SPAWN_PHASE_SECONDS } from "./simulationConfig.js";
@@ -102,12 +103,16 @@ export class MatchRegistry {
   ): () => void {
     this.matchSequence += 1;
     const matchId = `match-${this.matchSequence}-raster-solo`;
+    // Heightmap maps (e.g. "earth") are built here, server-side, and injected as
+    // a prebuilt map so the session itself stays free of the Node map loaders.
+    const heightmap = resolveHeightmapSessionMap(options.realMapId, options.mapSize);
     // Open every solo match with a start phase: the human gets time to choose a
     // spawn before the game (and the bots) begin taking territory. A caller may
     // still override the length via `options.spawnPhaseTicks`.
     const session = new RasterGameSession({
       spawnPhaseTicks: SPAWN_PHASE_SECONDS * SIMULATION_TICK_RATE,
       ...options,
+      ...(heightmap ? { prebuiltMap: heightmap.map, mapName: options.mapName ?? heightmap.name } : {}),
     });
     this.activeMatches.set(matchId, session);
 
