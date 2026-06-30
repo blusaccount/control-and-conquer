@@ -80,6 +80,15 @@ export class TerritoryGrid {
    */
   private readonly landComponent: Int32Array;
   /**
+   * Connected-water-component label per tile: water tiles in the same 4-connected
+   * body of water (an ocean, a sea, a lake, or a river joined to one) share an
+   * id; land is -1. A transport ship can sail anywhere within a single body, so
+   * two coasts are boat-reachable from each other iff they touch the same water
+   * component — the basis (like OpenFront) for amphibious reach with no fixed
+   * distance cap. Computed once; terrain is immutable.
+   */
+  private readonly waterComponent: Int32Array;
+  /**
    * Per-player tile counts bucketed by land component, so "does this player hold
    * any ground on `dest`'s landmass?" is an O(1) lookup. Maintained in
    * {@link claim}; only real players are tracked (neutral land is irrelevant to
@@ -110,9 +119,12 @@ export class TerritoryGrid {
   // Lazily-allocated, generation-stamped scratch buffers reused by every
   // {@link findSeaPath} call so per-launch pathfinding stays allocation-free.
   private seaPathParent?: Int32Array;
-  private seaPathDepth?: Int32Array;
   private seaPathStamp?: Int32Array;
   private seaPathGeneration?: number;
+  // Reused, generation-stamped scratch for the {@link resolveSeaLanding} BFS.
+  private landingDepth?: Int32Array;
+  private landingStamp?: Int32Array;
+  private landingGeneration?: number;
 
   constructor(map: GameMap) {
     this.map = map;
@@ -133,6 +145,7 @@ export class TerritoryGrid {
     }
     this.capturableCount = capturable;
     this.landComponent = this.labelLandComponents();
+    this.waterComponent = this.labelWaterComponents();
   }
 
   /**
@@ -161,6 +174,51 @@ export class TerritoryGrid {
       }
     }
     return label;
+  }
+
+  /**
+   * Flood-fill the water into 4-connected components, returning a per-tile label
+   * (-1 for land). Mirror of {@link labelLandComponents} for water: every ocean,
+   * sea, lake and ocean-joined river gets its own id, so two coasts on the same
+   * body of water share the component their bordering water carries.
+   */
+  private labelWaterComponents(): Int32Array {
+    const label = new Int32Array(this.map.size).fill(-1);
+    const stack: TileRef[] = [];
+    let next = 0;
+    for (let seed = 0; seed < this.map.size; seed += 1) {
+      if (!this.map.isWater(seed) || label[seed] !== -1) continue;
+      const id = next++;
+      label[seed] = id;
+      stack.length = 0;
+      stack.push(seed);
+      while (stack.length > 0) {
+        const tile = stack.pop()!;
+        for (const n of this.map.neighbors(tile)) {
+          if (this.map.isWater(n) && label[n] === -1) {
+            label[n] = id;
+            stack.push(n);
+          }
+        }
+      }
+    }
+    return label;
+  }
+
+  /**
+   * The set of water-component ids `attacker` can launch a transport from: every
+   * body of water touching one of their owned coasts. A target is boat-reachable
+   * iff its bordering water belongs to one of these — connectivity, not distance,
+   * gates amphibious reach. O(attacker's tiles).
+   */
+  private launchComponentsOf(attacker: PlayerId): Set<number> {
+    const comps = new Set<number>();
+    for (const ref of this.standing(attacker).tiles) {
+      for (const n of this.map.neighbors(ref)) {
+        if (this.map.isWater(n)) comps.add(this.waterComponent[n]);
+      }
+    }
+    return comps;
   }
 
   /**
@@ -562,38 +620,42 @@ export class TerritoryGrid {
 
   /**
    * Shortest water route a transport ship would take from `attacker`'s coast to
-   * land on `dest`, or `null` if `dest` is not a capturable tile the attacker can
-   * reach across open water within {@link MAX_SEA_CROSSING_TILES} tiles.
+   * land on `dest`, or `null` if `dest` is not a capturable coastal tile sharing
+   * a body of water with one of the attacker's coasts.
    *
-   * The returned path is land→water…water→land: it starts on the attacker's
-   * embarkation tile (an owned coastal tile), runs through the open-water tiles
-   * the ship sails, and ends on `dest`. A single BFS is run *outward from the
-   * destination's bordering water*, so the first attacker-owned coast it reaches
-   * is necessarily the nearest one — giving both the launch point and the
-   * shortest crossing in one pass. Deterministic: the map's fixed neighbour order
-   * makes the search reproducible, ties broken by that order.
+   * Reach is by *connectivity, not distance* (OpenFront's model): a ship may sail
+   * the full extent of a single connected water body — clear across an ocean, or
+   * up a river joined to the sea — so there is no fixed crossing cap. The returned
+   * path is land→water…water→land: the attacker's embarkation tile, the water
+   * tiles sailed, then `dest`. A single BFS runs *outward from the destination's
+   * bordering water*, seeded only on water the attacker can actually launch into,
+   * so the first attacker coast it reaches is the nearest one and the search stays
+   * within that one water body. Deterministic via the map's fixed neighbour order.
    */
-  findSeaPath(attacker: PlayerId, dest: TileRef, maxCrossing: number = MAX_SEA_CROSSING_TILES): TileRef[] | null {
+  findSeaPath(attacker: PlayerId, dest: TileRef): TileRef[] | null {
     if (!this.isCapturable(dest) || this.owner[dest] === attacker) return null;
+    const launch = this.launchComponentsOf(attacker);
+    if (launch.size === 0) return null;
 
     // Per-water-tile BFS scratch, generation-stamped so we never clear the whole
-    // map between calls: `parent` reconstructs the route, `depth` bounds it.
+    // map between calls: `parent` reconstructs the route.
     const size = this.map.size;
     const parent = (this.seaPathParent ??= new Int32Array(size));
-    const depth = (this.seaPathDepth ??= new Int32Array(size));
     const stamp = (this.seaPathStamp ??= new Int32Array(size).fill(-1));
     const generation = (this.seaPathGeneration = (this.seaPathGeneration ?? 0) + 1);
     const queue: TileRef[] = [];
 
-    // Seed with the open-water tiles directly bordering the destination coast.
+    // Seed with the water bordering the destination — but only water in a body the
+    // attacker can launch from, so we never explore an unreachable ocean and any
+    // coast the BFS reaches is guaranteed to be the attacker's.
     for (const n of this.map.neighbors(dest)) {
-      if (this.map.isWater(n) && stamp[n] !== generation) {
+      if (this.map.isWater(n) && launch.has(this.waterComponent[n]) && stamp[n] !== generation) {
         stamp[n] = generation;
         parent[n] = dest;
-        depth[n] = 1;
         queue.push(n);
       }
     }
+    if (queue.length === 0) return null;
 
     for (let head = 0; head < queue.length; head += 1) {
       const water = queue[head];
@@ -607,10 +669,9 @@ export class TerritoryGrid {
           path.push(dest);
           return path;
         }
-        if (this.map.isWater(n) && stamp[n] !== generation && depth[water] < maxCrossing) {
+        if (this.map.isWater(n) && stamp[n] !== generation) {
           stamp[n] = generation;
           parent[n] = water;
-          depth[n] = depth[water] + 1;
           queue.push(n);
         }
       }
@@ -620,37 +681,60 @@ export class TerritoryGrid {
 
   /**
    * Pick the best amphibious landing for a click that fell anywhere on a
-   * landmass the attacker can't march to: the capturable coastal tile reachable
-   * by sea (within `maxDist`) that lies nearest the clicked tile.
+   * landmass the attacker can't march to: the capturable shore tile nearest the
+   * click that a transport could actually reach — i.e. whose bordering water
+   * shares a body with one of the attacker's coasts.
    *
-   * The player should be able to click a target area — even its interior — and
-   * have a boat sail to the area's nearest reachable shore, rather than having
-   * to pixel-hunt for a tile that is *both* coastal and in range. The set of
-   * reachable shores is read straight from the precomputed {@link SeaLinks}
-   * graph (every owned coast tile's opposite banks), and the one closest to the
-   * click wins (Euclidean; ties broken by shortest crossing, then `TileRef`).
+   * The player should be able to click a target area — even its interior, or open
+   * water off it — and have a boat sail to the area's nearest reachable shore,
+   * rather than pixel-hunting for a tile that is both coastal and in range. A BFS
+   * fans out over the grid from the click and returns the first qualifying shore,
+   * so "nearest" means nearest by tile distance (ties broken by `TileRef`). Reach
+   * is unbounded within a connected body of water, so a far coast across a wide
+   * sea — or up a river — still qualifies.
    *
-   * Returns the landing tile (a valid {@link findSeaPath} destination), or
-   * `null` if no shore is reachable across water.
+   * Returns the landing tile (a valid {@link findSeaPath} destination), or `null`
+   * if no shore is reachable by water.
    */
-  resolveSeaLanding(
-    attacker: PlayerId,
-    clickRef: TileRef,
-    maxDist: number = MAX_SEA_CROSSING_TILES,
-  ): TileRef | null {
-    const cx = this.map.x(clickRef);
-    const cy = this.map.y(clickRef);
+  resolveSeaLanding(attacker: PlayerId, clickRef: TileRef): TileRef | null {
+    const launch = this.launchComponentsOf(attacker);
+    if (launch.size === 0) return null;
+
+    // A tile is a valid landing if it is capturable land the attacker doesn't
+    // own, on the shore of a body of water the attacker can launch into.
+    const reachableLanding = (ref: TileRef): boolean => {
+      if (this.owner[ref] === attacker || !this.isCapturable(ref)) return false;
+      for (const n of this.map.neighbors(ref)) {
+        if (this.map.isWater(n) && launch.has(this.waterComponent[n])) return true;
+      }
+      return false;
+    };
+
+    const size = this.map.size;
+    const depth = (this.landingDepth ??= new Int32Array(size));
+    const stamp = (this.landingStamp ??= new Int32Array(size).fill(-1));
+    const generation = (this.landingGeneration = (this.landingGeneration ?? 0) + 1);
+    const queue: TileRef[] = [clickRef];
+    stamp[clickRef] = generation;
+    depth[clickRef] = 0;
+
     let best: TileRef | null = null;
-    let bestScore = Infinity;
-    for (const ref of this.standing(attacker).tiles) {
-      for (const landing of this.seaLinks.neighborsWithin(ref, maxDist)) {
-        if (this.owner[landing] === attacker || !this.isCapturable(landing)) continue;
-        const dx = this.map.x(landing) - cx;
-        const dy = this.map.y(landing) - cy;
-        const score = dx * dx + dy * dy;
-        if (score < bestScore || (score === bestScore && (best === null || landing < best))) {
-          bestScore = score;
-          best = landing;
+    let bestDepth = Infinity;
+    for (let head = 0; head < queue.length; head += 1) {
+      const tile = queue[head];
+      // BFS visits in non-decreasing depth; once we are past the depth of a found
+      // landing, no closer one remains, so stop.
+      if (depth[tile] > bestDepth) break;
+      if (reachableLanding(tile)) {
+        if (best === null || tile < best) best = tile;
+        bestDepth = depth[tile];
+        continue; // its neighbours are no nearer to the click than it is
+      }
+      for (const n of this.map.neighbors(tile)) {
+        if (stamp[n] !== generation) {
+          stamp[n] = generation;
+          depth[n] = depth[tile] + 1;
+          queue.push(n);
         }
       }
     }

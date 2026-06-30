@@ -885,7 +885,7 @@ export class RasterGameSession {
       // Before giving up, treat it as an amphibious order: if a transport ship can
       // reach a shore near the click, sail there. Only a click with no reachable
       // shore at all is finally rejected.
-      const landing = this.grid.resolveSeaLanding(attacker, rawRef, this.grid.seaRangeOf(attacker));
+      const landing = this.grid.resolveSeaLanding(attacker, rawRef);
       if (landing !== null) {
         return { kind: "sea", intent: { attacker, dest: landing, troops } };
       }
@@ -932,7 +932,7 @@ export class RasterGameSession {
     // The click is on a different landmass. Rather than demanding the player hit
     // an exact in-range coastal tile, land the boat on the reachable shore
     // nearest the click (its own tile wins when that tile is itself reachable).
-    const landing = this.grid.resolveSeaLanding(attacker, ref, this.grid.seaRangeOf(attacker));
+    const landing = this.grid.resolveSeaLanding(attacker, ref);
     if (landing !== null) {
       return { kind: "sea", intent: { attacker, dest: landing, troops } };
     }

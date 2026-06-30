@@ -140,7 +140,7 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
   port: {
     type: "port",
     name: "Port",
-    description: "Extends how far your transport ships can cross.",
+    description: "Extends how far your fronts spread across water on their own.",
     icon: "\u{2693}", // ⚓
     baseCost: 80,
     costGrowth: 1.5,

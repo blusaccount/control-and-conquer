@@ -142,16 +142,34 @@ test("a player may have at most three transport ships at sea", () => {
   assert.equal(conflict.launchShip({ attacker: 1, dest: 9, troops: 20 }), null, "a freed slot accepts a new ship");
 });
 
-test("water wider than the ship range cannot be crossed", () => {
-  // 8 water tiles exceeds MAX_SEA_CROSSING_TILES (6).
+test("a wide but connected sea can be crossed (no distance cap)", () => {
+  // 8 open-water tiles — far past the old crossing cap, but one connected body,
+  // so a boat sails the whole way (OpenFront's connectivity-based reach).
   const grid = new TerritoryGrid(rowMap("##        ##"));
   grid.addPlayer(1, 50);
   grid.claim(0, 1);
   grid.claim(1, 1);
   const conflict = new RasterConflict(grid);
 
-  assert.equal(grid.findSeaPath(1, 10), null, "no route across too-wide water");
-  assert.equal(conflict.launchShip({ attacker: 1, dest: 10, troops: 30 }), "NO_FRONTIER");
+  const path = grid.findSeaPath(1, 10);
+  assert.ok(path, "a route exists across the wide sea");
+  assert.equal(path![0], 1, "embarks from the owned coast");
+  assert.equal(path![path!.length - 1], 10, "lands on the far coast");
+  assert.equal(conflict.launchShip({ attacker: 1, dest: 10, troops: 30 }), null, "the launch is accepted");
+});
+
+test("a separate body of water cannot be crossed to", () => {
+  // land0 | seaA(1) | land2 | seaB(3) | land4. seaA and seaB are different water
+  // bodies (split by land2). The attacker on tile 0 touches only seaA, so it can
+  // reach land2 but never land4 — connectivity, not distance, is the gate.
+  const grid = new TerritoryGrid(rowMap("#.#.#"));
+  grid.addPlayer(1, 50);
+  grid.claim(0, 1);
+  const conflict = new RasterConflict(grid);
+
+  assert.ok(grid.findSeaPath(1, 2), "land2 shares seaA with the attacker → reachable");
+  assert.equal(grid.findSeaPath(1, 4), null, "land4 is on seaB, a disconnected body → unreachable");
+  assert.equal(conflict.launchShip({ attacker: 1, dest: 4, troops: 30 }), "NO_FRONTIER");
 });
 
 test("a land attack never crosses water", () => {

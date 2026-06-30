@@ -305,7 +305,7 @@ export class RasterConflict {
     if (troops > this.grid.troopsOf(attacker)) return "INSUFFICIENT_TROOPS";
     if (this.shipCountOf(attacker) >= this.grid.maxShipsOf(attacker)) return "TOO_MANY_SHIPS";
 
-    const path = this.grid.findSeaPath(attacker, dest, this.grid.seaRangeOf(attacker));
+    const path = this.grid.findSeaPath(attacker, dest);
     if (!path) return "NO_FRONTIER";
 
     this.grid.addTroops(attacker, -troops);

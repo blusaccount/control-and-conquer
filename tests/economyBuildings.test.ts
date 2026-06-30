@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildTerrainFromMask } from "../src/Core/terrainBuilder.js";
-import { TerritoryGrid } from "../src/Core/TerritoryGrid.js";
+import { NEUTRAL_PLAYER, TerritoryGrid } from "../src/Core/TerritoryGrid.js";
 import { RasterConflict } from "../src/Core/RasterConflict.js";
 import { RasterGameSession } from "../src/Server/RasterGameSession.js";
 import type { PlayerId } from "../src/Core/TerritoryGrid.js";
@@ -133,8 +133,8 @@ test("ports widen a player's sea-crossing range, bounded by the cap", () => {
   assert.ok(grid.seaRangeOf(1) <= base * 2, "reach is bounded even with many ports");
 });
 
-test("a port actually surfaces a shore the baseline reach can't target", () => {
-  // Two banks separated by 9 open-water tiles — wider than the base crossing
+test("a port extends the auto-expansion reach across water", () => {
+  // Two banks separated by 9 open-water tiles — wider than the base auto-cross
   // range (6) but inside the port-extended cap (12). land 0,1 ; water 2..10 ;
   // land 11,12. Tile 11 is the far shore (tile 12 is interior, no water neighbour).
   const map = buildTerrainFromMask({
@@ -149,27 +149,26 @@ test("a port actually surfaces a shore the baseline reach can't target", () => {
   grid.claim(1, 1);
   const farShore = 11;
 
-  // Baseline (no port): the 9-tile crossing is out of reach, so a click on the
-  // far bank resolves to no landing — the boat assault is silently impossible.
-  assert.equal(
-    grid.resolveSeaLanding(1, farShore, grid.seaRangeOf(1)),
-    null,
-    "baseline reach (6) can't target a 9-tile crossing",
-  );
+  // Explicit boats are unbounded within a connected body of water, so a click on
+  // the far bank already resolves to a landing even with no port — distance is
+  // not the gate for a directly-ordered transport.
+  assert.equal(grid.resolveSeaLanding(1, farShore), farShore, "an ordered boat reaches the far shore regardless");
 
-  // Two ports push the reach past 9; now the same click finds the far shore and
-  // a transport ship can actually be dispatched there.
+  // The port instead extends *auto-expansion*: how far a land front (and bots)
+  // will spread across water on its own, without an explicit boat order. At the
+  // baseline reach (6) the 9-tile crossing is not on the attacker's frontier...
+  assert.ok(
+    !grid.frontierOf(1, NEUTRAL_PLAYER).includes(farShore),
+    "baseline auto-reach (6) does not surface a 9-tile crossing",
+  );
+  // ...two ports push the reach past 9, so the far neutral shore becomes frontier
+  // the front will expand onto automatically.
   grid.placeBuilding(0, "port");
   grid.placeBuilding(1, "port");
-  assert.ok(grid.seaRangeOf(1) >= 9, "two ports extend reach to at least 9 tiles");
-  assert.equal(
-    grid.resolveSeaLanding(1, farShore, grid.seaRangeOf(1)),
-    farShore,
-    "port-extended reach surfaces the far shore the baseline couldn't",
-  );
+  assert.ok(grid.seaRangeOf(1) >= 9, "two ports extend the auto-reach to at least 9 tiles");
   assert.ok(
-    grid.findSeaPath(1, farShore, grid.seaRangeOf(1)) !== null,
-    "and a ship can sail the route the extended reach opened up",
+    grid.frontierOf(1, NEUTRAL_PLAYER).includes(farShore),
+    "port-extended auto-reach surfaces the far shore the baseline couldn't",
   );
 });
 
