@@ -13,6 +13,22 @@
 > `DefaultConfig.ts` existiert nicht mehr), plus `src/core/execution/*.ts`,
 > `src/core/game/*.ts` und `src/client/hud|render/*`.
 
+## Umsetzungsstand (2026-06-30)
+
+| Phase | Status |
+|---|---|
+| **P0 — Maßstab & Takt** (10 TPS, Start 25 000, `maxTroops`/`troopGrowth`, Glockenkurve, City→+250k Cap) | ✅ **umgesetzt & getestet** |
+| **P1 — Land-Kampf-Port** (`attackLogic`: mag/speed 80·100·120, Verlust-Blend, `attackTilesPerTick`, emergente Mehrfront-Verdünnung, Terrain-Bänder 9/19) | ✅ **umgesetzt & getestet** |
+| **P2 — Gebäude/Gold/Defense-Post/Platzierung** (City/Port/Factory `2^n·125k` Cap 1M; Fort `(n+1)·50k` Cap 250k; flaches Gold-Base + skalierte Dividenden; Fort Stärke 5/Radius 30; Port nur Küste; `structureMinDist 15`) | ✅ **umgesetzt & getestet** |
+| **P3 — Trade-Schiffe / Warships / Boote schärfen** | ⏳ offen (großes Greenfield-Subsystem) |
+| **P4 — Bot/Nation-Split, Spawn-Immunität, Radial-UI/Hotkeys, Visualisierung** | ⏳ offen (UI-/Render-lastig) |
+
+Der **Balancing-Kern** (Truppen/Population, Land-Kampf, Wirtschaft/Gebäude) ist
+damit wertgenau auf OpenFront umgestellt; 238 Unit-Tests grün. P3/P4 sind als
+eigenständige Folge-PRs vorgesehen, weil sie neue Systeme (Trade/Warship/Nukes)
+bzw. die UI-/Render-Schicht betreffen und nicht ungetestet eingeschoben werden
+sollten.
+
 ## 0) Methodik & Lizenz-Grenze (wichtig)
 
 OpenFront ist **AGPL-3.0**. Wie bisher (siehe Kommentar-Header in
