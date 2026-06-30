@@ -11,14 +11,16 @@ import type { RasterDifficulty } from "../Core/messages.js";
  */
 
 /**
- * Most opponents a solo match can seat (the session caps total nations at 32, so
- * up to 31 bots alongside the human). Difficulty picks how many actually spawn.
+ * Most opponents a solo match can seat (the session caps total nations at 48, so
+ * up to 47 bots alongside the human). Difficulty picks how many actually spawn.
+ * The cap is high so the larger Earth maps fill with an OpenFront-style crowd
+ * rather than topping out early.
  */
-export const MAX_RASTER_BOTS = 31;
+export const MAX_RASTER_BOTS = 47;
 
 /**
- * Smallest field seated per difficulty — the floor used on tiny maps like the
- * Classic world sketch. Bigger maps grow well past this (see {@link scaleBotCount}).
+ * Smallest field seated per difficulty — the floor used on the smallest maps and
+ * the procedural fallback. Bigger maps grow well past this (see {@link scaleBotCount}).
  */
 export const DIFFICULTY_BOT_COUNT: Record<RasterDifficulty, number> = {
   easy: 4,
