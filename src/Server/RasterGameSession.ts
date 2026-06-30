@@ -331,6 +331,7 @@ export class RasterGameSession {
     send: RasterMessageHandler,
     autoSpawn = true,
     wantsRaster = true,
+    playerName?: string,
   ): () => void {
     if (this.nextPlayerId > MAX_PLAYERS) {
       throw new Error(`Raster session is full (max ${MAX_PLAYERS} players).`);
@@ -338,6 +339,7 @@ export class RasterGameSession {
     const playerId = this.nextPlayerId;
     this.nextPlayerId += 1;
     const meta = metaForPlayer(playerId);
+    if (playerName) meta.name = playerName;
     this.playerMeta.set(playerId, meta);
 
     const subscriber: RasterSubscriber = {

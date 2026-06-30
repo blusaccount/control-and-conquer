@@ -144,21 +144,22 @@ const PLAYER_EMOJIS: readonly string[] = [
 export const playerEmoji = (id: PlayerId): string =>
   PLAYER_EMOJIS[(id - 1) % PLAYER_EMOJIS.length];
 
-/** Pure white, the target a border colour is lightened toward. */
+/** Pure white, used for the local player's own-border highlight. */
 const WHITE: Rgba = { r: 255, g: 255, b: 255, a: 255 };
-
-/** How far a border tile's colour is pushed toward white from the owner hue. */
-const BORDER_LIGHTEN = 0.62;
+/** Pure black, used as the darkening target for rival-nation borders. */
+const BLACK: Rgba = { r: 0, g: 0, b: 0, a: 255 };
 
 /**
- * Bright outline colour for a player's territory edge. A crisp, lightened
- * version of the owner colour at full saturation (no terrain blend), so nation
- * borders read as clean lines over the relief — OpenFront's territory outline.
+ * Rival nation border colour: the owner hue pushed 58% toward black.
+ *
+ * A dark ring outlines each nation's territory edge, so nation-vs-nation and
+ * nation-vs-neutral boundaries read as clear dark lines at every zoom level —
+ * matching OpenFront's crisp border style instead of a pale coastal glow.
  */
 export const borderColor = (
   id: PlayerId,
   palette: readonly Rgba[] = DEFAULT_PLAYER_PALETTE,
-): Rgba => lerpColor(playerColor(id, palette), WHITE, BORDER_LIGHTEN);
+): Rgba => lerpColor(playerColor(id, palette), BLACK, 0.58);
 
 /**
  * Border colour for the local player's *own* nation: a near-pure-white outline

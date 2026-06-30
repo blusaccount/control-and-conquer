@@ -150,6 +150,7 @@ export class AiGameSession {
     options: RasterGameSessionOptions = {},
     botCount: number = 4,
     autoSpawn: boolean = false,
+    playerName?: string,
   ) {
     this.gameId = gameId;
     this.createdAt = Date.now();
@@ -162,6 +163,7 @@ export class AiGameSession {
       (msg: RasterServerMessage) => this.onMessage(msg),
       autoSpawn,
       true,
+      playerName,
     );
 
     // Seat bots as opponents
@@ -208,12 +210,17 @@ export class AiGameSession {
     const spawned = pid !== 0 && grid.hasPlayer(pid);
     const me = snap?.players.find((p) => p.playerId === pid) ?? null;
 
-    // Compute the frontier (tiles this agent can expand toward right now)
+    // Compute the frontier: all tiles this agent can expand toward right now.
+    // We expose every adjacent capturable tile (not just one sample per target)
+    // so the AI has full spatial information about where it can move.
     const frontier: AiFrontierTile[] = [];
     if (spawned && !this.matchEnded && snap?.phase === "playing" && grid.tileCountOf(pid) > 0) {
       const targets = grid.frontierTargets(pid);
       for (const t of targets) {
-        frontier.push({ x: map.x(t.sample), y: map.y(t.sample), targetId: t.target });
+        const allTiles = grid.frontierOf(pid, t.target);
+        for (const ref of allTiles) {
+          frontier.push({ x: map.x(ref), y: map.y(ref), targetId: t.target });
+        }
       }
     }
 
@@ -383,6 +390,9 @@ export const handleAiApiRequest = async (
     const botCount = typeof body.botCount === "number" ? Math.max(0, Math.min(31, body.botCount)) : 4;
     const autoSpawn = body.autoSpawn === true;
     const spawnPhase = body.spawnPhase === false ? 0 : SPAWN_PHASE_SECONDS * SIMULATION_TICK_RATE;
+    const playerName = typeof body.playerName === "string" && body.playerName.trim()
+      ? body.playerName.trim().slice(0, 32)
+      : undefined;
 
     const sessionOpts: RasterGameSessionOptions = { spawnPhaseTicks: spawnPhase };
 
@@ -407,7 +417,7 @@ export const handleAiApiRequest = async (
     const gameId = `ai-${sessionSequence}-${Date.now()}`;
 
     try {
-      const session = new AiGameSession(gameId, sessionOpts, botCount, autoSpawn);
+      const session = new AiGameSession(gameId, sessionOpts, botCount, autoSpawn, playerName);
       sessions.set(gameId, session);
       jsonOk(res, {
         gameId,
