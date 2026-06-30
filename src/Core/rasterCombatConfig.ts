@@ -304,6 +304,28 @@ export const EXPANSION_SPEND_FRACTION = 0.12;
 export const CLICK_SNAP_RADIUS = 4;
 
 /**
+ * How far a *land* attack may reach from the player's territory, in tiles of
+ * 4-connected land travel, before a click is treated as an amphibious (boat)
+ * order instead.
+ *
+ * This is the land-vs-boat gate, and it mirrors OpenFront precisely. OpenFront
+ * does not decide "boat or march" by whether the target sits on the *same
+ * landmass* (on a real map an entire continent is one connected landmass, so
+ * that test would march a front the long way around a bay forever). Instead it
+ * asks a bounded question: starting from the clicked tile, can a short corridor
+ * of contiguous land reach my territory? OpenFront caps that flood fill at a
+ * Manhattan radius (≈200 tiles) — within it the target is "marchable" and a land
+ * attack is launched; beyond it the sensible route is across the water, so a
+ * transport ship is sent (see {@link TerritoryGrid.canReachByLand}).
+ *
+ * On the small procedural/ASCII test maps every tile is well within this radius,
+ * so they behave exactly as a contiguous landmass; the bound only bites on the
+ * large real-world maps, which is where a coast "across the bay" must become a
+ * boat rather than a continent-spanning crawl.
+ */
+export const LAND_ATTACK_REACH = 200;
+
+/**
  * Troops a transport ship must spend to establish its beachhead — the cost of
  * landing on and capturing the destination tile. Whatever the ship still
  * carries after paying this seeds a normal land attack from the landing tile.

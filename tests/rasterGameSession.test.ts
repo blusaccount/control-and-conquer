@@ -200,6 +200,52 @@ test("clicking an unbordered rival on the same landmass heads there instead of r
   assert.ok(grid.tileCountOf(1) > before, "player 1 marched toward the rival through neutral land");
 });
 
+test("a far coast across water on the SAME continent dispatches a boat, not a silent land creep", () => {
+  // Regression for the reported bug: a coastal enclave on a giant landmass clicks
+  // a far coast of that *same* landmass that sits across open water. The old
+  // "same landmass ⇒ march" rule launched nothing visible (a creep the long way
+  // round); the OpenFront-style bounded land-reach rule must instead send a boat.
+  const session = new RasterGameSession({ realMapId: "earth", mapSize: 1024, startingTroops: 5000 });
+  const messages: RasterServerMessage[] = [];
+  session.subscribe("human", (m) => messages.push(m), /*autoSpawn*/ false);
+  const map = session.peekMap();
+  const grid = session.peekGrid();
+
+  const seat = map.ref(673, 149); // a coast on Earth's largest landmass
+  const clickX = 598;
+  const clickY = 139; // a far coast of the SAME landmass, across the water
+  const clickRef = map.ref(clickX, clickY);
+  assert.ok(grid.isCapturable(seat), "seat is land");
+  assert.ok(grid.isCapturable(clickRef), "click target is land");
+
+  session.selectSpawn("human", map.x(seat), map.y(seat));
+  // Grow a contiguous coastal enclave (~300 tiles) around the seat.
+  const seen = new Set<number>([seat]);
+  const queue = [seat];
+  let claimed = 0;
+  for (let h = 0; h < queue.length && claimed < 300; h += 1) {
+    const t = queue[h];
+    if (!grid.isCapturable(t)) continue;
+    grid.claim(t, 1);
+    claimed += 1;
+    for (const n of map.neighbors(t)) if (!seen.has(n) && grid.isCapturable(n)) { seen.add(n); queue.push(n); }
+  }
+
+  // Preconditions that make this exactly the reported state (guard against map drift).
+  assert.equal(grid.landComponentId(seat), grid.landComponentId(clickRef), "seat and target share one landmass");
+  assert.equal(grid.ownsLandComponentOf(1, clickRef), true, "the player holds ground on that landmass");
+  assert.equal(grid.canReachByLand(1, clickRef), false, "the far coast is out of land-march reach");
+  assert.notEqual(grid.resolveSeaLanding(1, clickRef), null, "but a transport can reach it across the water");
+
+  session.queueExpand("human", { targetX: clickX, targetY: clickY, percent: 50 });
+  session.tick();
+
+  const rejection = messages.find((m) => m.type === "SERVER_RASTER_ACTION_REJECTED");
+  assert.equal(rejection, undefined, "the across-water click is not rejected");
+  const snap = lastSnapshot(messages);
+  assert.equal(snap.ships.filter((s) => s.playerId === 1).length, 1, "exactly one transport ship is dispatched");
+});
+
 test("a fourth simultaneous ship is rejected with TOO_MANY_SHIPS", () => {
   const session = new RasterGameSession({ realMapId: "world", startingTroops: 200 });
   const messages = collect(session, "human");

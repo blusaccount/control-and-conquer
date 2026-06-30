@@ -19,7 +19,7 @@ import type {
   RasterShip,
   RasterTrain,
 } from "../Core/types.js";
-import { RASTER_MATCH_DURATION_SECONDS } from "../Core/rasterCombatConfig.js";
+import { LAND_ATTACK_REACH, RASTER_MATCH_DURATION_SECONDS } from "../Core/rasterCombatConfig.js";
 import { BUILDING_DEFS, buildingCost } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import type { RasterMatchPhase } from "../Core/types.js";
@@ -904,10 +904,13 @@ export class RasterGameSession {
       };
     }
 
-    // Same landmass as the attacker → a contiguous land attack can march to it.
-    // A different landmass (across open water) → dispatch a transport ship to the
-    // exact clicked tile instead.
-    if (this.grid.ownsLandComponentOf(attacker, ref)) {
+    // Within land-march reach of the attacker → a contiguous land attack rolls to
+    // it. Out of reach (a separate island, or a coast only sensibly crossed by
+    // water — across a bay on the same giant landmass) → dispatch a transport ship
+    // toward the click instead. The reach is bounded, so two coasts of one
+    // continent separated by water resolve to a boat, not a march the long way
+    // round — see {@link TerritoryGrid.canReachByLand}.
+    if (this.grid.canReachByLand(attacker, ref, LAND_ATTACK_REACH)) {
       // We already border the clicked owner (neutral or a rival): push straight
       // into them, biased toward the exact tile clicked.
       if (this.grid.hasLandBorderWith(attacker, target)) {
