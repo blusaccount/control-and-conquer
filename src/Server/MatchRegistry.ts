@@ -1,77 +1,19 @@
 import {
   RasterBotController,
   RASTER_BOT_PERSONALITIES,
-  type RasterBotPersonality,
 } from "./RasterBotController.js";
 import { RasterGameSession, type RasterMessageHandler, type RasterGameSessionOptions } from "./RasterGameSession.js";
+import { resolveHeightmapSessionMap } from "./sessionMap.js";
 import { RasterBuildIntent, RasterExpandIntent } from "../Core/types.js";
 import type { RasterDifficulty } from "../Core/messages.js";
 import { SIMULATION_TICK_RATE, SPAWN_PHASE_SECONDS } from "./simulationConfig.js";
+import { AiGameSession } from "./aiApi.js";
+import { DIFFICULTY_BOT_COUNT, MAX_RASTER_BOTS, scaleBotCount, scalePersonality } from "./botField.js";
 
-/**
- * Most opponents a solo match can seat (the session caps total nations at 48, so
- * up to 47 bots alongside the human). Difficulty picks how many actually spawn.
- * The cap is high so the larger Earth maps fill with an OpenFront-style crowd
- * rather than topping out early.
- */
-export const MAX_RASTER_BOTS = 47;
-
-/**
- * Smallest field seated per difficulty — the floor used on the smallest maps and
- * the procedural fallback. Bigger maps grow well past this (see
- * {@link scaleBotCount}).
- */
-export const DIFFICULTY_BOT_COUNT: Record<RasterDifficulty, number> = {
-  easy: 4,
-  medium: 6,
-  hard: 8,
-};
-
-/**
- * Land-per-nation density as a square-root divisor, by difficulty: the field
- * grows with the square root of the capturable land divided by this, so a 4×
- * larger map roughly doubles the field rather than quadrupling it. Smaller =
- * denser, so Hard packs more rival nations onto the same map than Easy.
- */
-const DIFFICULTY_FIELD_DIVISOR: Record<RasterDifficulty, number> = {
-  easy: 24,
-  medium: 16,
-  hard: 11,
-};
-
-/**
- * Number of rival nations to seat for a map of `capturableTiles` land, scaled to
- * the map so the smaller Earth maps stay a readable handful while the largest
- * real-world Earth maps fill up with many more nations. The count climbs
- * with the square root of the land available, is floored per difficulty so even
- * tiny maps field some opponents, and is capped at the session's seat limit.
- */
-export const scaleBotCount = (capturableTiles: number, difficulty: RasterDifficulty): number => {
-  const byLand = Math.round(Math.sqrt(Math.max(0, capturableTiles)) / DIFFICULTY_FIELD_DIVISOR[difficulty]);
-  return Math.max(DIFFICULTY_BOT_COUNT[difficulty], Math.min(byLand, MAX_RASTER_BOTS));
-};
-
-/**
- * Tilt a personality by difficulty: Easy bots react slower and pick fewer
- * fights; Hard bots react faster and press harder. Medium keeps the preset.
- */
-const scalePersonality = (p: RasterBotPersonality, difficulty: RasterDifficulty): RasterBotPersonality => {
-  if (difficulty === "hard") {
-    return {
-      ...p,
-      decisionCooldownTicks: Math.max(4, Math.round(p.decisionCooldownTicks * 0.7)),
-      aggression: Math.min(1, p.aggression * 1.3),
-    };
-  }
-  if (difficulty === "easy") {
-    return {
-      ...p,
-      decisionCooldownTicks: Math.round(p.decisionCooldownTicks * 1.4),
-      aggression: p.aggression * 0.6,
-    };
-  }
-  return p;
-};
+// Re-exported for callers (e.g. the server entry) that import the field rules
+// from here; the rules themselves live in the Node-free `botField` module so a
+// browser worker can seat an identical bot field for a local solo match.
+export { DIFFICULTY_BOT_COUNT, MAX_RASTER_BOTS, scaleBotCount };
 
 /**
  * Manages isolated raster (openfront-style) matches. Each connecting client is
@@ -84,6 +26,8 @@ export class MatchRegistry {
   private readonly activeMatches = new Map<string, RasterGameSession>();
   private readonly clientToSession = new Map<string, RasterGameSession>();
   private matchSequence = 0;
+  /** Headless AI sessions — keyed by gameId, ticked alongside normal matches. */
+  public readonly aiSessions = new Map<string, AiGameSession>();
 
   /**
    * Start a SOLO raster match immediately: the human versus a field of
@@ -102,12 +46,17 @@ export class MatchRegistry {
   ): () => void {
     this.matchSequence += 1;
     const matchId = `match-${this.matchSequence}-raster-solo`;
+    // Heightmap maps (e.g. "earth") are built here, server-side, and injected as
+    // a prebuilt map so the session itself stays free of the Node map loaders.
+    const heightmap = resolveHeightmapSessionMap(options.realMapId, options.mapSize);
     // Open every solo match with a start phase: the human gets time to choose a
     // spawn before the game (and the bots) begin taking territory. A caller may
     // still override the length via `options.spawnPhaseTicks`.
     const session = new RasterGameSession({
       spawnPhaseTicks: SPAWN_PHASE_SECONDS * SIMULATION_TICK_RATE,
+      difficulty,
       ...options,
+      ...(heightmap ? { prebuiltMap: heightmap.map, mapName: options.mapName ?? heightmap.name } : {}),
     });
     this.activeMatches.set(matchId, session);
 
@@ -147,9 +96,30 @@ export class MatchRegistry {
     this.clientToSession.get(clientId)?.selectSpawn(clientId, x, y);
   }
 
+  public proposeRasterAlliance(clientId: string, targetId: number): void {
+    this.clientToSession.get(clientId)?.proposeAlliance(clientId, targetId);
+  }
+
+  public respondRasterAlliance(clientId: string, targetId: number, accept: boolean): void {
+    this.clientToSession.get(clientId)?.respondAlliance(clientId, targetId, accept);
+  }
+
+  public breakRasterAlliance(clientId: string, targetId: number): void {
+    this.clientToSession.get(clientId)?.breakAlliance(clientId, targetId);
+  }
+
   public tickAll(): void {
     for (const session of this.activeMatches.values()) {
       session.tick();
+    }
+    // Tick AI sessions; remove ones that have ended or been abandoned.
+    for (const [gameId, aiSession] of this.aiSessions) {
+      aiSession.getSession().tick();
+      // Clean up sessions idle for more than 30 minutes
+      if (Date.now() - aiSession.createdAt > 30 * 60 * 1000) {
+        aiSession.destroy();
+        this.aiSessions.delete(gameId);
+      }
     }
   }
 

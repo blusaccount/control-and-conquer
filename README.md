@@ -9,7 +9,10 @@ The current build is the **OpenFront-style foundation**: a deterministic
 pixel-raster engine where you start on a single tile and expand your border
 across land — and across narrow seas by amphibious landing — until you own the
 map. Combat is autonomous: you only express intent (commit N% of your troop pool
-toward a tile); the server resolves the front.
+toward a tile); the server resolves the front. Diplomacy layers on top:
+**alliances** are mutual-consent, non-aggression pacts (propose → accept, break to
+betray) — allied nations can't attack each other, and the AI nations weigh
+alliances by personality (see `src/Core/alliances.ts`).
 
 ## Quick start
 

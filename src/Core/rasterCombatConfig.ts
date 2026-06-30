@@ -13,43 +13,57 @@
  *     claiming flat neutral land.
  */
 
-import { CITY_TROOP_INCOME_PER_TICK } from "./buildings.js";
+import { CITY_MAX_TROOP_INCREASE } from "./buildings.js";
+
+// ---------------------------------------------------------------------------
+// Population / troops (OpenFront's max-population + bell-curve growth model).
+//
+// A single troop **pool** per player (OpenFront has no worker/troop split). Its
+// ceiling rises sub-linearly with territory and flatly with cities; growth is a
+// bell curve that peaks partway to the ceiling and tapers to zero at it. All
+// constants and formula shapes mirror OpenFront's `maxTroops`/`troopIncreaseRate`
+// (documented behaviour, not ported code).
+// ---------------------------------------------------------------------------
+
+/** Flat floor term inside the max-population formula (OpenFront's 50 000). */
+export const MAX_POP_FLAT = 50_000;
+/** Per-tile scale inside the max-population formula (OpenFront's 1000). */
+export const MAX_POP_LAND_SCALE = 1_000;
+/** Sub-linear land exponent in the max-population formula (OpenFront's 0.6). */
+export const MAX_POP_LAND_EXPONENT = 0.6;
 
 /**
- * Fractional troops generated per owned tile per tick. Accumulated per player
- * and flushed into the integer pool once it reaches >= 1, mirroring the
- * polygon engine's income model. 0.02 at 20 TPS ~= 0.4 troops/tile/second.
+ * Maximum troop pool for an empire of `tiles` tiles holding `cities` cities,
+ * mirroring OpenFront's `maxTroops`: a sub-linear land term (so each extra tile
+ * lifts the ceiling by ever less) plus a flat floor, doubled, plus a flat
+ * per-city increase. Cities are the deliberate way to raise the cap —
+ * {@link CITY_MAX_TROOP_INCREASE} each — not a per-tick troop dividend.
  */
-export const INCOME_PER_TILE_PER_TICK = 0.02;
-
-/** Troop pool ceiling, scaled by territory size, to keep numbers bounded. */
-export const MAX_POOL_PER_TILE = 50;
-
-/** Soft-cap troop pool maximum for an empire of `tiles` tiles. */
-export const poolCap = (tiles: number): number => tiles * MAX_POOL_PER_TILE;
+export const maxTroops = (tiles: number, cities = 0): number =>
+  2 * (Math.pow(Math.max(0, tiles), MAX_POP_LAND_EXPONENT) * MAX_POP_LAND_SCALE + MAX_POP_FLAT) +
+  Math.max(0, cities) * CITY_MAX_TROOP_INCREASE;
 
 /**
- * Logistic growth factor in [0, 1] used as a **soft cap** on the troop pool:
- * full income when the pool is empty, tapering to zero as the pool approaches
- * its {@link poolCap}. Income is multiplied by this factor, so the pool
- * approaches the cap asymptotically instead of piling up at a flat rate — a
- * sprawling empire's army growth visibly slows and plateaus (OpenFront feel),
- * rather than every "+N/s" climbing without limit.
+ * Troops added to a pool in a single tick, mirroring OpenFront's bell-curve
+ * growth: a base that itself rises sub-linearly with the current pool, scaled by
+ * how far the pool sits below its ceiling `max`. Growth is therefore slow when
+ * the pool is tiny, peaks in the mid-range, and tapers to 0 at the cap. Never
+ * negative; the caller clamps the running pool to `max`.
  */
-export const growthFactor = (troops: number, tiles: number): number => {
-  const cap = poolCap(tiles);
-  if (cap <= 0) return 0;
-  return Math.max(0, 1 - troops / cap);
+export const troopGrowth = (troops: number, max: number): number => {
+  if (max <= 0) return 0;
+  const t = Math.max(0, troops);
+  const base = 10 + Math.pow(t, 0.73) / 4;
+  return Math.max(0, base * (1 - t / max));
 };
 
 /**
  * Troops generated per second by a player — the figure the leaderboard shows as
- * "(+N/s)". Derived directly from the engine's real per-tick income (including
- * the logistic {@link growthFactor} soft cap) so the displayed rate matches the
- * pool growth a player actually sees: it tapers toward 0 as the empire fills up.
- * `incomeMultiplier` folds in any income modifiers; `cities` adds each city's
- * flat troop dividend (gated by the same soft cap); `ticksPerSecond` converts
- * the per-tick income to seconds.
+ * "(+N/s)". Derived directly from the real per-tick {@link troopGrowth} at the
+ * empire's current pool and territory-scaled ceiling, so the displayed rate
+ * matches the growth a player actually sees: it tapers toward 0 as the empire
+ * fills up. `incomeMultiplier` folds in any per-player income modifier; `cities`
+ * lifts the ceiling; `ticksPerSecond` converts the per-tick add to seconds.
  */
 export const troopsPerSecond = (
   tiles: number,
@@ -57,12 +71,9 @@ export const troopsPerSecond = (
   ticksPerSecond: number,
   incomeMultiplier = 1,
   cities = 0,
-): number => {
-  const perTick =
-    (tiles * INCOME_PER_TILE_PER_TICK * incomeMultiplier + cities * CITY_TROOP_INCOME_PER_TICK) *
-    growthFactor(troops, tiles);
-  return perTick * ticksPerSecond;
-};
+  troopCapMultiplier = 1,
+): number =>
+  troopGrowth(troops, maxTroops(tiles, cities) * troopCapMultiplier) * incomeMultiplier * ticksPerSecond;
 
 /**
  * Maximum wall-clock length of a single roguelite run, in seconds. When the
@@ -71,6 +82,16 @@ export const troopsPerSecond = (
  * the session multiplies in to derive a tick budget.
  */
 export const RASTER_MATCH_DURATION_SECONDS = 600;
+
+/**
+ * Seconds of **spawn immunity** a freshly-seated nation gets, mirroring
+ * OpenFront's post-spawn protection: for this window the player's tiles can't be
+ * attacked (by land or sea), so a new spawn isn't instantly steamrolled by a
+ * neighbouring snowball before it can establish a border. Kept in seconds (a pure
+ * gameplay rule, independent of tick rate); the engine is granted the equivalent
+ * tick count when a player is seated.
+ */
+export const SPAWN_IMMUNITY_SECONDS = 8;
 
 /**
  * Fraction of leftover committed troops lost when an attack against a *player*
@@ -106,40 +127,46 @@ export const RETREAT_MALUS_FRACTION = 0.25;
 export const NEUTRAL_CAPTURE_COST = 1;
 
 /**
- * Base troop cost to capture a flat enemy-held tile at troop parity, before the
- * terrain, attacker-efficiency and garrison factors. Higher than neutral land:
- * an opposed border is dearer to push than empty wilderness.
- */
-export const ENEMY_CAPTURE_BASE = 3;
-
-/**
  * Flat attacker efficiency (OpenFront's ~20% attacker bonus): the attacker loses
- * this fraction of the nominal cost per tile, so committing to an assault is a
- * touch cheaper than the raw terrain/garrison maths imply. < 1 favours the
- * attacker; 1 would be neutral.
+ * 0.8× the nominal per-tile magnitude, so committing to an assault is a touch
+ * cheaper than the raw terrain/garrison maths imply.
  */
 export const ATTACKER_EFFICIENCY = 0.8;
 
 /**
- * Terrain capture-cost multipliers by elevation band, mirroring OpenFront's
- * plains/highland/mountain split (plains are softer, mountains dearer). Land
- * elevation runs 0–30 (see `terrainCodec`); the two thresholds bucket it into
- * the three bands. The multiplier scales the *attacker's* per-tile loss, so high
- * ground is harder to take — but only mildly (a ~1.4× spread), as in OpenFront,
- * rather than the steep linear ramp the engine used before.
+ * Terrain combat profile by elevation band, mirroring OpenFront's
+ * plains/highland/mountain `mag`/`speed` pairs. `mag` is the per-tile troop-loss
+ * magnitude (higher ground costs the attacker more); `speed` biases how fast the
+ * front rolls through. Land elevation runs 0–30 (see `terrainCodec`), bucketed by
+ * the two thresholds into three bands; magnitude 31 is impassable (never owned or
+ * attacked), matching OpenFront's encoding.
  */
-export const TERRAIN_PLAINS_MAX_ELEVATION = 7;
-export const TERRAIN_HIGHLAND_MAX_ELEVATION = 18;
-export const TERRAIN_LOSS_PLAINS = 0.9;
-export const TERRAIN_LOSS_HIGHLAND = 1.0;
-export const TERRAIN_LOSS_MOUNTAIN = 1.3;
+export const TERRAIN_PLAINS_MAX_ELEVATION = 9;
+export const TERRAIN_HIGHLAND_MAX_ELEVATION = 19;
+export interface TerrainCombat {
+  /** Per-tile troop-loss magnitude. */
+  readonly mag: number;
+  /** Advance-rate bias (higher = the front moves through faster). */
+  readonly speed: number;
+}
+export const TERRAIN_COMBAT_PLAINS: TerrainCombat = { mag: 80, speed: 16.5 };
+export const TERRAIN_COMBAT_HIGHLAND: TerrainCombat = { mag: 100, speed: 20 };
+export const TERRAIN_COMBAT_MOUNTAIN: TerrainCombat = { mag: 120, speed: 25 };
 
-/** Capture-cost multiplier for a tile's terrain, by its land elevation (0–30). */
-export const terrainLossMultiplier = (elevation: number): number => {
-  if (elevation <= TERRAIN_PLAINS_MAX_ELEVATION) return TERRAIN_LOSS_PLAINS;
-  if (elevation <= TERRAIN_HIGHLAND_MAX_ELEVATION) return TERRAIN_LOSS_HIGHLAND;
-  return TERRAIN_LOSS_MOUNTAIN;
+/** Combat profile (mag/speed) for a tile's terrain, by its land elevation (0–30). */
+export const terrainCombat = (elevation: number): TerrainCombat => {
+  if (elevation <= TERRAIN_PLAINS_MAX_ELEVATION) return TERRAIN_COMBAT_PLAINS;
+  if (elevation <= TERRAIN_HIGHLAND_MAX_ELEVATION) return TERRAIN_COMBAT_HIGHLAND;
+  return TERRAIN_COMBAT_MOUNTAIN;
 };
+
+/** Divisor for the attacker's per-tile loss when claiming neutral land (mag/5). */
+export const NEUTRAL_LOSS_DIVISOR = 5;
+/** Weights blending the troop-ratio loss term with the defender-density term. */
+export const ATTACK_RATIO_LOSS_WEIGHT = 0.6;
+export const ATTACK_DENSITY_LOSS_WEIGHT = 0.4;
+/** Multiplier on the density term of the attacker's per-tile loss (OpenFront's 1.3). */
+export const ATTACK_DENSITY_FACTOR = 1.3;
 
 /**
  * Garrison-strength clamp bounds for {@link defenderStrengthFactor}. The cost an
@@ -150,6 +177,14 @@ export const terrainLossMultiplier = (elevation: number): number => {
  * poke to a halt; an overwhelming assault floors the factor at
  * {@link DEFENDER_STRENGTH_MIN}× and rolls through. This is what gives a
  * stockpiled troop pool real *defensive* value.
+ *
+ * The {@link DEFENDER_STRENGTH_MAX} cap is **deliberately** tighter than the
+ * fort/defense-post ceiling ({@link DEFENSE_POST_STRENGTH}×): this axis scales
+ * with a raw *troop advantage*, which the runaway leader has in abundance, so
+ * capping it keeps a trailing player able to dislodge a stockpiled empire (an
+ * uncapped troop-ratio defence would harden the snowball into an unbeatable
+ * turtle). Forts are the *uncapped* defensive axis on purpose — they cost gold
+ * and a tile, a deliberate investment rather than a side effect of hoarding.
  */
 export const DEFENDER_STRENGTH_MIN = 0.6;
 export const DEFENDER_STRENGTH_MAX = 2.0;
@@ -170,17 +205,69 @@ export const defenderStrengthFactor = (defenderTroops: number, attackerTroops: n
 };
 
 /**
- * How much faster (or slower) a front advances given the garrison it faces —
- * OpenFront's "conquest speed scales with the attacker's advantage". Derived
- * from the same garrison factor: a weak defender (factor < 1) is overrun faster,
- * a strong one (factor > 1) slows the advance, clamped to a sane band. Neutral
- * land has no garrison (factor 1), so it advances at the base rate.
+ * Troops the attacker loses to capture one *enemy* tile, mirroring OpenFront's
+ * `attackLogic`: a blend of (a) the clamped defender/attacker troop ratio times
+ * the terrain magnitude and the flat attacker bonus, and (b) the defender's troop
+ * density spread over the magnitude. `mag` is the tile's magnitude *after* any
+ * defensive multipliers (defense post, fortress wall). A weak, thinly-spread
+ * defender is cheap to roll over; a dense, well-garrisoned one is dear — so a
+ * stockpiled army has real defensive value and high ground costs more to take.
  */
-export const ATTACK_SPEED_MIN = 0.5;
-export const ATTACK_SPEED_MAX = 2.0;
-export const attackSpeedFactor = (garrisonFactor: number): number => {
-  if (garrisonFactor <= 0) return ATTACK_SPEED_MAX;
-  return Math.min(ATTACK_SPEED_MAX, Math.max(ATTACK_SPEED_MIN, 1 / garrisonFactor));
+export const attackerLossPerTile = (
+  defenderTroops: number,
+  defenderDensity: number,
+  attackForce: number,
+  mag: number,
+): number => {
+  const ratioTerm = defenderStrengthFactor(defenderTroops, attackForce) * mag * ATTACKER_EFFICIENCY;
+  const densityTerm = ATTACK_DENSITY_FACTOR * defenderDensity * (mag / 100);
+  return ATTACK_RATIO_LOSS_WEIGHT * ratioTerm + ATTACK_DENSITY_LOSS_WEIGHT * densityTerm;
+};
+
+/** Troops the attacker loses to claim one neutral tile of magnitude `mag` (mag/5). */
+export const neutralLossPerTile = (mag: number): number => mag / NEUTRAL_LOSS_DIVISOR;
+
+/**
+ * Large-empire defence debuff, mirroring OpenFront's `defenseSig`: a sprawling
+ * nation defends each of its tiles *worse*, so the attacker's per-tile loss is
+ * scaled down toward {@link LARGE_DEFENDER_LOSS_FLOOR} as the defender's territory
+ * grows past {@link LARGE_DEFENDER_MIDPOINT}. This is a deliberate anti-snowball
+ * lever: a runaway empire becomes cheaper to chip away at, so it can't harden
+ * into an unbeatable turtle. Returns 1 for a small empire (no effect), easing to
+ * the floor for a huge one.
+ */
+export const LARGE_DEFENDER_MIDPOINT = 150_000;
+export const LARGE_DEFENDER_DECAY = Math.LN2 / 50_000;
+export const LARGE_DEFENDER_LOSS_FLOOR = 0.7;
+const sigmoid = (value: number, decay: number, midpoint: number): number =>
+  1 / (1 + Math.exp(-decay * (value - midpoint)));
+export const largeDefenderLossFactor = (defenderTiles: number): number => {
+  const defenseSig = 1 - sigmoid(Math.max(0, defenderTiles), LARGE_DEFENDER_DECAY, LARGE_DEFENDER_MIDPOINT);
+  return LARGE_DEFENDER_LOSS_FLOOR + (1 - LARGE_DEFENDER_LOSS_FLOOR) * defenseSig;
+};
+
+/**
+ * Tiles a front may capture in a single tick, mirroring OpenFront's
+ * `attackTilesPerTick`. Against a player the budget scales with the attacker's
+ * troop advantage (clamped into a band) and the contested border width; against
+ * neutral land it is simply a multiple of the border. `border` is the number of
+ * frontier tiles pressed this tick. So an overwhelming assault rolls fast while
+ * an under-committed poke barely creeps.
+ */
+export const ENEMY_TILES_PER_TICK_MIN = 0.01;
+export const ENEMY_TILES_PER_TICK_MAX = 0.5;
+export const ENEMY_TILES_BORDER_MULT = 3;
+export const NEUTRAL_TILES_BORDER_MULT = 2;
+export const attackTilesPerTick = (
+  defenderTroops: number,
+  attackForce: number,
+  border: number,
+  vsPlayer: boolean,
+): number => {
+  if (!vsPlayer) return border * NEUTRAL_TILES_BORDER_MULT;
+  const advantage = ((5 * attackForce) / Math.max(1, defenderTroops)) * 2;
+  const clamped = Math.min(ENEMY_TILES_PER_TICK_MAX, Math.max(ENEMY_TILES_PER_TICK_MIN, advantage));
+  return clamped * border * ENEMY_TILES_BORDER_MULT;
 };
 
 /**
@@ -248,6 +335,21 @@ export const FRONTIER_PRIORITY_FLOOR = 0.05;
 export const FRONTIER_JITTER_SPAN = 0.15;
 
 /**
+ * Directional pull toward the tile a player actually clicked. When an attack
+ * carries a `toward` target, each frontier tile's priority is nudged up by its
+ * normalised distance (0 at the frontier tile nearest the click, 1 at the
+ * farthest) times this weight, so the limited per-tick budget is spent on the
+ * side of the front facing the click — the blob *bulges* toward where you
+ * pointed instead of advancing evenly on all sides (OpenFront's directed
+ * attack). Deliberately kept **below** {@link FRONTIER_SURROUND_WEIGHT}: one
+ * extra owned neighbour (a pocket) lowers priority by 0.6, more than this term
+ * can ever add, so back-filling concavities still dominates and the front stays
+ * a smooth bulge rather than snaking a tendril straight at the target. `0`
+ * disables the bias entirely (pure radial growth, the old behaviour).
+ */
+export const FRONTIER_TOWARD_WEIGHT = 0.5;
+
+/**
  * Fraction of an attack's remaining committed troops that may be spent in a
  * single tick. Spreading the spend over multiple ticks is what makes the front
  * advance gradually (ring by ring) instead of teleporting across the map.
@@ -272,15 +374,26 @@ export const EXPANSION_SPEND_FRACTION = 0.12;
 export const CLICK_SNAP_RADIUS = 4;
 
 /**
- * Maximum width of open water (in tiles) a transport ship can cross. A coastal
- * tile can reach an enemy/neutral coast on the far bank of a strait, lake or
- * channel no wider than this — the openfront-style "transport ship" mechanic.
- * It bounds two things that must agree: the precomputed {@link seaLinks}
- * reachability graph (which surfaces sea-reachable targets) and the per-launch
- * shortest-water-path search a ship actually follows. Set to 0 to disable all
- * water crossing (water becomes a hard barrier).
+ * How far a *land* attack may reach from the player's territory, in tiles of
+ * 4-connected land travel, before a click is treated as an amphibious (boat)
+ * order instead.
+ *
+ * This is the land-vs-boat gate, and it mirrors OpenFront precisely. OpenFront
+ * does not decide "boat or march" by whether the target sits on the *same
+ * landmass* (on a real map an entire continent is one connected landmass, so
+ * that test would march a front the long way around a bay forever). Instead it
+ * asks a bounded question: starting from the clicked tile, can a short corridor
+ * of contiguous land reach my territory? OpenFront caps that flood fill at a
+ * Manhattan radius (≈200 tiles) — within it the target is "marchable" and a land
+ * attack is launched; beyond it the sensible route is across the water, so a
+ * transport ship is sent (see {@link TerritoryGrid.canReachByLand}).
+ *
+ * On the small procedural/ASCII test maps every tile is well within this radius,
+ * so they behave exactly as a contiguous landmass; the bound only bites on the
+ * large real-world maps, which is where a coast "across the bay" must become a
+ * boat rather than a continent-spanning crawl.
  */
-export const MAX_SEA_CROSSING_TILES = 6;
+export const LAND_ATTACK_REACH = 200;
 
 /**
  * Troops a transport ship must spend to establish its beachhead — the cost of
@@ -291,12 +404,14 @@ export const MAX_SEA_CROSSING_TILES = 6;
 export const SEA_CROSSING_SURCHARGE = 8;
 
 /**
- * Largest factor any perk/class can scale a player's sea-crossing range by. The
- * crossing graph is precomputed once at `MAX_SEA_CROSSING_TILES` times this, so
- * a Sea God player's extended reach is already in the graph and just gets
- * un-filtered; base players are filtered back down to {@link MAX_SEA_CROSSING_TILES}.
+ * How many water tiles a bot's amphibious-target scan explores before stopping.
+ * A player can boat anywhere within a connected body of water (no distance cap),
+ * but a bot autonomously *discovering* targets must bound its search, so it only
+ * considers landings reachable within roughly this many tiles of open water of
+ * its coast — generous (whole nearby seas and islands), not the entire globe.
+ * Only limits bot target discovery; an ordered boat still sails unbounded.
  */
-export const MAX_SEA_RANGE_MULTIPLIER = 2;
+export const SEA_TARGET_SCAN_BUDGET = 3000;
 
 /**
  * How many transport ships a single player may have at sea simultaneously.

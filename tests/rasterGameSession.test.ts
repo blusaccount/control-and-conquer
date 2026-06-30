@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { RasterGameSession } from "../src/Server/RasterGameSession.js";
+import { resolveHeightmapSessionMap } from "../src/Server/sessionMap.js";
+import { NEUTRAL_PLAYER } from "../src/Core/TerritoryGrid.js";
 import type { RasterServerMessage, RasterSnapshot } from "../src/Core/types.js";
 
 const collect = (session: RasterGameSession, clientId: string): RasterServerMessage[] => {
@@ -18,10 +20,10 @@ const lastSnapshot = (messages: RasterServerMessage[]): RasterSnapshot => {
 };
 
 /**
- * Stage a sea assault for player 1 on a hand-authored map: find a sea-link pair
- * spanning two landmasses, give player 1 a coastal foothold on the near one, and
- * return the far tile to click. Procedural continents almost never place a small
- * island within ship range of a spawn, so we construct the situation explicitly.
+ * Stage a sea assault for player 1 on a hand-authored map: give player 1 a
+ * coastal foothold and return a neutral tile on a *different* landmass that a
+ * transport can reach by water — so the only way there is by ship. Footholds
+ * that reach nothing are reverted, leaving exactly the one that works claimed.
  */
 const stageSeaTarget = (session: RasterGameSession): { x: number; y: number } => {
   const grid = session.peekGrid();
@@ -31,18 +33,20 @@ const stageSeaTarget = (session: RasterGameSession): { x: number; y: number } =>
     return -1;
   })();
   for (let a = 0; a < map.size; a += 1) {
+    if (!grid.isCapturable(a) || !map.isShore(a) || grid.ownerOf(a) !== 0) continue;
     const compA = grid.landComponentId(a);
-    if (compA < 0) continue;
-    for (const b of grid.seaLinks.neighborsOf(a)) {
+    grid.claim(a, 1); // player 1 gains a coast on landmass A
+    for (let b = 0; b < map.size; b += 1) {
+      if (grid.ownerOf(b) !== 0 || !grid.isCapturable(b)) continue;
       const compB = grid.landComponentId(b);
       // b must be a different landmass from both the foothold and the spawn, so
-      // the only way to reach it is by ship.
-      if (compB === compA || compB === spawnComp || grid.ownerOf(b) !== 0) continue;
-      grid.claim(a, 1); // player 1 gains a coast on landmass A
-      return { x: map.x(b), y: map.y(b) };
+      // the only route is a boat.
+      if (compB === compA || compB === spawnComp) continue;
+      if (grid.findSeaPath(1, b) !== null) return { x: map.x(b), y: map.y(b) };
     }
+    grid.claim(a, NEUTRAL_PLAYER); // this foothold reached nothing — revert it
   }
-  throw new Error("no cross-landmass sea link on this map");
+  throw new Error("no cross-landmass sea target on this map");
 };
 
 test("first subscriber gets PLAYER_ASSIGNED and an initial snapshot with terrain", () => {
@@ -148,6 +152,100 @@ test("clicking a sea-only target dispatches a transport ship that lands", () => 
   const ref = session.peekMap().ref(target.x, target.y);
   assert.equal(grid.ownerOf(ref), 1, "the ship captured its beachhead");
   assert.equal(lastSnapshot(messages).ships.filter((s) => s.playerId === 1).length, 0, "the ship is gone once it has landed");
+});
+
+test("clicking an unbordered rival on the same landmass heads there instead of rejecting", () => {
+  const session = new RasterGameSession({ width: 48, height: 32, seed: 5 });
+  const messages = collect(session, "human"); // player 1, auto-spawned
+  const grid = session.peekGrid();
+  const map = session.peekMap();
+
+  // Give player 1 an interior foothold so it borders neutral land all around.
+  let interior = -1;
+  for (let ref = 0; ref < map.size && interior < 0; ref += 1) {
+    if (!grid.isCapturable(ref) || grid.ownerOf(ref) !== NEUTRAL_PLAYER) continue;
+    const ns = map.neighbors(ref);
+    if (ns.length === 4 && ns.every((n) => grid.isCapturable(n) && grid.ownerOf(n) === NEUTRAL_PLAYER)) {
+      interior = ref;
+    }
+  }
+  assert.ok(interior >= 0, "found an interior neutral tile to stand on");
+  grid.claim(interior, 1);
+  const comp = grid.landComponentId(interior);
+
+  // Seat a rival far away on the *same* landmass — reachable by land, but not yet
+  // bordered by player 1 (neutral ground lies between them).
+  grid.addPlayer(2, 50);
+  let rival = -1;
+  for (let ref = map.size - 1; ref >= 0 && rival < 0; ref -= 1) {
+    if (!grid.isCapturable(ref) || grid.ownerOf(ref) !== NEUTRAL_PLAYER) continue;
+    if (grid.landComponentId(ref) !== comp) continue;
+    if (map.neighbors(ref).some((n) => grid.ownerOf(n) === 1)) continue; // must not be adjacent
+    rival = ref;
+  }
+  assert.ok(rival >= 0, "found a far same-landmass tile for the rival");
+  grid.claim(rival, 2);
+
+  assert.ok(grid.ownsLandComponentOf(1, rival), "the rival sits on player 1's landmass");
+  assert.equal(grid.hasLandBorderWith(1, 2), false, "player 1 does not yet border the rival");
+
+  const before = grid.tileCountOf(1);
+  session.queueExpand("human", { targetX: map.x(rival), targetY: map.y(rival), percent: 80 });
+  session.tick();
+
+  assert.equal(
+    messages.find((m) => m.type === "SERVER_RASTER_ACTION_REJECTED"),
+    undefined,
+    "the click toward the unbordered rival is not rejected",
+  );
+  assert.ok(grid.tileCountOf(1) > before, "player 1 marched toward the rival through neutral land");
+});
+
+test("a far coast across water on the SAME continent dispatches a boat, not a silent land creep", () => {
+  // Regression for the reported bug: a coastal enclave on a giant landmass clicks
+  // a far coast of that *same* landmass that sits across open water. The old
+  // "same landmass ⇒ march" rule launched nothing visible (a creep the long way
+  // round); the OpenFront-style bounded land-reach rule must instead send a boat.
+  const earth = resolveHeightmapSessionMap("earth", 1024)!;
+  const session = new RasterGameSession({ prebuiltMap: earth.map, mapName: earth.name, startingTroops: 5000 });
+  const messages: RasterServerMessage[] = [];
+  session.subscribe("human", (m) => messages.push(m), /*autoSpawn*/ false);
+  const map = session.peekMap();
+  const grid = session.peekGrid();
+
+  const seat = map.ref(673, 149); // a coast on Earth's largest landmass
+  const clickX = 598;
+  const clickY = 139; // a far coast of the SAME landmass, across the water
+  const clickRef = map.ref(clickX, clickY);
+  assert.ok(grid.isCapturable(seat), "seat is land");
+  assert.ok(grid.isCapturable(clickRef), "click target is land");
+
+  session.selectSpawn("human", map.x(seat), map.y(seat));
+  // Grow a contiguous coastal enclave (~300 tiles) around the seat.
+  const seen = new Set<number>([seat]);
+  const queue = [seat];
+  let claimed = 0;
+  for (let h = 0; h < queue.length && claimed < 300; h += 1) {
+    const t = queue[h];
+    if (!grid.isCapturable(t)) continue;
+    grid.claim(t, 1);
+    claimed += 1;
+    for (const n of map.neighbors(t)) if (!seen.has(n) && grid.isCapturable(n)) { seen.add(n); queue.push(n); }
+  }
+
+  // Preconditions that make this exactly the reported state (guard against map drift).
+  assert.equal(grid.landComponentId(seat), grid.landComponentId(clickRef), "seat and target share one landmass");
+  assert.equal(grid.ownsLandComponentOf(1, clickRef), true, "the player holds ground on that landmass");
+  assert.equal(grid.canReachByLand(1, clickRef), false, "the far coast is out of land-march reach");
+  assert.notEqual(grid.resolveSeaLanding(1, clickRef), null, "but a transport can reach it across the water");
+
+  session.queueExpand("human", { targetX: clickX, targetY: clickY, percent: 50 });
+  session.tick();
+
+  const rejection = messages.find((m) => m.type === "SERVER_RASTER_ACTION_REJECTED");
+  assert.equal(rejection, undefined, "the across-water click is not rejected");
+  const snap = lastSnapshot(messages);
+  assert.equal(snap.ships.filter((s) => s.playerId === 1).length, 1, "exactly one transport ship is dispatched");
 });
 
 test("a fourth simultaneous ship is rejected with TOO_MANY_SHIPS", () => {

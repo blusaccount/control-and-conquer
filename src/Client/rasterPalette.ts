@@ -1,10 +1,4 @@
-import {
-  isImpassable,
-  isLand,
-  isShore,
-  magnitude,
-  MAX_LAND_ELEVATION,
-} from "../Core/terrainCodec.js";
+import { isImpassable, isLand, isShore, magnitude } from "../Core/terrainCodec.js";
 import { NEUTRAL_PLAYER, type PlayerId } from "../Core/TerritoryGrid.js";
 
 /**
@@ -31,43 +25,86 @@ const lerpColor = (a: Rgba, b: Rgba, t: number): Rgba => ({
 });
 
 // --- Terrain palette -------------------------------------------------------
+//
+// An independent reimplementation of an OpenFront-style terrain look — written
+// from scratch (our own Rgba helpers and elevation-band logic). No OpenFront
+// source is used; only the handful of base colour *values* below match the
+// colours OpenFront renders, which are observable RGB facts, not copyrightable
+// code. The look hinges on two things our old palette got wrong, which is what
+// made rivers and coasts read as bloated, glowing features:
+//
+//   1. Water is a near-flat, light medium-blue. There is *no* long shallow→deep
+//      gradient — the ocean only darkens by up to 10 per channel with shore
+//      distance, so coastlines have a crisp edge instead of a wide fuzzy halo.
+//   2. The whole palette is light and pastel (light-green plains, tan sand,
+//      grey peaks). A single-tile river is just shoreline water — a light
+//      coastal blue — which sits naturally on light-green land instead of
+//      glaring like bright cyan on dark navy.
+//
+// Lakes and ocean are coloured identically (the water colour ignores the
+// ocean/lake bit, as in the OpenFront look); the bit is gameplay-only.
 
-/** Shallow water (just off the coast). */
-const WATER_SHALLOW: Rgba = { r: 90, g: 155, b: 210, a: 255 };
-/** Deep open water. */
-const WATER_DEEP: Rgba = { r: 12, g: 40, b: 80, a: 255 };
-/** Slight teal shift applied to inland lakes to set them apart from ocean. */
-const LAKE_SHIFT: Rgba = { r: 40, g: 110, b: 120, a: 255 };
-/** Low-elevation land. */
-const LAND_LOW: Rgba = { r: 74, g: 120, b: 64, a: 255 };
-/** High-elevation land. */
-const LAND_HIGH: Rgba = { r: 120, g: 100, b: 72, a: 255 };
-/** Impassable rock. */
-const ROCK: Rgba = { r: 92, g: 92, b: 98, a: 255 };
-/** Sandy tint blended into coastal land tiles. */
-const SHORE_SAND: Rgba = { r: 196, g: 180, b: 132, a: 255 };
-const SHORE_SAND_MIX = 0.35;
-
-/** Water depth (in tiles) at which the deep-water colour is reached. */
-const MAX_WATER_DEPTH_SHADE = 12;
+/** Open-ocean base colour #4785b5 (matching the colour OpenFront renders). */
+const OCEAN: Rgba = { r: 71, g: 133, b: 181, a: 255 };
+/** Coastal land (any land tile on the shoreline). */
+const SAND: Rgba = { r: 204, g: 203, b: 158, a: 255 };
+/** Low-elevation plains. Green fades down as elevation rises. */
+const PLAINS: Rgba = { r: 190, g: 220, b: 138, a: 255 };
+/** Mid-elevation highland; all channels brighten with elevation. */
+const HIGHLAND: Rgba = { r: 200, g: 183, b: 138, a: 255 };
+/** High-elevation mountain; brightens toward white at the peaks. */
+const MOUNTAIN: Rgba = { r: 230, g: 230, b: 230, a: 255 };
+/** Impassable peak (rock). */
+const PEAK: Rgba = { r: 60, g: 60, b: 60, a: 255 };
 
 /** Map a single encoded terrain byte to its natural (unowned) colour. */
 export const terrainColor = (byte: number): Rgba => {
   if (!isLand(byte)) {
-    const depth = magnitude(byte);
-    const t = Math.min(1, depth / MAX_WATER_DEPTH_SHADE);
-    const base = lerpColor(WATER_SHALLOW, WATER_DEEP, t);
-    // Lakes (water tiles that are not ocean) get a gentle teal shift.
-    const ocean = (byte & 0x20) !== 0;
-    return ocean ? base : lerpColor(base, LAKE_SHIFT, 0.3);
+    // Shoreline water: 70% ocean + 30% white — OpenFront's dynamic coastline,
+    // a light band one tile wide. A 1-tile river is entirely shoreline water,
+    // so this is the colour rivers read as.
+    if (isShore(byte)) {
+      return {
+        r: Math.round(0.7 * OCEAN.r + 76.5),
+        g: Math.round(0.7 * OCEAN.g + 76.5),
+        b: Math.round(0.7 * OCEAN.b + 76.5),
+        a: 255,
+      };
+    }
+    // Open water: darken the ocean base by up to 10 with distance from shore.
+    const m = Math.min(magnitude(byte), 10);
+    return { r: OCEAN.r - m, g: OCEAN.g - m, b: OCEAN.b - m, a: 255 };
   }
   if (isImpassable(byte)) {
-    return { ...ROCK };
+    return { ...PEAK };
   }
-  const elevation = magnitude(byte);
-  const t = MAX_LAND_ELEVATION > 0 ? elevation / MAX_LAND_ELEVATION : 0;
-  const land = lerpColor(LAND_LOW, LAND_HIGH, t);
-  return isShore(byte) ? lerpColor(land, SHORE_SAND, SHORE_SAND_MIX) : land;
+  // Land shoreline is sand, regardless of elevation.
+  if (isShore(byte)) {
+    return { ...SAND };
+  }
+  const m = magnitude(byte);
+  if (m < 10) {
+    // Plains: green dims as the ground rises.
+    return { r: PLAINS.r, g: clamp255(PLAINS.g - 2 * m), b: PLAINS.b, a: 255 };
+  }
+  if (m < 20) {
+    // Highland: all channels brighten toward tan.
+    const d = 2 * (m - 10);
+    return {
+      r: clamp255(HIGHLAND.r + d),
+      g: clamp255(HIGHLAND.g + d),
+      b: clamp255(HIGHLAND.b + d),
+      a: 255,
+    };
+  }
+  // Mountain: brighten toward white at the peaks.
+  const d = Math.floor(m / 2);
+  return {
+    r: clamp255(MOUNTAIN.r + d),
+    g: clamp255(MOUNTAIN.g + d),
+    b: clamp255(MOUNTAIN.b + d),
+    a: 255,
+  };
 };
 
 // --- Player palette --------------------------------------------------------
@@ -110,21 +147,22 @@ const PLAYER_EMOJIS: readonly string[] = [
 export const playerEmoji = (id: PlayerId): string =>
   PLAYER_EMOJIS[(id - 1) % PLAYER_EMOJIS.length];
 
-/** Pure white, the target a border colour is lightened toward. */
+/** Pure white, used for the local player's own-border highlight. */
 const WHITE: Rgba = { r: 255, g: 255, b: 255, a: 255 };
-
-/** How far a border tile's colour is pushed toward white from the owner hue. */
-const BORDER_LIGHTEN = 0.62;
+/** Pure black, used as the darkening target for rival-nation borders. */
+const BLACK: Rgba = { r: 0, g: 0, b: 0, a: 255 };
 
 /**
- * Bright outline colour for a player's territory edge. A crisp, lightened
- * version of the owner colour at full saturation (no terrain blend), so nation
- * borders read as clean lines over the relief — OpenFront's territory outline.
+ * Rival nation border colour: the owner hue pushed 58% toward black.
+ *
+ * A dark ring outlines each nation's territory edge, so nation-vs-nation and
+ * nation-vs-neutral boundaries read as clear dark lines at every zoom level —
+ * matching OpenFront's crisp border style instead of a pale coastal glow.
  */
 export const borderColor = (
   id: PlayerId,
   palette: readonly Rgba[] = DEFAULT_PLAYER_PALETTE,
-): Rgba => lerpColor(playerColor(id, palette), WHITE, BORDER_LIGHTEN);
+): Rgba => lerpColor(playerColor(id, palette), BLACK, 0.58);
 
 /**
  * Border colour for the local player's *own* nation: a near-pure-white outline

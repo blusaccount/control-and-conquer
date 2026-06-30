@@ -1,9 +1,9 @@
 import { generateTerrain } from "../Core/terrainGenerator.js";
 import { buildRealMap, getRealMap } from "../Core/realMaps.js";
-import { buildHeightmapGameMap, getHeightmapMap } from "./heightmapMaps.js";
 import { NEUTRAL_PLAYER, TerritoryGrid, type PlayerId } from "../Core/TerritoryGrid.js";
 import type { GameMap, TileRef } from "../Core/GameMap.js";
 import { RasterConflict, type AttackIntent, type AttackRejectReason, type SeaAttackIntent } from "../Core/RasterConflict.js";
+import { AllianceRegistry } from "../Core/alliances.js";
 import type {
   RasterActionRejectedEvent,
   RasterAttackFront,
@@ -12,16 +12,26 @@ import type {
   RasterExpandIntent,
   RasterMatchEndReason,
   RasterRejectReason,
+  RasterRail,
   RasterRunStats,
   RasterServerMessage,
   RasterShip,
+  RasterTrade,
+  RasterTrain,
 } from "../Core/types.js";
-import { RASTER_MATCH_DURATION_SECONDS } from "../Core/rasterCombatConfig.js";
-import { BUILDING_DEFS, buildingCost } from "../Core/buildings.js";
+import { LAND_ATTACK_REACH, RASTER_MATCH_DURATION_SECONDS, SPAWN_IMMUNITY_SECONDS } from "../Core/rasterCombatConfig.js";
+import { BUILDING_CONSTRUCTION_TICKS, BUILDING_DEFS, buildingCost, COASTAL_BUILDING_TYPES, CONQUER_GOLD_FRACTION_AI, CONQUER_GOLD_FRACTION_HUMAN, costCounterTypes, STRUCTURE_MIN_DIST } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
+import type { RasterDifficulty } from "../Core/messages.js";
+import { IDENTITY_MODIFIERS } from "../Core/playerModifiers.js";
+import {
+  NATION_GROWTH_MULTIPLIER,
+  NATION_START_MANPOWER,
+  NATION_TROOP_CAP_MULTIPLIER,
+} from "./botField.js";
 import type { RasterMatchPhase } from "../Core/types.js";
-import { buildRasterSnapshot, encodeOwnerDelta, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
-import { MAX_TRANSPORT_SHIPS_PER_PLAYER } from "../Core/rasterCombatConfig.js";
+import { attachOwnership, buildSharedSnapshot, encodeOwnerDelta, encodeOwners, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
+import type { RasterSnapshot } from "../Core/types.js";
 
 export type RasterMessageHandler = (message: RasterServerMessage) => void;
 
@@ -40,6 +50,12 @@ interface RasterSubscriber {
    * otherwise be paid once per bot and dominate the tick cost.
    */
   wantsRaster: boolean;
+  /**
+   * Whether this player is an AI nation (a server-side bot) rather than a human
+   * client. Drives the post-spawn difficulty handicaps and the conquer bounty
+   * (an AI's whole treasury is seized; a human's only half).
+   */
+  isBot: boolean;
   /**
    * Per-subscriber owner baseline: the ownership raster this client last
    * received. Owner snapshots after the first are encoded as a delta against
@@ -141,15 +157,25 @@ export interface RasterGameSessionOptions {
   seed?: number;
   /** Map name shown in the UI. Default "Procedural Continent". */
   mapName?: string;
-  /** Starting troop pool every player begins with. Default 50. */
+  /** Starting troop pool every player begins with. Default 25 000 (OpenFront's
+   * human start manpower). */
   startingTroops?: number;
   /**
    * When set to a known map id, the match runs on that map instead of
-   * procedural terrain. Resolved in order: heightmap maps (`heightmapMaps`,
-   * e.g. `earth`), then hand-authored ASCII maps (`realMaps`, e.g.
-   * `mediterranean`). Unknown ids fall back to procedural generation.
+   * procedural terrain. Resolved against the hand-authored ASCII maps
+   * (`realMaps`, e.g. `world`); unknown ids fall back to procedural generation.
+   * Heightmap maps (e.g. `earth`) are **not** built here — the caller resolves
+   * those via {@link resolveHeightmapSessionMap} and passes the result as
+   * {@link prebuiltMap}, keeping this class free of the Node fs/zlib loaders.
    */
   realMapId?: string;
+  /**
+   * A fully built {@link GameMap} to run the match on, bypassing all built-in
+   * map resolution. Used for heightmap maps (resolved server-side) and for a
+   * browser Web Worker that builds its map from fetched terrain. Takes
+   * precedence over `realMapId`, `width`/`height` and `seed`.
+   */
+  prebuiltMap?: GameMap;
   /**
    * Target width in tiles for heightmap maps (height is derived to keep a
    * geographic aspect ratio). Ignored for ASCII and procedural maps. `0` uses
@@ -171,18 +197,25 @@ export interface RasterGameSessionOptions {
    * the real game seats a 15-second phase via {@link MatchRegistry}.
    */
   spawnPhaseTicks?: number;
+  /**
+   * Difficulty of the AI nations, which scales their starting troops, population
+   * ceiling and growth (OpenFront's per-difficulty nation handicaps). Has no
+   * effect on the human player. Default `"medium"`.
+   */
+  difficulty?: RasterDifficulty;
 }
 
-const DEFAULT_OPTIONS: Required<RasterGameSessionOptions> = {
+const DEFAULT_OPTIONS: Required<Omit<RasterGameSessionOptions, "prebuiltMap">> = {
   width: 64,
   height: 40,
   seed: 1,
   mapName: "Procedural Continent",
-  startingTroops: 50,
+  startingTroops: 25_000,
   realMapId: "",
   mapSize: 0,
   maxDurationTicks: RASTER_MATCH_DURATION_SECONDS * SIMULATION_TICK_RATE,
   spawnPhaseTicks: 0,
+  difficulty: "medium",
 };
 
 /**
@@ -199,9 +232,13 @@ const DEFAULT_OPTIONS: Required<RasterGameSessionOptions> = {
 export class RasterGameSession {
   private readonly map: GameMap;
   private readonly grid: TerritoryGrid;
+  /** Diplomacy state: who is allied, and pending alliance proposals. */
+  private readonly alliances = new AllianceRegistry();
   private readonly conflict: RasterConflict;
   private readonly mapName: string;
   private readonly startingTroops: number;
+  /** AI-nation difficulty (scales their start troops, cap and growth). */
+  private readonly difficulty: RasterDifficulty;
   private readonly terrainHash: string;
   private readonly terrainBase64: string;
   private readonly playerMeta = new Map<PlayerId, PlayerMeta>();
@@ -215,6 +252,12 @@ export class RasterGameSession {
   private lastShips: RasterShip[] = [];
   /** Active land-attack fronts from the most recent tick, for on-map troop labels. */
   private lastFronts: RasterAttackFront[] = [];
+  /** Auto-routed railroads as of the most recent tick, for the client to draw. */
+  private lastRails: RasterRail[] = [];
+  /** Trains riding the rails as of the most recent tick, for the client to draw. */
+  private lastTrains: RasterTrain[] = [];
+  /** Trade ships sailing between ports as of the most recent tick. */
+  private lastTradeShips: RasterTrade[] = [];
   /** Determines spawn placement: each new subscriber takes the next slot. */
   private nextPlayerId: PlayerId = 1;
   private matchEndedBroadcast = false;
@@ -257,21 +300,23 @@ export class RasterGameSession {
 
   public constructor(options: RasterGameSessionOptions = {}) {
     const opts = { ...DEFAULT_OPTIONS, ...options };
-    const heightmapDef = opts.realMapId ? getHeightmapMap(opts.realMapId) : undefined;
-    const realMap = !heightmapDef && opts.realMapId ? getRealMap(opts.realMapId) : undefined;
+    // Heightmap maps arrive pre-built via `prebuiltMap` (resolved server-side);
+    // only ASCII real maps are resolved from an id here.
+    const realMap = !options.prebuiltMap && opts.realMapId ? getRealMap(opts.realMapId) : undefined;
     // Prefer the map's own name unless the caller explicitly set one.
-    this.mapName =
-      options.mapName ?? (heightmapDef ? heightmapDef.name : realMap ? realMap.name : opts.mapName);
+    this.mapName = options.mapName ?? (realMap ? realMap.name : opts.mapName);
     this.startingTroops = opts.startingTroops;
+    this.difficulty = opts.difficulty;
     this.maxDurationTicks = Math.max(1, Math.floor(opts.maxDurationTicks));
     this.spawnPhaseTicks = Math.max(0, Math.floor(opts.spawnPhaseTicks));
     this.phase = this.spawnPhaseTicks > 0 ? "spawn" : "playing";
 
     let map;
-    if (heightmapDef) {
-      // Heightmap maps are downsampled from a real-world topology raster to the
-      // requested size; they always contain ample playable land.
-      map = buildHeightmapGameMap(heightmapDef, opts.mapSize || undefined);
+    if (options.prebuiltMap) {
+      // A fully built map supplied by the caller — heightmap maps (resolved
+      // server-side via `resolveHeightmapSessionMap`) and the browser worker's
+      // fetched-terrain map both take this path. They always carry playable land.
+      map = options.prebuiltMap;
     } else if (realMap) {
       // Real-world maps already guarantee playable land, so use them verbatim.
       map = buildRealMap(realMap);
@@ -292,7 +337,7 @@ export class RasterGameSession {
     }
     this.map = map;
     this.grid = new TerritoryGrid(this.map);
-    this.conflict = new RasterConflict(this.grid);
+    this.conflict = new RasterConflict(this.grid, this.alliances);
     const { terrainBase64, terrainHash } = encodeTerrain(this.map);
     this.terrainBase64 = terrainBase64;
     this.terrainHash = terrainHash;
@@ -364,6 +409,8 @@ export class RasterGameSession {
     send: RasterMessageHandler,
     autoSpawn = true,
     wantsRaster = true,
+    playerName?: string,
+    isBot = false,
   ): () => void {
     if (this.nextPlayerId > MAX_PLAYERS) {
       throw new Error(`Raster session is full (max ${MAX_PLAYERS} players).`);
@@ -371,6 +418,7 @@ export class RasterGameSession {
     const playerId = this.nextPlayerId;
     this.nextPlayerId += 1;
     const meta = metaForPlayer(playerId);
+    if (playerName) meta.name = playerName;
     this.playerMeta.set(playerId, meta);
 
     const subscriber: RasterSubscriber = {
@@ -379,6 +427,7 @@ export class RasterGameSession {
       send,
       hasTerrain: false,
       wantsRaster,
+      isBot,
       lastOwner: null,
     };
     this.subscribers.set(clientId, subscriber);
@@ -388,7 +437,7 @@ export class RasterGameSession {
     // {@link selectSpawn}, so the player chooses where their empire begins.
     if (autoSpawn) {
       const spawn = this.spawnTiles[playerId - 1] ?? this.firstFreeSpawn();
-      if (spawn !== undefined) this.seatPlayer(playerId, spawn);
+      if (spawn !== undefined) this.seatPlayer(playerId, spawn, isBot);
     }
 
     send({
@@ -419,23 +468,53 @@ export class RasterGameSession {
    * Place a player on the map at `spawnRef`: their founding (and, at this
    * instant, only) tile. There is no capital — a nation is beaten only once its
    * whole territory is captured — so the spawn tile carries no special status.
+   *
+   * An AI nation (`isBot`) is seated with OpenFront's per-difficulty handicaps:
+   * a smaller starting army, a lower population ceiling and slower growth, so
+   * easier games field weaker rivals. The human always plays at full strength.
    */
-  private seatPlayer(playerId: PlayerId, spawnRef: TileRef): void {
-    this.grid.addPlayer(playerId, this.startingTroops);
+  private seatPlayer(playerId: PlayerId, spawnRef: TileRef, isBot = false): void {
+    const startTroops = isBot ? NATION_START_MANPOWER[this.difficulty] : this.startingTroops;
+    this.grid.addPlayer(playerId, startTroops);
+    if (isBot) {
+      this.grid.setModifiers(playerId, {
+        ...IDENTITY_MODIFIERS,
+        income: NATION_GROWTH_MULTIPLIER[this.difficulty],
+        troopCapMultiplier: NATION_TROOP_CAP_MULTIPLIER[this.difficulty],
+      });
+    }
     this.grid.claim(spawnRef, playerId);
     this.peakTiles.set(playerId, this.grid.tileCountOf(playerId));
     this.kills.set(playerId, 0);
   }
 
   /**
-   * Seat an as-yet-unspawned player at the tile they clicked, if it is open land.
-   * The first map click of a human's run is a spawn pick (OpenFront's "choose a
-   * start position"); ignored once they already hold territory.
+   * Move an already-seated player's founding tile to `ref`, releasing whatever
+   * (single) tile they currently hold. Only meaningful during the start phase,
+   * where a player owns nothing but their freshly picked spawn — it lets them
+   * relocate their nation freely before the countdown elapses.
+   */
+  private moveSpawn(playerId: PlayerId, ref: TileRef): void {
+    for (const old of this.grid.tilesOf(playerId)) this.grid.claim(old, NEUTRAL_PLAYER);
+    this.grid.claim(ref, playerId);
+    this.peakTiles.set(playerId, this.grid.tileCountOf(playerId));
+  }
+
+  /**
+   * Seat a player at the tile they clicked, if it is open land. The map clicks
+   * of a human's run during the start phase are spawn picks (OpenFront's "choose
+   * a start position"): the first founds their nation and each later one
+   * relocates it, so a player can flexibly move their spawn until the countdown
+   * ends. Once the game is live and they hold ground, spawn picks are ignored.
    */
   public selectSpawn(clientId: string, x: number, y: number): void {
     const subscriber = this.subscribers.get(clientId);
     if (!subscriber || this.matchEndedBroadcast) return;
-    if (this.grid.hasPlayer(subscriber.playerId)) return; // already spawned
+    const playerId = subscriber.playerId;
+    const alreadySpawned = this.grid.hasPlayer(playerId);
+    // Re-picking is only allowed while the start phase runs; once territory is
+    // live a player keeps the ground they hold.
+    if (alreadySpawned && this.phase !== "spawn") return;
 
     const reject = (message: string): void =>
       subscriber.send({
@@ -452,11 +531,14 @@ export class RasterGameSession {
       return;
     }
     const ref = this.map.ref(x, y);
+    // Clicking your own current spawn is a harmless no-op rather than a rejection.
+    if (alreadySpawned && this.grid.ownerOf(ref) === playerId) return;
     if (!this.grid.isCapturable(ref) || this.grid.ownerOf(ref) !== NEUTRAL_PLAYER) {
       reject("Choose open, unclaimed land for your start position.");
       return;
     }
-    this.seatPlayer(subscriber.playerId, ref);
+    if (alreadySpawned) this.moveSpawn(playerId, ref);
+    else this.seatPlayer(playerId, ref);
     // Push the seated state straight away so the client can zoom to the spawn
     // without waiting for the next tick.
     this.sendSnapshotTo(subscriber);
@@ -473,8 +555,13 @@ export class RasterGameSession {
     for (const subscriber of this.subscribers.values()) {
       if (this.grid.hasPlayer(subscriber.playerId)) continue;
       const spawn = this.spawnTiles[subscriber.playerId - 1] ?? this.firstFreeSpawn();
-      if (spawn !== undefined) this.seatPlayer(subscriber.playerId, spawn);
+      if (spawn !== undefined) this.seatPlayer(subscriber.playerId, spawn, subscriber.isBot);
     }
+    // Grant every seated nation a post-spawn immunity window so the opening of
+    // the live game is a protected land-grab — nobody can be attacked until it
+    // elapses, so a fresh spawn establishes a border before combat opens.
+    const immunityTicks = Math.round(SPAWN_IMMUNITY_SECONDS * SIMULATION_TICK_RATE);
+    for (const id of this.grid.players()) this.conflict.grantImmunity(id, immunityTicks);
     this.phase = "playing";
     this.recentEvents = ["The start phase is over — seize territory!", ...this.recentEvents].slice(0, MAX_EVENTS);
   }
@@ -487,6 +574,68 @@ export class RasterGameSession {
   public queueBuild(clientId: string, intent: RasterBuildIntent): void {
     if (!this.subscribers.has(clientId)) return;
     this.pendingBuilds.push({ clientId, intent });
+  }
+
+  /** Prepend a line to the shared event log, trimmed to the most recent few. */
+  private pushEvent(line: string): void {
+    this.recentEvents = [line, ...this.recentEvents].slice(0, MAX_EVENTS);
+  }
+
+  /**
+   * Resolve a diplomacy command's two parties: the sender (from their socket)
+   * and the named counterparty. Returns `null` — silently dropping the command —
+   * unless both are real, seated, living players and distinct from each other.
+   * Diplomacy is settled the instant it is issued (unlike expand/build, which
+   * queue for the next tick), so this runs synchronously off the message.
+   */
+  private resolveDiplomacy(clientId: string, targetId: PlayerId): PlayerId | null {
+    if (this.matchEndedBroadcast) return null;
+    const subscriber = this.subscribers.get(clientId);
+    if (!subscriber) return null;
+    const me = subscriber.playerId;
+    if (targetId === me) return null;
+    if (!this.grid.hasPlayer(me) || this.eliminated.has(me)) return null;
+    if (!this.grid.hasPlayer(targetId) || this.eliminated.has(targetId)) return null;
+    return me;
+  }
+
+  /**
+   * Offer an alliance to `targetId` on behalf of `clientId`. A crossing offer
+   * (the target had already proposed to us) seals the pact at once; otherwise it
+   * is parked pending their response. No-op on an invalid/dead counterparty or an
+   * existing pact.
+   */
+  public proposeAlliance(clientId: string, targetId: PlayerId): void {
+    const me = this.resolveDiplomacy(clientId, targetId);
+    if (me === null) return;
+    const outcome = this.alliances.propose(me, targetId);
+    if (outcome === "proposed") {
+      this.pushEvent(`${this.nameOf(me)} proposed an alliance to ${this.nameOf(targetId)}.`);
+    } else if (outcome === "accepted") {
+      this.pushEvent(`${this.nameOf(me)} and ${this.nameOf(targetId)} formed an alliance.`);
+    }
+  }
+
+  /** Accept (`accept: true`) or decline a pending alliance offer from `targetId`. */
+  public respondAlliance(clientId: string, targetId: PlayerId, accept: boolean): void {
+    const me = this.resolveDiplomacy(clientId, targetId);
+    if (me === null) return;
+    if (accept) {
+      if (this.alliances.accept(me, targetId)) {
+        this.pushEvent(`${this.nameOf(me)} and ${this.nameOf(targetId)} formed an alliance.`);
+      }
+    } else if (this.alliances.decline(me, targetId)) {
+      this.pushEvent(`${this.nameOf(me)} declined ${this.nameOf(targetId)}'s alliance offer.`);
+    }
+  }
+
+  /** Break an existing alliance with `targetId` — a betrayal, effective at once. */
+  public breakAlliance(clientId: string, targetId: PlayerId): void {
+    const me = this.resolveDiplomacy(clientId, targetId);
+    if (me === null) return;
+    if (this.alliances.breakAlliance(me, targetId)) {
+      this.pushEvent(`${this.nameOf(me)} broke their alliance with ${this.nameOf(targetId)}.`);
+    }
   }
 
   /**
@@ -507,7 +656,7 @@ export class RasterGameSession {
       this.pendingExpands.length = 0;
       this.pendingBuilds.length = 0;
       if (this.spawnTicksElapsed < this.spawnPhaseTicks) {
-        for (const subscriber of this.subscribers.values()) this.sendSnapshotTo(subscriber);
+        this.broadcastSnapshots();
         return;
       }
       // Countdown over: seat any no-shows and switch to the game phase, then fall
@@ -608,6 +757,11 @@ export class RasterGameSession {
       x: this.map.x(f.tile),
       y: this.map.y(f.tile),
     }));
+    // Auto-routed railroads and the trains riding them → wire records, so the
+    // client can draw the track network and the moving trains over the map.
+    this.lastRails = this.conflict.railLinks().map((r) => ({ playerId: r.owner, points: r.points }));
+    this.lastTrains = this.conflict.activeTrains().map((t) => ({ playerId: t.owner, x: t.x, y: t.y }));
+    this.lastTradeShips = this.conflict.tradeShips().map((t) => ({ playerId: t.owner, x: t.x, y: t.y }));
 
     // Append a single event line per command issued this tick, newest first.
     if (eventLines.length > 0) {
@@ -628,9 +782,7 @@ export class RasterGameSession {
       });
     }
 
-    for (const subscriber of this.subscribers.values()) {
-      this.sendSnapshotTo(subscriber);
-    }
+    this.broadcastSnapshots();
 
     // Give every player eliminated this tick their own end-of-run summary now —
     // a defeat screen the instant their last tile falls, rather than leaving them
@@ -738,6 +890,11 @@ export class RasterGameSession {
     return this.map;
   }
 
+  /** Test/bot helper: peek at the diplomacy state (alliances + proposals). */
+  public peekAlliances(): AllianceRegistry {
+    return this.alliances;
+  }
+
   /**
    * Eliminate any player that now holds no territory — a nation is beaten only
    * when its *entire* territory has been captured; there is no capital shortcut.
@@ -748,6 +905,12 @@ export class RasterGameSession {
    * (newest first) plus the ids eliminated this call. Pure bookkeeping
    * otherwise — no broadcast here.
    */
+  /** Whether `id` is a human (a non-bot subscriber) rather than an AI nation. */
+  private isHuman(id: PlayerId): boolean {
+    for (const sub of this.subscribers.values()) if (sub.playerId === id) return !sub.isBot;
+    return false;
+  }
+
   private resolveEliminations(): { lines: string[]; eliminated: PlayerId[] } {
     const lines: string[] = [];
     const eliminated: PlayerId[] = [];
@@ -758,13 +921,22 @@ export class RasterGameSession {
       this.eliminated.add(playerId);
       eliminated.push(playerId);
       this.eliminationTick.set(playerId, this.conflict.tick);
+      // A wiped-out nation leaves the diplomacy graph — its pacts and any pending
+      // offers dissolve with it.
+      this.alliances.removePlayer(playerId);
 
       // Credit the player now holding the eliminated nation's last sampled tile.
       const sample = this.lastTileSeen.get(playerId);
       const conqueror = sample !== undefined ? this.grid.ownerOf(sample) : NEUTRAL_PLAYER;
       if (conqueror !== NEUTRAL_PLAYER && conqueror !== playerId) {
         this.kills.set(conqueror, (this.kills.get(conqueror) ?? 0) + 1);
+        // Conquer bounty (OpenFront's `conquerGoldAmount`): the victor inherits
+        // the fallen nation's treasury — all of an AI's gold, half of a human's.
+        const fraction = this.isHuman(playerId) ? CONQUER_GOLD_FRACTION_HUMAN : CONQUER_GOLD_FRACTION_AI;
+        const bounty = Math.floor(this.grid.goldOf(playerId) * fraction);
+        if (bounty > 0) this.grid.addGold(conqueror, bounty);
       }
+      this.grid.setGold(playerId, 0); // the fallen nation's treasury is gone
 
       const fallenName = this.playerMeta.get(playerId)?.name ?? `Player ${playerId}`;
       const conquerorName = conqueror === NEUTRAL_PLAYER || conqueror === playerId
@@ -805,13 +977,29 @@ export class RasterGameSession {
       return { kind: "rejected", reason: "INVALID_PERCENT", message: "Percent must be an integer 1..100." };
     }
 
+    const rawRef = this.map.ref(intent.targetX, intent.targetY);
+    const pool = this.grid.troopsOf(attacker);
+    const troops = Math.max(1, Math.floor((pool * intent.percent) / 100));
+    if (troops > pool) {
+      return { kind: "rejected", reason: "INSUFFICIENT_TROOPS", message: "Not enough troops in your pool." };
+    }
+
     // Snap a click that fell on un-ownable terrain (open water or impassable
     // rock) to the nearest land the player plausibly meant, so targeting works
     // by territory rather than by exact pixel — a tap just off a coastline or on
-    // a mountain pixel inside enemy land resolves to the obvious land. A click
-    // far out in empty space snaps to nothing and is rejected.
-    const ref = this.grid.nearestCapturable(this.map.ref(intent.targetX, intent.targetY));
+    // a mountain pixel inside enemy land resolves to the obvious land.
+    const ref = this.grid.nearestCapturable(rawRef);
     if (ref === null) {
+      // The click landed on open water (or rock) too far from any land to snap to
+      // — but the snap radius is much shorter than how far a boat can cross, so a
+      // tap mid-channel toward a far coast would otherwise die as "no land there".
+      // Before giving up, treat it as an amphibious order: if a transport ship can
+      // reach a shore near the click, sail there. Only a click with no reachable
+      // shore at all is finally rejected.
+      const landing = this.grid.resolveSeaLanding(attacker, rawRef);
+      if (landing !== null) {
+        return { kind: "sea", intent: { attacker, dest: landing, troops } };
+      }
       return { kind: "rejected", reason: "INVALID_TILE", message: "No land near there to target." };
     }
 
@@ -819,32 +1007,46 @@ export class RasterGameSession {
     if (target === attacker) {
       return { kind: "rejected", reason: "INVALID_TILE", message: "You already own that tile." };
     }
-
-    const pool = this.grid.troopsOf(attacker);
-    const troops = Math.max(1, Math.floor((pool * intent.percent) / 100));
-    if (troops > pool) {
-      return { kind: "rejected", reason: "INSUFFICIENT_TROOPS", message: "Not enough troops in your pool." };
+    // A non-aggression pact bars attacking an ally's ground — by land or by sea.
+    if (target !== NEUTRAL_PLAYER && this.alliances.areAllied(attacker, target)) {
+      return {
+        kind: "rejected",
+        reason: "ALLIED",
+        message: `You're allied with ${this.nameOf(target)} — break the alliance to attack.`,
+      };
     }
 
-    // Same landmass as the attacker → a contiguous land attack can march to it.
-    // A different landmass (across open water) → dispatch a transport ship to the
-    // exact clicked tile instead.
-    if (this.grid.ownsLandComponentOf(attacker, ref)) {
+    // Within land-march reach of the attacker → a contiguous land attack rolls to
+    // it. Out of reach (a separate island, or a coast only sensibly crossed by
+    // water — across a bay on the same giant landmass) → dispatch a transport ship
+    // toward the click instead. The reach is bounded, so two coasts of one
+    // continent separated by water resolve to a boat, not a march the long way
+    // round — see {@link TerritoryGrid.canReachByLand}.
+    if (this.grid.canReachByLand(attacker, ref, LAND_ATTACK_REACH)) {
+      // We already border the clicked owner (neutral or a rival): push straight
+      // into them, biased toward the exact tile clicked.
       if (this.grid.hasLandBorderWith(attacker, target)) {
-        return { kind: "land", intent: { attacker, target, troops } };
+        return { kind: "land", intent: { attacker, target, troops, toward: ref } };
+      }
+      // Same landmass but not yet bordering that rival. Rather than a dead
+      // rejection, march toward the click through whatever neutral ground we do
+      // border — the front heads that way and rolls into the rival once adjacent,
+      // instead of the player having to hand-walk their border over there first.
+      if (target !== NEUTRAL_PLAYER && this.grid.hasLandBorderWith(attacker, NEUTRAL_PLAYER)) {
+        return { kind: "land", intent: { attacker, target: NEUTRAL_PLAYER, troops, toward: ref } };
       }
       return {
         kind: "rejected",
         reason: "NO_FRONTIER",
         message: target === NEUTRAL_PLAYER
           ? "Your border doesn't touch any neutral land there yet."
-          : "Your border doesn't touch that opponent yet.",
+          : "There's no land route toward that opponent yet.",
       };
     }
     // The click is on a different landmass. Rather than demanding the player hit
     // an exact in-range coastal tile, land the boat on the reachable shore
     // nearest the click (its own tile wins when that tile is itself reachable).
-    const landing = this.grid.resolveSeaLanding(attacker, ref, this.grid.seaRangeOf(attacker));
+    const landing = this.grid.resolveSeaLanding(attacker, ref);
     if (landing !== null) {
       return { kind: "sea", intent: { attacker, dest: landing, troops } };
     }
@@ -888,8 +1090,34 @@ export class RasterGameSession {
     if (this.grid.hasBuilding(ref)) {
       return { kind: "rejected", reason: "TILE_OCCUPIED", message: "That tile already has a building." };
     }
+    // Coastal structures (ports, warships) can only stand where the land meets
+    // navigable water — OpenFront snaps them to a shore tile.
+    if (COASTAL_BUILDING_TYPES.includes(intent.building) && !this.map.isShore(ref)) {
+      return { kind: "rejected", reason: "NOT_BUILDABLE", message: `A ${def.name.toLowerCase()} must be built on a coastal tile.` };
+    }
+    // Structures can't be packed together: enforce OpenFront's minimum spacing
+    // (Euclidean) against the builder's other buildings.
+    const minDistSq = STRUCTURE_MIN_DIST * STRUCTURE_MIN_DIST;
+    for (const [other] of this.grid.buildingEntries()) {
+      if (this.grid.ownerOf(other) !== attacker) continue;
+      const dx = this.map.x(other) - intent.targetX;
+      const dy = this.map.y(other) - intent.targetY;
+      if (dx * dx + dy * dy < minDistSq) {
+        return {
+          kind: "rejected",
+          reason: "TILE_OCCUPIED",
+          message: `Too close to another building — keep ${STRUCTURE_MIN_DIST} tiles between structures.`,
+        };
+      }
+    }
 
-    const cost = buildingCost(intent.building, this.grid.buildingCountOf(attacker, intent.building));
+    // Ports and Factories share a cost counter, so sum the owned counts across
+    // the building's cost group (just itself for the others).
+    const owned = costCounterTypes(intent.building).reduce(
+      (sum, t) => sum + this.grid.buildingCountOf(attacker, t),
+      0,
+    );
+    const cost = buildingCost(intent.building, owned);
     if (this.grid.goldOf(attacker) < cost) {
       return {
         kind: "rejected",
@@ -899,7 +1127,10 @@ export class RasterGameSession {
     }
 
     this.grid.addGold(attacker, -cost);
-    this.grid.placeBuilding(ref, intent.building);
+    // The structure goes up over time: it counts toward the cost ramp at once,
+    // but its effects only switch on after its construction window elapses.
+    const start = this.conflict.tick;
+    this.grid.placeBuilding(ref, intent.building, start, start + BUILDING_CONSTRUCTION_TICKS[intent.building]);
     const builderName = this.playerMeta.get(attacker)?.name ?? `Player ${attacker}`;
     return {
       kind: "ok",
@@ -931,10 +1162,12 @@ export class RasterGameSession {
       case "TOO_MANY_SHIPS":
         return {
           reason: "TOO_MANY_SHIPS",
-          message: `You already have ${this.conflict.shipCountOf(attacker)} transport ships at sea (max ${MAX_TRANSPORT_SHIPS_PER_PLAYER}).`,
+          message: `You already have ${this.conflict.shipCountOf(attacker)} transport ships at sea (max ${this.grid.maxShipsOf(attacker)}).`,
         };
       case "INSUFFICIENT_TROOPS":
         return { reason: "INSUFFICIENT_TROOPS", message: "Not enough troops in your pool." };
+      case "ALLIED":
+        return { reason: "ALLIED", message: "That shore belongs to an ally — break the alliance to attack." };
       case "NO_FRONTIER":
         return { reason: "NO_FRONTIER", message: "No water route reaches that tile." };
       default:
@@ -942,33 +1175,18 @@ export class RasterGameSession {
     }
   }
 
-  private sendSnapshotTo(subscriber: RasterSubscriber): void {
-    // Headless subscribers (bots) read engine state directly and discard the
-    // wire ownership, so we skip the terrain bytes and the whole-map owner
-    // encoding for them entirely — the single biggest per-tick saving on large
-    // maps, multiplied across every bot in the match.
-    const includeTerrain = subscriber.wantsRaster && !subscriber.hasTerrain;
-    const owner = this.grid.owner;
-
-    // Owner encoding: the first snapshot (and any with no baseline yet) carries
-    // the full raster and seeds the baseline. Later snapshots send only the
-    // tiles that changed — unless the churn is so high that a full resend would
-    // be smaller, in which case we resend in full.
-    let ownerDeltaBase64: string | undefined;
-    if (subscriber.wantsRaster) {
-      if (subscriber.lastOwner === null) {
-        subscriber.lastOwner = Uint16Array.from(owner);
-      } else {
-        const { deltaBase64, changed } = encodeOwnerDelta(subscriber.lastOwner, owner);
-        // 6 bytes/change vs 2 bytes/tile full: a delta only wins below ~1/3 churn.
-        if (changed * 3 <= owner.length) ownerDeltaBase64 = deltaBase64;
-      }
-    }
-
+  /**
+   * Assemble the subscriber-independent snapshot body for the current tick —
+   * the player standings, buildings, fronts and all scalar/diplomacy state. The
+   * ownership raster and terrain bytes are *not* included; those are attached
+   * per subscriber in {@link sendSnapshotTo}. Built once and shared across every
+   * subscriber so the (allocation-heavy) player/building assembly runs once per
+   * tick rather than once per client.
+   */
+  private buildSharedBody(): RasterSnapshot {
     const spawnRemainingTicks =
       this.phase === "spawn" ? Math.max(0, this.spawnPhaseTicks - this.spawnTicksElapsed) : 0;
-
-    const snapshot = buildRasterSnapshot({
+    return buildSharedSnapshot({
       tick: this.conflict.tick,
       mapName: this.mapName,
       phase: this.phase,
@@ -976,7 +1194,7 @@ export class RasterGameSession {
       map: this.map,
       grid: this.grid,
       playerMeta: this.playerMeta,
-      includeTerrain,
+      includeTerrain: false,
       terrainHash: this.terrainHash,
       terrainBase64: this.terrainBase64,
       winnerPlayerId: this.conflict.winner,
@@ -984,9 +1202,74 @@ export class RasterGameSession {
       crossings: this.lastCrossings,
       ships: this.lastShips,
       fronts: this.lastFronts,
-      ownerDeltaBase64,
-      omitOwner: !subscriber.wantsRaster,
+      rails: this.lastRails,
+      trains: this.lastTrains,
+      tradeShips: this.lastTradeShips,
       eliminated: this.eliminated,
+      alliances: this.alliances.pairs(),
+      allianceRequests: this.alliances.proposals(),
+    });
+  }
+
+  /**
+   * Broadcast a snapshot to every subscriber for the current tick, building the
+   * shared body just once and memoising any full-owner encoding so a high-churn
+   * tick encodes the whole raster at most once even with many human clients.
+   */
+  private broadcastSnapshots(): void {
+    const shared = this.buildSharedBody();
+    let fullOwnerCache: string | undefined;
+    const fullOwner = (): string => (fullOwnerCache ??= encodeOwners(this.grid.owner));
+    for (const subscriber of this.subscribers.values()) {
+      this.sendSnapshotTo(subscriber, shared, fullOwner);
+    }
+  }
+
+  /**
+   * Send one subscriber its snapshot. Reuses the shared body (built once per
+   * broadcast) and attaches this subscriber's ownership view:
+   *  - Headless subscribers (bots) read engine state directly and discard the
+   *    wire ownership, so they take the shared body verbatim — no terrain bytes,
+   *    no owner encoding, no per-subscriber allocation at all.
+   *  - Real clients get the terrain once, then per-tile owner deltas against
+   *    their own baseline (falling back to a full resend when churn is high).
+   *
+   * `shared`/`fullOwner` default so a one-off send (on subscribe / spawn pick)
+   * outside the broadcast loop still works.
+   */
+  private sendSnapshotTo(
+    subscriber: RasterSubscriber,
+    shared: RasterSnapshot = this.buildSharedBody(),
+    fullOwner: () => string = () => encodeOwners(this.grid.owner),
+  ): void {
+    if (!subscriber.wantsRaster) {
+      // Bots only read tick/phase/winner off the body — share it as-is.
+      subscriber.send({ type: "SERVER_RASTER_SNAPSHOT", payload: shared });
+      return;
+    }
+
+    const includeTerrain = !subscriber.hasTerrain;
+    const owner = this.grid.owner;
+
+    // Owner encoding: the first snapshot (and any with no baseline yet) carries
+    // the full raster and seeds the baseline. Later snapshots send only the
+    // tiles that changed — unless the churn is so high that a full resend would
+    // be smaller, in which case we resend in full. encodeOwnerDelta advances the
+    // baseline in place either way, so it stays in sync even on a full resend.
+    let ownerDeltaBase64: string | undefined;
+    if (subscriber.lastOwner === null) {
+      subscriber.lastOwner = Uint16Array.from(owner);
+    } else {
+      const { deltaBase64, changed } = encodeOwnerDelta(subscriber.lastOwner, owner);
+      // 6 bytes/change vs 2 bytes/tile full: a delta only wins below ~1/3 churn.
+      if (changed * 3 <= owner.length) ownerDeltaBase64 = deltaBase64;
+    }
+
+    const snapshot = attachOwnership(shared, {
+      includeTerrain,
+      terrainBase64: this.terrainBase64,
+      ownerDeltaBase64,
+      fullOwner,
     });
     subscriber.send({ type: "SERVER_RASTER_SNAPSHOT", payload: snapshot });
     if (includeTerrain) {

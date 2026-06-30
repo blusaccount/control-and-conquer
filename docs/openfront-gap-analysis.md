@@ -1,7 +1,10 @@
 # OpenFront-ähnliche Roadmap: Repository Audit + Gap-Analyse
 
-> **Letztes Update:** 2026-06-29 (Economy & Gebäude: Gold als zweite Ressource +
-> Bau-Schicht — Städte, Häfen, Forts).
+> **Letztes Update:** 2026-06-29 (Diplomatie: Allianzen mit beidseitiger
+> Zustimmung — Vorschlag/Annahme/Bruch; Verbündete können sich nicht angreifen;
+> Bots reagieren persönlichkeitsbasiert. Davor: Economy & Gebäude — Gold als
+> zweite Ressource + Bau-Schicht — Städte, Häfen, Forts, Fabriken; auto-verlegte
+> Schienen + Züge).
 > Dieses Dokument spiegelt den Ist-Zustand auf `main` nach dem Umbau auf die
 > Pixel-Raster-Engine (commit „Rebuild as OpenFront-style raster game"). Die
 > ältere Polygon-/`MapState`-Engine existiert nicht mehr.
@@ -53,15 +56,55 @@
   (Gold ist eine Ausgabe-Ressource, gesenkt durch Bauwerke).
 - **Bau-Schicht** (`CLIENT_RASTER_BUILD` → `RasterGameSession.processBuild`): Gold wird
   auf eigenen Tiles in Strukturen investiert; Kosten skalieren geometrisch je Typ
-  (`buildingCost`), sodass Bauwerke knapp bleiben. Drei Typen:
+  (`buildingCost`), sodass Bauwerke knapp bleiben. Vier Typen:
   - **Stadt** 🏛️ — erhöht Gold- *und* Truppen-Einkommen (letzteres weiter durch den
     logistischen Soft-Cap begrenzt, bricht die Pool-Decke also nicht).
   - **Hafen** ⚓ — vergrößert die amphibische Reichweite (`seaRangeOf`, gedeckelt).
   - **Fort** 🛡️ — legt eine Defense-Post-Aura an (Capture-Kosten ↑ im Umkreis).
+  - **Fabrik** 🏭 — Katalysator des Schienen-Netzes (s. u.); ohne Fabrik werden keine
+    Gleise verlegt.
+- **Schienen & Züge** (`railNetwork.ts`, `railSystem.ts`): wie OpenFront verlegt der
+  Spieler **keine** Gleise von Hand — eine Fabrik nahe Stadt/Hafen lässt automatisch
+  Schienen entstehen. `computeRailNetwork` verdrahtet die eigenen Stationen
+  (Fabrik/Stadt/Hafen) deterministisch zu einem Mesh: nur **kardinale** L-Pfade über
+  Land, Distanz-/Längen-/Anschluss-Limits (`RAIL_CONNECT_DISTANCE`, `RAIL_MAX_LENGTH`,
+  `RAIL_MAX_CONNECTIONS`) wie bei OpenFront (auf unsere Gridgrößen skaliert). `RailSystem`
+  lässt **Züge** auf dem Netz fahren (fixe Spawn-Kadenz, kein RNG) und zahlt dem Besitzer
+  Gold an jeder Stadt/jedem Hafen aus (`TRAIN_GOLD_PER_STATION`). `RasterConflict` tickt
+  das System; Netz + Züge gehen als `rails`/`trains` in den Snapshot und werden im Client
+  als Gleis-Polylinien und fahrende Punkte gezeichnet.
 - **Bauwerke leben mit ihrem Tile:** wird ein Tile erobert oder neutralisiert, fällt
   die Struktur (und eine Fort-Aura) — der Eroberer erbt nacktes Land (`claim` → `destroyBuilding`).
 - **Bots reinvestieren** Gold ab einer Mindestgröße in Städte (`maybeBuildCity`),
   deterministisch wie alle Bot-Entscheidungen.
+
+### Diplomatie / Allianzen (`alliances.ts`, `RasterGameSession`, `RasterConflict`)
+- **Allianz-Datenmodell** (`src/Core/alliances.ts`, `AllianceRegistry`): symmetrische
+  Bündnisse + gerichtete, schwebende Vorschläge zwischen Spielern. Deterministisch und
+  framework-frei wie der Rest von `Core` (keine RNG, aufsteigende Id-Ordnung).
+- **Beidseitige Zustimmung:** ein Spieler **schlägt vor** (`propose`), der Empfänger
+  **nimmt an / lehnt ab** (`accept`/`decline`). Ein kreuzender Gegenvorschlag besiegelt
+  das Bündnis sofort. Jede Seite kann jederzeit **brechen** (`break`) — ein Verrat ohne
+  Zeitlimit (v1 hat keine Ablauf-Mechanik). Eliminierte Nationen verlassen den
+  Diplomatie-Graph (`removePlayer`).
+- **Nichtangriffspakt im Kampf** (`RasterConflict`): `launchAttack`/`launchShip` weisen
+  ein Ziel zurück, das ein **Verbündeter** hält (`ALLIED`). Entsteht ein Bündnis *während*
+  ein Angriff/Schiff schon unterwegs ist, **bricht die Offensive ab** und die Truppen
+  kehren vollständig zurück (ein Frieden, kein Verlust — kein Retreat-Malus). Die Engine
+  bekommt die Diplomatie als `AllianceView` injiziert (Default `NO_ALLIANCES`, also kein
+  Effekt — bestehende Tests/Aufrufer unverändert).
+- **Protokoll:** `CLIENT_RASTER_ALLY_PROPOSE` / `_RESPOND` / `_BREAK` (validiert in
+  `validateCommand`); der Snapshot trägt `alliances` (kanonische `[low,high]`-Paare) und
+  `allianceRequests` (gerichtete offene Vorschläge), die der Client für eingehende/
+  ausgehende Angebote filtert.
+- **Bots** (`RasterBotController`): greifen Verbündete nie an (aus der Zielwahl gefiltert),
+  **beantworten** offene Vorschläge persönlichkeitsbasiert (defensive nehmen an;
+  aggressive nur ein Angebot von einem mindestens ebenbürtigen Partner), **suchen** als
+  defensive Nation Frieden mit einem klar stärkeren Grenz-Rivalen und **verraten** (nur die
+  rücksichtslosen) ein Bündnis, das sie sonst komplett einkesselt. Alles deterministisch.
+- **Client-UI:** das Leaderboard zeigt pro Rivale eine Aktion (Ally / Annehmen / Ablehnen /
+  Brechen) und markiert Verbündete mit 🤝; das Orders-Panel weist auf eingehende Angebote
+  hin.
 
 ### Networking / Multiplayer
 - WebSocket + autoritativer Server (`ws`, `src/Server/index.ts`).
@@ -93,6 +136,18 @@
   Session-Optionen auf.
 - **Sea-Links** (`seaLinks.ts`): vorberechnete amphibische Adjazenz für schmale
   Gewässer.
+- **Flüsse** (`rivers.ts`, `riverData.ts`): Wie OpenFront gibt es **keinen** eigenen
+  Fluss-Terraintyp — Flüsse sind schmale Wasserkanäle. Da die Quell-PNG
+  (`earth-topo.png`) reine Topografie ohne Hydrografie ist, werden **echte
+  Flussdaten** (Natural Earth River-Centerlines, gemeinfrei) als `[lon,lat]`-
+  Polylinien geführt und vor der Finishing-Pipeline als Wasser in die
+  Land/Elevation-Maske gestanzt (harter Override des Land-Votes). Da die
+  Centerlines die Küsten erreichen, werden ~95 % der Fluss-Tiles per Flood-Fill als
+  **Ozean** klassifiziert (navigierbar, Hafen-Reichweite), der Rest als **See** —
+  beides wirkt als amphibische Grenze. Deterministisch, projektions-/größen-
+  unabhängig. Das committete Asset `assets/maps/earth-rivers.json` (~195 KB, 895
+  Polylinien) wird per `scripts/buildRivers.ts` aus der Natural-Earth-GeoJSON
+  regeneriert (Quell-GeoJSON nicht committet, wie auch die Topo-Quelle).
 
 ### UI / UX
 - Canvas 2D, 1 Pixel pro Tile (`rasterPaint.ts`/`rasterPalette.ts`); Pan/Zoom-
@@ -114,6 +169,7 @@
 
 | Bereich | Status | Priorität |
 |---|---|---|
+| Diplomatie / Allianzen (Vorschlag/Annahme/Bruch, Nichtangriffspakt) | **erledigt** — beidseitige Allianzen; Verbündete können sich nicht angreifen; persönlichkeitsbasierte Bot-Diplomatie (`alliances.ts`) | — |
 | Spielbare Nationen / Fraktions-Fähigkeiten (Generals-Asymmetrie) | offen | P1 |
 | Roguelite-Meta-Loop (Runs, Upgrades zwischen Matches) | offen | P1 |
 | Echtes PvP (geteilte Session, Matchmaking, Player-Identity) | offen | P1 |

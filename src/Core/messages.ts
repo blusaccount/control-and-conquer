@@ -47,3 +47,41 @@ export type RasterSpawnClientMessage = {
   type: "CLIENT_RASTER_SELECT_SPAWN";
   payload: RasterSpawnPayload;
 };
+
+// ---------------------------------------------------------------------------
+// Diplomacy (alliances).
+//
+// All three carry the *other* nation's engine playerId. The server resolves the
+// sender from their socket, so the client only ever names the counterparty.
+// ---------------------------------------------------------------------------
+
+/** Client → server: offer an alliance to `targetId` (or accept a crossing offer). */
+export interface RasterAllyProposePayload {
+  targetId: number;
+}
+
+export type RasterAllyProposeClientMessage = {
+  type: "CLIENT_RASTER_ALLY_PROPOSE";
+  payload: RasterAllyProposePayload;
+};
+
+/** Client → server: accept (`accept: true`) or decline a proposal from `targetId`. */
+export interface RasterAllyRespondPayload {
+  targetId: number;
+  accept: boolean;
+}
+
+export type RasterAllyRespondClientMessage = {
+  type: "CLIENT_RASTER_ALLY_RESPOND";
+  payload: RasterAllyRespondPayload;
+};
+
+/** Client → server: break an existing alliance with `targetId` (a betrayal). */
+export interface RasterAllyBreakPayload {
+  targetId: number;
+}
+
+export type RasterAllyBreakClientMessage = {
+  type: "CLIENT_RASTER_ALLY_BREAK";
+  payload: RasterAllyBreakPayload;
+};

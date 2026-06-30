@@ -1,5 +1,5 @@
 import { GameMap } from "./GameMap.js";
-import { buildTerrainFromMask } from "./terrainBuilder.js";
+import { buildTerrainFromMask, cleanupMask } from "./terrainBuilder.js";
 import { MAX_LAND_ELEVATION } from "./terrainCodec.js";
 
 /**
@@ -121,108 +121,6 @@ const fractalNoise = (
     freq *= lacunarity;
   }
   return sum / norm;
-};
-
-/**
- * Flood-fill the connected component containing `start` over `mask` (matching
- * tiles share `mask[i] === target`), writing `componentId` into `labels` for
- * every visited tile. Returns the component's tile count. 4-connected.
- */
-const fillComponent = (
-  width: number,
-  height: number,
-  mask: Uint8Array,
-  labels: Int32Array,
-  start: number,
-  target: number,
-  componentId: number,
-): number => {
-  const stack = [start];
-  labels[start] = componentId;
-  let count = 0;
-  while (stack.length > 0) {
-    const ref = stack.pop() as number;
-    count += 1;
-    const x = ref % width;
-    const y = (ref - x) / width;
-    if (x > 0 && mask[ref - 1] === target && labels[ref - 1] < 0) {
-      labels[ref - 1] = componentId;
-      stack.push(ref - 1);
-    }
-    if (x < width - 1 && mask[ref + 1] === target && labels[ref + 1] < 0) {
-      labels[ref + 1] = componentId;
-      stack.push(ref + 1);
-    }
-    if (y > 0 && mask[ref - width] === target && labels[ref - width] < 0) {
-      labels[ref - width] = componentId;
-      stack.push(ref - width);
-    }
-    if (y < height - 1 && mask[ref + width] === target && labels[ref + width] < 0) {
-      labels[ref + width] = componentId;
-      stack.push(ref + width);
-    }
-  }
-  return count;
-};
-
-/**
- * Remove speckle from a land/water mask: land islands smaller than
- * `minIslandTiles` become water and fully-enclosed lakes smaller than
- * `minLakeTiles` become land. Border-touching water is treated as ocean and
- * never filled. Mutates `mask` in place (1 = land, 0 = water).
- */
-const cleanupMask = (
-  width: number,
-  height: number,
-  mask: Uint8Array,
-  minIslandTiles: number,
-  minLakeTiles: number,
-): void => {
-  const size = width * height;
-  const labels = new Int32Array(size).fill(-1);
-  let nextId = 0;
-
-  // Sink tiny land islands.
-  for (let i = 0; i < size; i += 1) {
-    if (mask[i] === 1 && labels[i] < 0) {
-      const id = nextId;
-      nextId += 1;
-      const start = i;
-      const count = fillComponent(width, height, mask, labels, start, 1, id);
-      if (count < minIslandTiles) {
-        for (let j = start; j < size; j += 1) {
-          if (labels[j] === id) mask[j] = 0;
-        }
-      }
-    }
-  }
-
-  // Fill tiny enclosed lakes. A water component is a lake only if it never
-  // touches the map border (border water is open ocean).
-  labels.fill(-1);
-  nextId = 0;
-  for (let i = 0; i < size; i += 1) {
-    if (mask[i] === 0 && labels[i] < 0) {
-      const id = nextId;
-      nextId += 1;
-      const start = i;
-      const count = fillComponent(width, height, mask, labels, start, 0, id);
-      let touchesBorder = false;
-      for (let j = start; j < size && !touchesBorder; j += 1) {
-        if (labels[j] !== id) continue;
-        const x = j % width;
-        const y = (j - x) / width;
-        if (x === 0 || y === 0 || x === width - 1 || y === height - 1) {
-          touchesBorder = true;
-        }
-      }
-      if (!touchesBorder && count < minLakeTiles) {
-        for (let j = start; j < size; j += 1) {
-          if (labels[j] === id) mask[j] = 1;
-        }
-      }
-    }
-  }
 };
 
 /** Generate fully-populated raster terrain from a seed. */

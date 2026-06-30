@@ -23,11 +23,15 @@ test("water is bluish and gets darker with depth", () => {
   assert.equal(shallow.a, 255);
 });
 
-test("land is greenish at low elevation and shifts toward brown when higher", () => {
-  const low = terrainColor(land(0));
-  const high = terrainColor(land(30));
-  assert.ok(low.g > low.r && low.g > low.b, "lowland should be green-dominant");
-  assert.ok(high.r > low.r, "highland should be redder/browner than lowland");
+test("land runs green plains → tan highland → pale mountain with elevation", () => {
+  const plains = terrainColor(land(2));
+  const highland = terrainColor(land(15));
+  const mountain = terrainColor(land(28));
+  assert.ok(plains.g > plains.r && plains.g > plains.b, "plains should be green-dominant");
+  // Highland is a brighter tan than plains (all channels lift toward sand).
+  assert.ok(highland.r > plains.r, "highland should be lighter/tanner than plains");
+  // Mountains brighten toward a near-grey-white snowcap.
+  assert.ok(mountain.r > highland.r && mountain.g > 200 && mountain.b > 200, "mountains pale toward white");
 });
 
 test("impassable rock is grey regardless of elevation bits", () => {
@@ -35,10 +39,34 @@ test("impassable rock is grey regardless of elevation bits", () => {
   assert.ok(Math.abs(rock.r - rock.g) < 12 && Math.abs(rock.g - rock.b) < 12, "rock should be near-grey");
 });
 
-test("ocean and lake of equal depth render differently", () => {
+test("ocean and lake of equal depth render identically (water colour ignores type)", () => {
+  // OpenFront colours water purely by shore distance and the shoreline flag, not
+  // by the ocean/lake bit, so an inland lake and the open sea look the same.
   const ocean = terrainColor(water(6, true));
   const lake = terrainColor(water(6, false));
-  assert.notDeepEqual(ocean, lake);
+  assert.deepEqual(ocean, lake);
+});
+
+const shoreWater = (ocean: boolean): number =>
+  encodeTile({ land: false, shoreline: true, ocean, magnitude: 1 });
+
+test("shoreline water is a light coastal blue; open water darkens with depth", () => {
+  const shore = terrainColor(shoreWater(true));
+  const deep = terrainColor(water(12, true));
+  assert.ok(
+    shore.r > deep.r && shore.g > deep.g && shore.b > deep.b,
+    "shoreline water is lighter than deep water",
+  );
+  assert.ok(shore.b > shore.r, "shoreline water is still blue-dominant");
+});
+
+test("a 1-tile river (shoreline water) shares the coastal colour, ocean or lake", () => {
+  // A carved river is a single tile of water touching land on every side, so it
+  // is shoreline water and reads as the same light coastal blue as the sea edge
+  // — no separate, glaring river colour.
+  const riverTile = terrainColor(shoreWater(false));
+  const seaEdge = terrainColor(shoreWater(true));
+  assert.deepEqual(riverTile, seaEdge);
 });
 
 test("playerColor wraps the palette for ids beyond its length", () => {

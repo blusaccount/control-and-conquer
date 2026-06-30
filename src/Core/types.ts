@@ -13,8 +13,23 @@
 // directly: "expand my border toward (x, y) with N percent of my pool".
 // ---------------------------------------------------------------------------
 
-import type { RasterJoinClientMessage, RasterSpawnClientMessage } from "./messages.js";
+import type {
+  RasterAllyBreakClientMessage,
+  RasterAllyProposeClientMessage,
+  RasterAllyRespondClientMessage,
+  RasterJoinClientMessage,
+  RasterSpawnClientMessage,
+} from "./messages.js";
 import type { BuildingType } from "./buildings.js";
+
+/** An active alliance as a canonical `[lowId, highId]` player-id pair. */
+export type RasterAlliancePair = [number, number];
+
+/** A pending, directed alliance proposal awaiting the recipient's response. */
+export interface RasterAllianceRequest {
+  from: number;
+  to: number;
+}
 
 /** Per-player snapshot row for raster mode. */
 export interface RasterPlayerInfo {
@@ -39,6 +54,8 @@ export interface RasterPlayerInfo {
   ports: number;
   /** Forts this player owns (border fortification). */
   forts: number;
+  /** Factories this player owns (railroad + train economy). */
+  factories: number;
   /** Number of capturable tiles currently owned. */
   tiles: number;
   /**
@@ -47,6 +64,12 @@ export interface RasterPlayerInfo {
    * client shows the same figure.
    */
   troopsPerSecond: number;
+  /**
+   * Maximum troop pool at the current territory + city count (OpenFront's
+   * territory-scaled population ceiling). Server-computed so the HUD and
+   * leaderboard show `pool/max` without the client re-deriving the formula.
+   */
+  maxTroops: number;
   /**
    * True once this player has been wiped off the map — their last tile captured.
    * A nation is beaten only when its *entire* territory has been taken (there is
@@ -107,6 +130,43 @@ export interface RasterBuilding {
   x: number;
   y: number;
   type: BuildingType;
+  /** True while the structure is still being built (its effects aren't active yet). */
+  underConstruction: boolean;
+  /** Construction progress in [0,1]; 1 once finished. Drives the build-progress bar. */
+  buildProgress: number;
+}
+
+/**
+ * An auto-routed railroad link this snapshot: a cardinal L-path belonging to
+ * `playerId`, given as ordered tile corner points (`[x, y]`). The client strokes
+ * straight track between consecutive points. Rails appear once a player builds a
+ * factory near a city/port and vanish when the stations are lost.
+ */
+export interface RasterRail {
+  playerId: number;
+  points: Array<[number, number]>;
+}
+
+/**
+ * A train riding the rail network this snapshot: belonging to `playerId` at
+ * fractional tile position (`x`,`y`). Trains earn their owner gold at each city
+ * or port they reach; the client draws them as small moving dots.
+ */
+export interface RasterTrain {
+  playerId: number;
+  x: number;
+  y: number;
+}
+
+/**
+ * A trade ship sailing between two ports this snapshot, belonging to `playerId`
+ * at fractional tile position (`x`,`y`). On arrival it pays both ports gold; the
+ * client draws it as a small moving dot, like a train but at sea.
+ */
+export interface RasterTrade {
+  playerId: number;
+  x: number;
+  y: number;
 }
 
 /**
@@ -174,11 +234,27 @@ export interface RasterSnapshot {
   ships: RasterShip[];
   /** Structures placed on the map (empty when none have been built). */
   buildings: RasterBuilding[];
+  /** Auto-routed railroads (empty until a factory wires up a city/port). */
+  rails: RasterRail[];
+  /** Trains riding the rail network this snapshot (empty when none are running). */
+  trains: RasterTrain[];
+  /** Trade ships sailing between ports this snapshot (empty when none are at sea). */
+  tradeShips: RasterTrade[];
   /**
    * Active land-attack fronts this tick (empty when nobody is pushing a border).
    * Drives the on-map troop-count labels so contested borders read at a glance.
    */
   fronts: RasterAttackFront[];
+  /**
+   * Active alliances as canonical `[lowId, highId]` pairs. Allied nations can't
+   * attack each other; the client marks them and offers a "break" action.
+   */
+  alliances: RasterAlliancePair[];
+  /**
+   * Pending alliance proposals (directed `from` → `to`). The client filters this
+   * for offers addressed to it (to accept/decline) and its own outgoing offers.
+   */
+  allianceRequests: RasterAllianceRequest[];
 }
 
 /** Reasons the server can reject a raster expand or build intent. */
@@ -197,7 +273,9 @@ export type RasterRejectReason =
   /** The player can't afford the structure. */
   | "INSUFFICIENT_GOLD"
   /** The requested building type is unknown. */
-  | "INVALID_BUILDING";
+  | "INVALID_BUILDING"
+  /** The targeted tile belongs to a current ally — allies can't be attacked. */
+  | "ALLIED";
 
 /** Sent by the client to expand its border toward a clicked tile. */
 export interface RasterExpandIntent {
@@ -278,7 +356,10 @@ export type RasterClientMessage =
   | { type: "CLIENT_RASTER_EXPAND"; payload: RasterExpandIntent }
   | { type: "CLIENT_RASTER_BUILD"; payload: RasterBuildIntent }
   | RasterJoinClientMessage
-  | RasterSpawnClientMessage;
+  | RasterSpawnClientMessage
+  | RasterAllyProposeClientMessage
+  | RasterAllyRespondClientMessage
+  | RasterAllyBreakClientMessage;
 
 /** Messages the server can send to the client. */
 export type RasterServerMessage =

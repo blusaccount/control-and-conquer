@@ -2,8 +2,11 @@ import { createServer } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { performance } from "node:perf_hooks";
+import { gzipSync } from "node:zlib";
+import { Buffer } from "node:buffer";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
+import { resolveCatalogSessionMap } from "./sessionMap.js";
 import { MatchRegistry, DIFFICULTY_BOT_COUNT, MAX_RASTER_BOTS } from "./MatchRegistry.js";
 import { isRasterDifficulty } from "../Core/messages.js";
 import { validateCommand } from "./validateCommand.js";
@@ -21,6 +24,7 @@ import {
   TICK_DURATION_WARN_MS,
   TICK_INTERVAL_MS,
 } from "./simulationConfig.js";
+import { handleAiApiRequest } from "./aiApi.js";
 
 const rootDir = fileURLToPath(new URL("../../", import.meta.url));
 const publicDir = join(rootDir, "public");
@@ -41,18 +45,42 @@ if (defaultMapChoice.id !== requestedDefaultMap) {
 const resolveMapChoice = (mapId: string | undefined): MapChoice =>
   (mapId ? getMapChoice(mapId) : undefined) ?? defaultMapChoice;
 
-// Heightmap maps take a few hundred ms to downsample from the source raster.
-// Pre-warm the default one (cached by size) at boot so a first connection that
-// accepts the default doesn't pay that cost mid-handshake.
-const defaultHeightmap = defaultMapChoice.options.realMapId
-  ? getHeightmapMap(defaultMapChoice.options.realMapId)
-  : undefined;
-if (defaultHeightmap) {
-  const built = buildHeightmapGameMap(defaultHeightmap, defaultMapChoice.options.mapSize);
+// Heightmap maps must be downsampled from the source raster before a match can
+// start; the finished `GameMap` is then cached per (map, size). Build it once
+// up front instead of mid-handshake — otherwise the first player to pick a
+// given size pays the whole (event-loop-blocking) build while they wait.
+//
+// The default is warmed synchronously at boot so a connection accepting it is
+// instant. Every other catalogue size is warmed lazily in the background after
+// the server is listening (see `warmRemainingMaps`), spread across timer ticks
+// so the one-off builds never stall the simulation loop or a live match.
+const buildChoice = (choice: MapChoice): boolean => {
+  const def = choice.options.realMapId ? getHeightmapMap(choice.options.realMapId) : undefined;
+  if (!def) return false;
+  const built = buildHeightmapGameMap(def, choice.options.mapSize);
   console.log(
-    `Pre-built default map "${defaultMapChoice.id}" at ${built.width}x${built.height} (${built.size} tiles).`,
+    `Pre-built map "${choice.id}" at ${built.width}x${built.height} (${built.size} tiles).`,
   );
-}
+  return true;
+};
+
+buildChoice(defaultMapChoice);
+
+/**
+ * Warm every remaining heightmap choice one per timer tick, yielding the event
+ * loop between builds so a big map (the huge Earth) never blocks an in-progress
+ * match. Builds are cached, so the default (already warmed) is skipped cheaply.
+ */
+const warmRemainingMaps = (): void => {
+  const pending = MAP_CHOICES.filter((c) => c.id !== defaultMapChoice.id && c.options.realMapId);
+  const warmNext = (): void => {
+    const choice = pending.shift();
+    if (!choice) return;
+    buildChoice(choice);
+    setTimeout(warmNext, 50);
+  };
+  setTimeout(warmNext, 250);
+};
 // Optional fixed override for the AI count (mainly for testing). When set it
 // wins over the per-join difficulty; otherwise the chosen difficulty decides.
 const botOverrideRaw = process.env.RASTER_BOTS;
@@ -89,7 +117,34 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === "/health") {
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ ok: true }));
+      response.end(JSON.stringify({ ok: true, activeSessions: registry.aiSessions.size }));
+      return;
+    }
+
+    // AI REST API — headless HTTP interface for AI agents
+    if (requestUrl.pathname.startsWith("/api/games")) {
+      const handled = await handleAiApiRequest(request, response, registry.aiSessions);
+      if (handled) return;
+    }
+
+    // Solo map asset: prebuilt terrain for a catalogue map, so a browser Web
+    // Worker can host a solo match locally (OpenFront-style client-side sim)
+    // without decoding the PNG itself. Body: [width u32 LE][height u32 LE][terrain
+    // bytes], gzip-encoded (the fetch API transparently inflates it).
+    if (requestUrl.pathname === "/api/solo/map") {
+      const choice = resolveMapChoice(requestUrl.searchParams.get("id") ?? undefined);
+      const { map, name } = resolveCatalogSessionMap(choice.options, choice.name);
+      const header = Buffer.alloc(8);
+      header.writeUInt32LE(map.width, 0);
+      header.writeUInt32LE(map.height, 4);
+      const body = gzipSync(Buffer.concat([header, Buffer.from(map.terrain)]));
+      response.writeHead(200, {
+        "content-type": "application/octet-stream",
+        "content-encoding": "gzip",
+        "cache-control": "public, max-age=86400",
+        "x-map-name": encodeURIComponent(name),
+      });
+      response.end(body);
       return;
     }
 
@@ -113,7 +168,24 @@ const server = createServer(async (request, response) => {
   }
 });
 
-const wss = new WebSocketServer({ server });
+// Compress messages on the wire. The opening snapshot ships the whole static
+// terrain plane plus the full ownership raster — ~6 MB of base64 for the huge
+// Earth, almost all of it long runs of identical bytes (ocean, neutral land),
+// which deflate crushes ~20× (to a few hundred KB). Per-tick owner deltas
+// compress well too. `threshold` skips the tiny control/handshake frames where
+// compression would only add overhead; the modest memLevel keeps each client's
+// deflate context cheap. Browsers negotiate permessage-deflate automatically.
+const wss = new WebSocketServer({
+  server,
+  perMessageDeflate: {
+    threshold: 1024,
+    zlibDeflateOptions: { level: 6, memLevel: 7 },
+    // Drop the deflate sliding window between messages so a long-lived match
+    // doesn't pin per-connection compression memory.
+    serverNoContextTakeover: true,
+    clientNoContextTakeover: true,
+  },
+});
 
 wss.on("connection", (socket) => {
   clientSequence += 1;
@@ -152,6 +224,12 @@ wss.on("connection", (socket) => {
         registry.queueRasterExpand(clientId, message.payload);
       } else if (message.type === "CLIENT_RASTER_BUILD") {
         registry.queueRasterBuild(clientId, message.payload);
+      } else if (message.type === "CLIENT_RASTER_ALLY_PROPOSE") {
+        registry.proposeRasterAlliance(clientId, message.payload.targetId);
+      } else if (message.type === "CLIENT_RASTER_ALLY_RESPOND") {
+        registry.respondRasterAlliance(clientId, message.payload.targetId, message.payload.accept);
+      } else if (message.type === "CLIENT_RASTER_ALLY_BREAK") {
+        registry.breakRasterAlliance(clientId, message.payload.targetId);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown command error.";
@@ -180,6 +258,8 @@ server.listen(port, () => {
       : `AI opponents scale with map size (min per difficulty — easy: ${DIFFICULTY_BOT_COUNT.easy}, medium: ${DIFFICULTY_BOT_COUNT.medium}, hard: ${DIFFICULTY_BOT_COUNT.hard}; up to ${MAX_RASTER_BOTS} on the largest maps).`,
   );
   console.log(`Simulation loop running at ${SIMULATION_TICK_RATE} TPS.`);
+  // Warm the rest of the catalogue in the background so switching maps is instant.
+  warmRemainingMaps();
 });
 
 let nextTickAt = performance.now() + TICK_INTERVAL_MS;

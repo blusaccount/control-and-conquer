@@ -28,6 +28,119 @@ export interface TerrainMask {
 }
 
 /**
+ * Flood-fill the connected component containing `start` over `mask` (matching
+ * tiles share `mask[i] === target`), writing `componentId` into `labels` for
+ * every visited tile and appending each visited tile ref to `out`. The caller
+ * reuses one `out` array per component (clearing it first) so the speckle
+ * cleanup can recolour / inspect exactly the component's tiles instead of
+ * rescanning the whole grid. Returns the component's tile count. 4-connected.
+ */
+const fillComponent = (
+  width: number,
+  height: number,
+  mask: Uint8Array,
+  labels: Int32Array,
+  start: number,
+  target: number,
+  componentId: number,
+  out: number[],
+): number => {
+  const stack = [start];
+  labels[start] = componentId;
+  while (stack.length > 0) {
+    const ref = stack.pop() as number;
+    out.push(ref);
+    const x = ref % width;
+    const y = (ref - x) / width;
+    if (x > 0 && mask[ref - 1] === target && labels[ref - 1] < 0) {
+      labels[ref - 1] = componentId;
+      stack.push(ref - 1);
+    }
+    if (x < width - 1 && mask[ref + 1] === target && labels[ref + 1] < 0) {
+      labels[ref + 1] = componentId;
+      stack.push(ref + 1);
+    }
+    if (y > 0 && mask[ref - width] === target && labels[ref - width] < 0) {
+      labels[ref - width] = componentId;
+      stack.push(ref - width);
+    }
+    if (y < height - 1 && mask[ref + width] === target && labels[ref + width] < 0) {
+      labels[ref + width] = componentId;
+      stack.push(ref + width);
+    }
+  }
+  return out.length;
+};
+
+/**
+ * Remove speckle from a land/water mask: land islands smaller than
+ * `minIslandTiles` become water and fully-enclosed lakes smaller than
+ * `minLakeTiles` become land. Border-touching water is treated as ocean and
+ * never filled. Mutates `mask` in place (1 = land, 0 = water).
+ *
+ * Shared by the procedural generator and the real-world heightmap loader: a raw
+ * topography source is full of single-pixel islets and pinprick lakes that, left
+ * in, render as bright sandy specks ringed by shallow-water glow scattered over
+ * the ocean (OpenFront's map generator strips the same noise before shipping a
+ * map). Run this on the mask *before* the finishing pass so coast/ocean/depth
+ * are classified against the cleaned shapes.
+ */
+export const cleanupMask = (
+  width: number,
+  height: number,
+  mask: Uint8Array,
+  minIslandTiles: number,
+  minLakeTiles: number,
+): void => {
+  const size = width * height;
+  const labels = new Int32Array(size).fill(-1);
+  // One scratch buffer reused across components: every flood appends its tiles
+  // here so we recolour / inspect just the component instead of rescanning the
+  // whole grid (which made this pass O(size × components) — seconds on a
+  // million-tile map full of speckle).
+  const tiles: number[] = [];
+  let nextId = 0;
+
+  // Sink tiny land islands.
+  for (let i = 0; i < size; i += 1) {
+    if (mask[i] === 1 && labels[i] < 0) {
+      const id = nextId;
+      nextId += 1;
+      tiles.length = 0;
+      const count = fillComponent(width, height, mask, labels, i, 1, id, tiles);
+      if (count < minIslandTiles) {
+        for (let k = 0; k < tiles.length; k += 1) mask[tiles[k]] = 0;
+      }
+    }
+  }
+
+  // Fill tiny enclosed lakes. A water component is a lake only if it never
+  // touches the map border (border water is open ocean).
+  labels.fill(-1);
+  nextId = 0;
+  for (let i = 0; i < size; i += 1) {
+    if (mask[i] === 0 && labels[i] < 0) {
+      const id = nextId;
+      nextId += 1;
+      tiles.length = 0;
+      const count = fillComponent(width, height, mask, labels, i, 0, id, tiles);
+      let touchesBorder = false;
+      for (let k = 0; k < tiles.length && !touchesBorder; k += 1) {
+        const j = tiles[k];
+        const x = j % width;
+        const y = (j - x) / width;
+        if (x === 0 || y === 0 || x === width - 1 || y === height - 1) {
+          touchesBorder = true;
+        }
+      }
+      if (!touchesBorder && count < minLakeTiles) {
+        for (let k = 0; k < tiles.length; k += 1) mask[tiles[k]] = 1;
+      }
+    }
+  }
+};
+
+/**
  * Finish a land/water mask into a fully-classified {@link GameMap}: coastlines,
  * ocean-vs-lake classification and water depth, packed into the tile codec.
  */

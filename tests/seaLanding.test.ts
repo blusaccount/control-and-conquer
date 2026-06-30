@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildTerrainFromMask } from "../src/Core/terrainBuilder.js";
-import { TerritoryGrid } from "../src/Core/TerritoryGrid.js";
+import { NEUTRAL_PLAYER, TerritoryGrid } from "../src/Core/TerritoryGrid.js";
 
 /** Build a TerritoryGrid from rows of '#' (land) / '.' (water). */
 const gridFromRows = (rows: string[]): TerritoryGrid => {
@@ -43,10 +43,108 @@ test("the landing is the reachable shore nearest the click", () => {
   assert.equal(grid.resolveSeaLanding(1, grid.map.ref(2, 2)), grid.map.ref(2, 2), "click in the middle → middle shore");
 });
 
-test("no reachable shore yields null (water too wide)", () => {
-  // 8 water tiles exceeds MAX_SEA_CROSSING_TILES (6).
+test("a wide but connected sea still lands (no distance cap)", () => {
+  // 8 open-water tiles — far past the old cap, but one connected body, so the
+  // far shore is a valid landing.
   const grid = gridFromRows(["#........#"]);
   grid.addPlayer(1, 50);
   grid.claim(grid.map.ref(0, 0), 1);
-  assert.equal(grid.resolveSeaLanding(1, grid.map.ref(9, 0)), null);
+  assert.equal(grid.resolveSeaLanding(1, grid.map.ref(9, 0)), grid.map.ref(9, 0));
+});
+
+test("a click toward a disconnected body routes to the nearest reachable shore", () => {
+  // land0 | seaA(1) | land2 | seaB(3) | land4. The attacker on land0 touches only
+  // seaA. land4 sits on the separate seaB, so a boat can't reach it directly
+  // (findSeaPath is null); a click out there instead lands on seaA's reachable
+  // shore (land2), the nearest one a boat can actually make.
+  const grid = gridFromRows(["#.#.#"]);
+  grid.addPlayer(1, 50);
+  grid.claim(grid.map.ref(0, 0), 1);
+  assert.equal(grid.findSeaPath(1, grid.map.ref(4, 0)), null, "land4 on seaB is directly unreachable");
+  assert.equal(grid.resolveSeaLanding(1, grid.map.ref(4, 0)), grid.map.ref(2, 0), "routes to the reachable seaA shore");
+});
+
+test("a target across water is frontier (a boat target), never a land hop", () => {
+  // col0 owned | col1 water | col2 neutral land — a separate landmass reachable
+  // only by boat. Going fully OpenFront, the land frontier never crosses water,
+  // but the boat target still surfaces so the AI can choose to sail there.
+  const grid = gridFromRows(["#.#", "#.#", "#.#"]);
+  grid.addPlayer(1, 50);
+  for (let y = 0; y < 3; y += 1) grid.claim(grid.map.ref(0, y), 1);
+
+  const here = grid.map.ref(0, 1);
+  const farLand = grid.map.ref(2, 1);
+  // Different landmasses: no land route exists between them.
+  assert.notEqual(grid.landComponentId(here), grid.landComponentId(farLand));
+  // The far coast is on the frontier as a boat target, and surfaces in the
+  // per-owner summary the bots read.
+  assert.ok(grid.frontierOf(1, NEUTRAL_PLAYER).includes(farLand), "boat target is on the frontier");
+  const target = grid.frontierTargets(1).find((t) => t.target === NEUTRAL_PLAYER);
+  assert.ok(target, "frontierTargets surfaces the neutral coast across the water");
+  assert.equal(
+    grid.landComponentId(target!.sample),
+    grid.landComponentId(farLand),
+    "its sample sits on the far landmass, reachable only by boat",
+  );
+});
+
+test("a fully landlocked player can launch no boats", () => {
+  // A 3x3 block of land with no water at all: no launch component exists.
+  const grid = gridFromRows(["###", "###", "###"]);
+  grid.addPlayer(1, 50);
+  grid.claim(grid.map.ref(0, 0), 1);
+  assert.equal(grid.resolveSeaLanding(1, grid.map.ref(2, 2)), null, "no water, no landing");
+  assert.equal(grid.findSeaPath(1, grid.map.ref(2, 2)), null, "no water, no sea path");
+});
+
+test("a far coast on the SAME landmass, across water, is a boat once out of land reach", () => {
+  // A horseshoe: one connected landmass whose two free ends (top of col0 and top
+  // of col2) are a single water tile apart across the bay (col1), but a long
+  // march apart around the bottom of the U. The attacker holds the left end and
+  // clicks the right end.
+  const grid = gridFromRows(["#.#", "#.#", "#.#", "###"]);
+  grid.addPlayer(1, 50);
+  grid.claim(grid.map.ref(0, 0), 1);
+
+  const here = grid.map.ref(0, 0);
+  const farEnd = grid.map.ref(2, 0);
+  // Same landmass — a contiguous land route exists (the long way round the U).
+  assert.equal(grid.landComponentId(here), grid.landComponentId(farEnd));
+  assert.ok(grid.ownsLandComponentOf(1, farEnd), "the far end is on the attacker's landmass");
+
+  // The land route round the U is 8 steps. Within a generous reach it is a march…
+  assert.equal(grid.canReachByLand(1, farEnd, 20), true, "reachable by land when the cap is generous");
+  // …but once the reach is shorter than that detour, the far coast is out of land
+  // reach — the click should become a boat across the bay instead.
+  assert.equal(grid.canReachByLand(1, farEnd, 2), false, "out of land reach under a short cap");
+  // And a boat can in fact cross: the near shore for the click is the end itself,
+  // one water tile from the attacker's coast.
+  assert.equal(grid.resolveSeaLanding(1, farEnd), farEnd, "the bay is crossable by boat");
+  assert.notEqual(grid.findSeaPath(1, farEnd), null, "a one-tile sea hop exists");
+});
+
+test("a boat routes across a sea and up a river to an inland shore", () => {
+  // col0 is the attacker's coast; col1 is a sea strip joined to a river that runs
+  // inland along row 1 (cols 1..8). The far shore (9,1) sits at the river's head,
+  // 8 water tiles away — well past the old cap. The path must sail the sea and
+  // continue up the river to land there.
+  const grid = gridFromRows([
+    "#.########",
+    "#........#",
+    "#.########",
+  ]);
+  grid.addPlayer(1, 50);
+  for (let y = 0; y < 3; y += 1) grid.claim(grid.map.ref(0, y), 1);
+
+  const head = grid.map.ref(9, 1);
+  const path = grid.findSeaPath(1, head);
+  assert.ok(path, "a route exists up the river");
+  assert.equal(path![0], grid.map.ref(0, 1), "embarks from the owned coast");
+  assert.equal(path![path!.length - 1], head, "lands at the river head");
+  // The route runs through mid-river water (proof it travelled up the river, not
+  // a short hop), crossing more than the old 6-tile cap.
+  assert.ok(path!.includes(grid.map.ref(5, 1)), "the path goes up the river");
+  assert.ok(path!.length - 2 > 6, "more than 6 water tiles are crossed");
+  // Clicking the river head resolves a boat landing straight to it.
+  assert.equal(grid.resolveSeaLanding(1, head), head);
 });

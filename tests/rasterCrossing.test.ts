@@ -7,6 +7,15 @@ import {
   MAX_TRANSPORT_SHIPS_PER_PLAYER,
   SEA_CROSSING_SURCHARGE,
 } from "../src/Core/rasterCombatConfig.js";
+import { IDENTITY_MODIFIERS } from "../src/Core/playerModifiers.js";
+
+/**
+ * Freeze every seated player's troop income so a crossing test measures only the
+ * landing/refund accounting; the economy is covered in income.test.ts.
+ */
+const freezeIncome = (grid: TerritoryGrid): void => {
+  for (const id of grid.players()) grid.setModifiers(id, { ...IDENTITY_MODIFIERS, income: 0 });
+};
 
 /** Single-row map from a mask: '#' = land, ' ' = water. */
 const rowMap = (mask: string) => {
@@ -87,6 +96,7 @@ test("a ship too small to pay the beachhead cost is repelled and refunds its tro
   grid.addPlayer(1, 50);
   grid.claim(0, 1);
   grid.claim(1, 1);
+  freezeIncome(grid);
   const conflict = new RasterConflict(grid);
 
   const tooFew = SEA_CROSSING_SURCHARGE - 1; // can't afford to land
@@ -108,6 +118,7 @@ test("a landing repelled off a player-held shore loses the retreat malus", () =>
   grid.claim(1, 1);
   grid.claim(3, 2);
   grid.claim(4, 2);
+  freezeIncome(grid);
   const conflict = new RasterConflict(grid);
 
   assert.equal(conflict.launchShip({ attacker: 1, dest: 3, troops: 1 }), null);
@@ -128,30 +139,48 @@ test("a player may have at most three transport ships at sea", () => {
   const conflict = new RasterConflict(grid);
 
   for (let i = 0; i < MAX_TRANSPORT_SHIPS_PER_PLAYER; i += 1) {
-    assert.equal(conflict.launchShip({ attacker: 1, dest: 5, troops: 20 }), null, `ship ${i + 1} launches`);
+    assert.equal(conflict.launchShip({ attacker: 1, dest: 5, troops: 30 }), null, `ship ${i + 1} launches`);
   }
   assert.equal(conflict.shipCountOf(1), MAX_TRANSPORT_SHIPS_PER_PLAYER);
   // The fourth simultaneous launch is rejected.
-  assert.equal(conflict.launchShip({ attacker: 1, dest: 5, troops: 20 }), "TOO_MANY_SHIPS");
+  assert.equal(conflict.launchShip({ attacker: 1, dest: 5, troops: 30 }), "TOO_MANY_SHIPS");
 
   // Once the ships land (taking islet 5), every slot frees up again. Islet 9 is
   // now reachable by sea from the freshly-held coast at 5.
   for (let i = 0; i < 20; i += 1) conflict.processTick();
   assert.equal(grid.ownerOf(5), 1, "the fleet took its beachhead");
   assert.equal(conflict.shipCountOf(1), 0, "ships eventually land and free their slots");
-  assert.equal(conflict.launchShip({ attacker: 1, dest: 9, troops: 20 }), null, "a freed slot accepts a new ship");
+  assert.equal(conflict.launchShip({ attacker: 1, dest: 9, troops: 30 }), null, "a freed slot accepts a new ship");
 });
 
-test("water wider than the ship range cannot be crossed", () => {
-  // 8 water tiles exceeds MAX_SEA_CROSSING_TILES (6).
+test("a wide but connected sea can be crossed (no distance cap)", () => {
+  // 8 open-water tiles — far past the old crossing cap, but one connected body,
+  // so a boat sails the whole way (OpenFront's connectivity-based reach).
   const grid = new TerritoryGrid(rowMap("##        ##"));
   grid.addPlayer(1, 50);
   grid.claim(0, 1);
   grid.claim(1, 1);
   const conflict = new RasterConflict(grid);
 
-  assert.equal(grid.findSeaPath(1, 10), null, "no route across too-wide water");
-  assert.equal(conflict.launchShip({ attacker: 1, dest: 10, troops: 30 }), "NO_FRONTIER");
+  const path = grid.findSeaPath(1, 10);
+  assert.ok(path, "a route exists across the wide sea");
+  assert.equal(path![0], 1, "embarks from the owned coast");
+  assert.equal(path![path!.length - 1], 10, "lands on the far coast");
+  assert.equal(conflict.launchShip({ attacker: 1, dest: 10, troops: 30 }), null, "the launch is accepted");
+});
+
+test("a separate body of water cannot be crossed to", () => {
+  // land0 | seaA(1) | land2 | seaB(3) | land4. seaA and seaB are different water
+  // bodies (split by land2). The attacker on tile 0 touches only seaA, so it can
+  // reach land2 but never land4 — connectivity, not distance, is the gate.
+  const grid = new TerritoryGrid(rowMap("#.#.#"));
+  grid.addPlayer(1, 50);
+  grid.claim(0, 1);
+  const conflict = new RasterConflict(grid);
+
+  assert.ok(grid.findSeaPath(1, 2), "land2 shares seaA with the attacker → reachable");
+  assert.equal(grid.findSeaPath(1, 4), null, "land4 is on seaB, a disconnected body → unreachable");
+  assert.equal(conflict.launchShip({ attacker: 1, dest: 4, troops: 30 }), "NO_FRONTIER");
 });
 
 test("a land attack never crosses water", () => {
@@ -163,4 +192,44 @@ test("a land attack never crosses water", () => {
   const conflict = new RasterConflict(grid);
 
   assert.equal(conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 10 }), "NO_FRONTIER");
+});
+
+test("a coastal warship sinks an enemy transport in range before it lands", () => {
+  // owned 0,1 | water 2,3 | player-2 shore 4,5 with a warship guarding tile 4.
+  const grid = new TerritoryGrid(rowMap("##  ##"));
+  grid.addPlayer(1, 200);
+  grid.addPlayer(2, 0);
+  grid.claim(0, 1);
+  grid.claim(1, 1);
+  grid.claim(4, 2);
+  grid.claim(5, 2);
+  grid.placeBuilding(4, "warship"); // player 2's coastal warship
+  freezeIncome(grid);
+  const conflict = new RasterConflict(grid);
+
+  assert.equal(conflict.launchShip({ attacker: 1, dest: 4, troops: 100 }), null);
+  for (let i = 0; i < 10; i += 1) conflict.processTick();
+
+  assert.equal(conflict.shipCountOf(1), 0, "the transport was sunk en route");
+  assert.equal(grid.ownerOf(4), 2, "the warship-guarded shore was never taken");
+});
+
+test("a warship never sinks its owner's own transport", () => {
+  // Same board, but the warship belongs to the attacker — it guards, never fires
+  // on, friendly shipping, so the landing goes through.
+  const grid = new TerritoryGrid(rowMap("##  ##"));
+  grid.addPlayer(1, 200);
+  grid.addPlayer(2, 0);
+  grid.claim(0, 1);
+  grid.claim(1, 1);
+  grid.claim(4, 2);
+  grid.claim(5, 2);
+  grid.placeBuilding(1, "warship"); // player 1's own coastal warship
+  freezeIncome(grid);
+  const conflict = new RasterConflict(grid);
+
+  assert.equal(conflict.launchShip({ attacker: 1, dest: 4, troops: 100 }), null);
+  for (let i = 0; i < 10; i += 1) conflict.processTick();
+
+  assert.equal(grid.ownerOf(4), 1, "the friendly transport landed and took the shore");
 });

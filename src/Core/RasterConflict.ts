@@ -1,30 +1,29 @@
 import type { TileRef } from "./GameMap.js";
 import { NEUTRAL_PLAYER, type PlayerId, type TerritoryGrid } from "./TerritoryGrid.js";
+import { NO_ALLIANCES, type AllianceView } from "./alliances.js";
+import { GOLD_BASE_PER_TICK, WARSHIP_INTERCEPT_RANGE } from "./buildings.js";
+import { RailSystem, type RailView, type TrainView } from "./railSystem.js";
+import { TradeSystem, type TradeView } from "./tradeSystem.js";
 import {
-  CITY_GOLD_PER_TICK,
-  CITY_TROOP_INCOME_PER_TICK,
-  GOLD_PER_TILE_PER_TICK,
-} from "./buildings.js";
-import {
-  ATTACKER_EFFICIENCY,
-  attackSpeedFactor,
+  attackerLossPerTile,
+  attackTilesPerTick,
   defenderLossPerTile,
   defenderStrengthFactor,
-  ENEMY_CAPTURE_BASE,
-  EXPANSION_SPEND_FRACTION,
   FRONTIER_JITTER_SPAN,
   FRONTIER_MAGNITUDE_WEIGHT,
   FRONTIER_PRIORITY_FLOOR,
   FRONTIER_SURROUND_WEIGHT,
-  growthFactor,
-  INCOME_PER_TILE_PER_TICK,
-  MAX_POOL_PER_TILE,
+  FRONTIER_TOWARD_WEIGHT,
+  largeDefenderLossFactor,
+  maxTroops,
+  troopGrowth,
   MAX_TRANSPORT_SHIPS_PER_PLAYER,
   NEUTRAL_CAPTURE_COST,
+  neutralLossPerTile,
   RETREAT_MALUS_FRACTION,
   SEA_CROSSING_SURCHARGE,
   SHIP_TILES_PER_TICK,
-  terrainLossMultiplier,
+  terrainCombat,
 } from "./rasterCombatConfig.js";
 
 /** A request to expand from `attacker`'s territory into `target`'s tiles. */
@@ -34,6 +33,13 @@ export interface AttackIntent {
   target: PlayerId;
   /** Troops to commit from the attacker's pool. Positive integer. */
   troops: number;
+  /**
+   * The tile the player actually clicked, used to bias which part of the front
+   * advances first so the push heads *toward* the click (see
+   * {@link FRONTIER_TOWARD_WEIGHT}). Optional: omitted (e.g. a beachhead's inland
+   * push) means undirected, radial growth.
+   */
+  toward?: TileRef;
 }
 
 /**
@@ -56,7 +62,11 @@ export type AttackRejectReason =
   | "INVALID_TROOP_COUNT"
   | "INSUFFICIENT_TROOPS"
   | "NO_FRONTIER"
-  | "TOO_MANY_SHIPS";
+  | "TOO_MANY_SHIPS"
+  /** The target is a current ally — allied players can't attack each other. */
+  | "ALLIED"
+  /** The target is under post-spawn immunity and can't be attacked yet. */
+  | "IMMUNE";
 
 /**
  * A single amphibious landing resolved this tick: a player captured tile `to`
@@ -118,6 +128,12 @@ interface RasterAttack {
    * label. `-1` until the attack has been advanced at least once.
    */
   anchor: TileRef;
+  /**
+   * The tile the attacker pointed at, biasing the front to advance toward it
+   * (see {@link FRONTIER_TOWARD_WEIGHT}). `-1` means undirected (radial). The
+   * latest reinforcing click wins, so re-clicking elsewhere redirects the push.
+   */
+  toward: TileRef;
 }
 
 /** A transport ship en route to its landing tile. */
@@ -146,21 +162,53 @@ interface TransportShip {
  */
 export class RasterConflict {
   private readonly grid: TerritoryGrid;
+  /**
+   * Diplomacy lookup consulted before any attack lands: allied players can't
+   * take each other's tiles. Defaults to {@link NO_ALLIANCES} (nobody allied),
+   * so callers and tests that don't care about diplomacy are unaffected.
+   */
+  private readonly allies: AllianceView;
   private readonly attacks: RasterAttack[] = [];
   /** Transport ships currently at sea, in launch order. */
   private readonly ships: TransportShip[] = [];
   /** Monotonic id source so each ship has a stable handle for the client. */
   private nextShipId = 1;
   private readonly incomeAccumulator = new Map<PlayerId, number>();
-  /** Fractional gold carried between ticks, flushed into the integer pool. */
-  private readonly goldAccumulator = new Map<PlayerId, number>();
+  /**
+   * Tick (exclusive) until which a freshly-seated player is immune from attack.
+   * Set by {@link grantImmunity} when the session seats a player; checked before
+   * any land or sea assault lands on them. Absent = never immune.
+   */
+  private readonly immuneUntil = new Map<PlayerId, number>();
+  /** Auto-routed railroads + the trains that ride them, paying out gold. */
+  private readonly rails: RailSystem;
+  /** Port-to-port trade ships, paying both ends gold per completed trip. */
+  private readonly trade: TradeSystem;
   /** Transport-ship landings resolved during the current tick. */
   private crossings: SeaCrossing[] = [];
   private tickCount = 0;
   private winnerId: PlayerId | null = null;
 
-  constructor(grid: TerritoryGrid) {
+  constructor(grid: TerritoryGrid, allies: AllianceView = NO_ALLIANCES) {
     this.grid = grid;
+    this.allies = allies;
+    this.rails = new RailSystem(grid);
+    this.trade = new TradeSystem(grid);
+  }
+
+  /** Live trade ships, for the snapshot (empty until two ports share a sea). */
+  tradeShips(): TradeView[] {
+    return this.trade.tradeViews();
+  }
+
+  /** Current railroad links, for the snapshot (empty until a factory wires up). */
+  railLinks(): RailView[] {
+    return this.rails.railViews();
+  }
+
+  /** Trains currently riding the network, for the snapshot. */
+  activeTrains(): TrainView[] {
+    return this.rails.trainViews();
   }
 
   get tick(): number {
@@ -219,12 +267,33 @@ export class RasterConflict {
    * start a new attack or reinforce an existing attacker→target one. Returns a
    * reject reason without mutating state on failure.
    */
+  /**
+   * Protect `player` from attack until `ticks` ticks from now — the post-spawn
+   * immunity window. Called by the session when it seats a player. A later grant
+   * (e.g. a relocated spawn) extends the window.
+   */
+  grantImmunity(player: PlayerId, ticks: number): void {
+    if (ticks <= 0) return;
+    this.immuneUntil.set(player, this.tickCount + ticks);
+  }
+
+  /** Whether `player` is currently under post-spawn immunity. Neutral never is. */
+  isImmune(player: PlayerId): boolean {
+    if (player === NEUTRAL_PLAYER) return false;
+    return (this.immuneUntil.get(player) ?? 0) > this.tickCount;
+  }
+
   launchAttack(intent: AttackIntent): AttackRejectReason | null {
     const { attacker, target, troops } = intent;
 
     if (!this.grid.hasPlayer(attacker)) return "UNKNOWN_PLAYER";
     if (target === attacker) return "INVALID_TARGET";
     if (target !== NEUTRAL_PLAYER && !this.grid.hasPlayer(target)) return "INVALID_TARGET";
+    // A freshly-seated nation can't be attacked while its spawn immunity holds.
+    if (this.isImmune(target)) return "IMMUNE";
+    // A standing alliance is a non-aggression pact: you can't push a front into
+    // an ally's land. Breaking the alliance first reopens the option.
+    if (target !== NEUTRAL_PLAYER && this.allies.areAllied(attacker, target)) return "ALLIED";
     if (!Number.isInteger(troops) || troops <= 0) return "INVALID_TROOP_COUNT";
     if (troops > this.grid.troopsOf(attacker)) return "INSUFFICIENT_TROOPS";
     // A land attack pushes a contiguous front; it never crosses water (that is
@@ -232,11 +301,15 @@ export class RasterConflict {
     if (!this.grid.hasLandBorderWith(attacker, target)) return "NO_FRONTIER";
 
     this.grid.addTroops(attacker, -troops);
+    const toward = intent.toward ?? -1;
     const existing = this.attacks.find((a) => a.attacker === attacker && a.target === target);
     if (existing) {
       existing.committed += troops;
+      // The freshest click redirects the combined push; an undirected reinforce
+      // (no toward) leaves the existing heading untouched.
+      if (toward >= 0) existing.toward = toward;
     } else {
-      this.attacks.push({ attacker, target, committed: troops, anchor: -1 });
+      this.attacks.push({ attacker, target, committed: troops, anchor: -1, toward });
     }
     return null;
   }
@@ -253,11 +326,16 @@ export class RasterConflict {
 
     if (!this.grid.hasPlayer(attacker)) return "UNKNOWN_PLAYER";
     if (!this.grid.isCapturable(dest) || this.grid.ownerOf(dest) === attacker) return "INVALID_TARGET";
+    // You can't storm a shore held by a nation still under spawn immunity.
+    if (this.isImmune(this.grid.ownerOf(dest))) return "IMMUNE";
+    // You can't make an amphibious assault on an ally's shore either.
+    const destOwner = this.grid.ownerOf(dest);
+    if (destOwner !== NEUTRAL_PLAYER && this.allies.areAllied(attacker, destOwner)) return "ALLIED";
     if (!Number.isInteger(troops) || troops <= 0) return "INVALID_TROOP_COUNT";
     if (troops > this.grid.troopsOf(attacker)) return "INSUFFICIENT_TROOPS";
-    if (this.shipCountOf(attacker) >= MAX_TRANSPORT_SHIPS_PER_PLAYER) return "TOO_MANY_SHIPS";
+    if (this.shipCountOf(attacker) >= this.grid.maxShipsOf(attacker)) return "TOO_MANY_SHIPS";
 
-    const path = this.grid.findSeaPath(attacker, dest, this.grid.seaRangeOf(attacker));
+    const path = this.grid.findSeaPath(attacker, dest);
     if (!path) return "NO_FRONTIER";
 
     this.grid.addTroops(attacker, -troops);
@@ -280,8 +358,18 @@ export class RasterConflict {
     }
 
     this.crossings = [];
+    // Switch on any structures whose construction window has elapsed, so their
+    // effects (city cap, stations, fort aura) count from this tick on.
+    this.grid.activateDue(this.tickCount);
     this.applyIncome();
     this.applyGoldIncome();
+    // Trains ride the auto-routed rail network and bank gold at city/port stops.
+    // Run after gold income so a payout lands in the same tick it is earned.
+    this.rails.advance(this.tickCount);
+    // Trade ships sail between ports and pay both ends gold on arrival.
+    this.trade.advance(this.tickCount);
+    // Warship coastal batteries sink enemy transports before they advance/land.
+    this.interceptTransports();
     this.advanceShips();
     this.advanceAttacks();
     this.checkVictory();
@@ -304,21 +392,41 @@ export class RasterConflict {
    * beachhead separately via {@link beachheadCost}. `strengthFactor` defaults to
    * 1 (no defender-strength effect), which neutral grabs always use.
    */
-  private captureCost(ref: TileRef, target: PlayerId, strengthFactor = 1): number {
-    const base = target === NEUTRAL_PLAYER ? NEUTRAL_CAPTURE_COST : ENEMY_CAPTURE_BASE;
-    // Terrain: plains are softer, mountains dearer (a mild multiplier, not a
-    // steep ramp), and the flat attacker-efficiency bonus favours the assault.
-    let cost = base * terrainLossMultiplier(this.grid.map.magnitude(ref)) * ATTACKER_EFFICIENCY;
-    // The defender's Fortress Wall raises the cost to capture their tiles.
-    if (target !== NEUTRAL_PLAYER) cost *= this.grid.modifiersOf(target).defense;
-    // A nearby defense post (e.g. a capital) fortifies the ground around it,
-    // raising the cost to take any tile inside its aura.
-    cost *= this.grid.defenseFactorAt(ref);
-    // A well-garrisoned defender makes every tile dearer to take (the clamped
-    // attacker-vs-defender troop ratio); neutral land has no garrison, so callers
-    // pass the default factor of 1 there.
-    cost *= strengthFactor;
-    return Math.ceil(cost);
+  /**
+   * Effective troop-loss magnitude for capturing `ref`: the tile's terrain
+   * magnitude (OpenFront's plains/highland/mountain `mag`), raised by the
+   * defender's Fortress Wall and any nearby defense-post aura.
+   */
+  private tileMagnitude(ref: TileRef, target: PlayerId): number {
+    let mag = terrainCombat(this.grid.map.magnitude(ref)).mag;
+    if (target !== NEUTRAL_PLAYER) mag *= this.grid.modifiersOf(target).defense;
+    mag *= this.grid.defenseFactorAt(ref);
+    return mag;
+  }
+
+  /** A defender's raw per-tile troop density (pool ÷ territory, floored at 1). */
+  private defenderDensityOf(target: PlayerId): number {
+    return defenderLossPerTile(this.grid.troopsOf(target), this.grid.tileCountOf(target));
+  }
+
+  /**
+   * Troops the attacker spends to capture one tile, mirroring OpenFront's
+   * `attackLogic`: neutral land costs `mag/5`; an enemy tile blends the clamped
+   * defender/attacker troop ratio with the defender's density (see
+   * {@link attackerLossPerTile}). `attackForce` is the attack's current committed
+   * pool, so the ratio shifts as the assault is spent down.
+   */
+  private attackerTileLoss(
+    ref: TileRef,
+    target: PlayerId,
+    attackForce: number,
+    defenderTroops: number,
+    defenderDensity: number,
+  ): number {
+    const mag = this.tileMagnitude(ref, target);
+    return target === NEUTRAL_PLAYER
+      ? neutralLossPerTile(mag)
+      : attackerLossPerTile(defenderTroops, defenderDensity, attackForce, mag);
   }
 
   /**
@@ -360,14 +468,43 @@ export class RasterConflict {
 
   /**
    * The attacker's land frontier against `target`, ordered by capture priority
-   * for this tick. A fresh array (the grid's frontier is not mutated).
+   * for this tick. When `toward >= 0` the ordering is biased so the front
+   * advances toward that tile (the click): each tile's priority gains its
+   * distance-to-`toward`, normalised across the frontier to [0,1], times
+   * {@link FRONTIER_TOWARD_WEIGHT}. A fresh array (the grid's frontier is not
+   * mutated).
    */
-  private orderedFrontier(attacker: PlayerId, target: PlayerId): TileRef[] {
+  private orderedFrontier(attacker: PlayerId, target: PlayerId, toward: TileRef): TileRef[] {
     // Score each tile once, then sort — priority is fixed for the tick, so we
     // avoid recomputing it on every comparison.
-    const scored = this.grid
-      .landFrontierOf(attacker, target)
-      .map((ref) => ({ ref, p: this.tilePriority(attacker, ref) }));
+    const frontier = this.grid.landFrontierOf(attacker, target);
+    if (toward < 0 || frontier.length === 0) {
+      const scored = frontier.map((ref) => ({ ref, p: this.tilePriority(attacker, ref) }));
+      scored.sort((a, b) => a.p - b.p || a.ref - b.ref);
+      return scored.map((s) => s.ref);
+    }
+
+    // Directed push: normalise each tile's Euclidean distance to the clicked
+    // tile across the frontier, so the side facing the click sorts first. The
+    // bias is bounded (< the per-neighbour surround step), so pocket-filling
+    // still dominates and the front bulges rather than snakes.
+    const tx = this.grid.map.x(toward);
+    const ty = this.grid.map.y(toward);
+    let minD = Infinity;
+    let maxD = -Infinity;
+    const dist = frontier.map((ref) => {
+      const dx = this.grid.map.x(ref) - tx;
+      const dy = this.grid.map.y(ref) - ty;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d < minD) minD = d;
+      if (d > maxD) maxD = d;
+      return d;
+    });
+    const span = maxD - minD || 1;
+    const scored = frontier.map((ref, i) => ({
+      ref,
+      p: this.tilePriority(attacker, ref) + ((dist[i] - minD) / span) * FRONTIER_TOWARD_WEIGHT,
+    }));
     scored.sort((a, b) => a.p - b.p || a.ref - b.ref);
     return scored.map((s) => s.ref);
   }
@@ -391,11 +528,13 @@ export class RasterConflict {
    */
   private beachheadCost(ref: TileRef, attacker: PlayerId, target: PlayerId, attackerForce: number): number {
     const surcharge = Math.ceil(SEA_CROSSING_SURCHARGE / this.grid.modifiersOf(attacker).seaSpeed);
-    // The garrison defends a beachhead just as it defends an inland tile.
-    const strength = target === NEUTRAL_PLAYER
-      ? 1
-      : defenderStrengthFactor(this.grid.troopsOf(target), attackerForce);
-    return this.captureCost(ref, target, strength) + surcharge;
+    // The garrison defends a beachhead just as it defends an inland tile: pay the
+    // normal OpenFront attacker loss for the landing tile plus the amphibious
+    // surcharge, so an opposed landing is dearer than walking the same tile.
+    const defTroops = target === NEUTRAL_PLAYER ? 0 : this.grid.troopsOf(target);
+    const defDensity = target === NEUTRAL_PLAYER ? 0 : this.defenderDensityOf(target);
+    const largeFactor = target === NEUTRAL_PLAYER ? 1 : largeDefenderLossFactor(this.grid.tileCountOf(target));
+    return Math.ceil(this.attackerTileLoss(ref, target, attackerForce, defTroops, defDensity) * largeFactor) + surcharge;
   }
 
   /**
@@ -406,44 +545,42 @@ export class RasterConflict {
   private applyIncome(): void {
     for (const id of this.grid.players()) {
       const tiles = this.grid.tileCountOf(id);
+      if (tiles <= 0) {
+        this.incomeAccumulator.set(id, 0);
+        continue;
+      }
+      // OpenFront's territory-scaled ceiling, lifted by each city and scaled by
+      // the player's difficulty cap multiplier (weaker AI get a lower ceiling);
+      // the bell-curve growth tapers to zero as the pool nears it.
+      const cap = maxTroops(tiles, this.grid.activeBuildingCountOf(id, "city")) *
+        this.grid.modifiersOf(id).troopCapMultiplier;
       const troops = this.grid.troopsOf(id);
-      const cap = tiles * MAX_POOL_PER_TILE;
       if (troops >= cap) {
         this.incomeAccumulator.set(id, 0);
         continue;
       }
-      // Logistic soft cap: income tapers as the pool nears its ceiling, so an
-      // empire's army growth slows and plateaus instead of climbing forever. A
-      // city adds a flat troop dividend on top of the per-tile income, but it is
-      // gated by the same soft cap so cities never break the pool ceiling.
-      const baseRate = tiles * INCOME_PER_TILE_PER_TICK * this.grid.modifiersOf(id).income;
-      const cityRate = this.grid.buildingCountOf(id, "city") * CITY_TROOP_INCOME_PER_TICK;
-      const incomeRate = (baseRate + cityRate) * growthFactor(troops, tiles);
-      const accumulated = (this.incomeAccumulator.get(id) ?? 0) + incomeRate;
+      // Bell-curve growth: slow when the pool is tiny, fastest mid-range, easing
+      // to zero at the cap. A per-player income modifier scales the rate. The
+      // fractional remainder is carried between ticks so the integer pool tracks
+      // the real-valued growth without losing sub-1 increments.
+      const add = troopGrowth(troops, cap) * this.grid.modifiersOf(id).income;
+      const accumulated = (this.incomeAccumulator.get(id) ?? 0) + add;
       const whole = Math.floor(accumulated);
-      if (whole > 0) {
-        const next = Math.min(cap, this.grid.troopsOf(id) + whole);
-        this.grid.setTroops(id, next);
-      }
+      if (whole > 0) this.grid.setTroops(id, Math.min(cap, troops + whole));
       this.incomeAccumulator.set(id, accumulated - whole);
     }
   }
 
   /**
-   * Each player earns gold proportional to the tiles they hold, plus a flat
-   * dividend per city, accumulated fractionally and flushed into the integer
-   * gold pool. Unlike troops, gold is uncapped — it is a spend resource, drained
-   * by building structures — so there is no logistic soft cap here.
+   * Each player earns a **flat** passive gold trickle every tick, exactly like
+   * OpenFront's `goldAdditionRate` — independent of territory, cities and ports.
+   * Gold is otherwise grown through trade ships, trains and conquest, not a
+   * per-tile/per-building dividend. Uncapped (a spend resource), so no soft cap.
    */
   private applyGoldIncome(): void {
     for (const id of this.grid.players()) {
-      const tiles = this.grid.tileCountOf(id);
-      const cities = this.grid.buildingCountOf(id, "city");
-      const rate = tiles * GOLD_PER_TILE_PER_TICK + cities * CITY_GOLD_PER_TICK;
-      const accumulated = (this.goldAccumulator.get(id) ?? 0) + rate;
-      const whole = Math.floor(accumulated);
-      if (whole > 0) this.grid.addGold(id, whole);
-      this.goldAccumulator.set(id, accumulated - whole);
+      if (this.grid.tileCountOf(id) <= 0) continue; // eliminated — earns nothing
+      this.grid.addGold(id, GOLD_BASE_PER_TICK);
     }
   }
 
@@ -454,6 +591,44 @@ export class RasterConflict {
    * remain as a land attack radiating from the new beachhead. Landings are
    * recorded as {@link SeaCrossing}s for the client to flash.
    */
+  /**
+   * Sink every enemy transport ship currently within {@link WARSHIP_INTERCEPT_RANGE}
+   * (Chebyshev) of a warship not owned by — and not allied to — the ship's owner.
+   * A sunk transport's troops are lost outright (no refund): a coast defended by
+   * warships turns an unescorted landing into a gamble, the strategic point of a
+   * navy. Run before {@link advanceShips} so an interdicted ship dies mid-voyage
+   * rather than completing its landing this tick.
+   */
+  private interceptTransports(): void {
+    if (this.ships.length === 0) return;
+    const warships: TileRef[] = [];
+    for (const [ref, type] of this.grid.activeBuildingEntries()) {
+      if (type === "warship") warships.push(ref);
+    }
+    if (warships.length === 0) return;
+
+    const map = this.grid.map;
+    const survivors: TransportShip[] = [];
+    for (const ship of this.ships) {
+      const tile = ship.path[ship.progress];
+      const sx = map.x(tile);
+      const sy = map.y(tile);
+      let sunk = false;
+      for (const w of warships) {
+        const owner = this.grid.ownerOf(w);
+        if (owner === ship.attacker) continue;
+        if (owner !== NEUTRAL_PLAYER && this.allies.areAllied(ship.attacker, owner)) continue;
+        if (Math.max(Math.abs(map.x(w) - sx), Math.abs(map.y(w) - sy)) <= WARSHIP_INTERCEPT_RANGE) {
+          sunk = true;
+          break;
+        }
+      }
+      if (!sunk) survivors.push(ship);
+    }
+    this.ships.length = 0;
+    this.ships.push(...survivors);
+  }
+
   private advanceShips(): void {
     const survivors: TransportShip[] = [];
 
@@ -480,6 +655,12 @@ export class RasterConflict {
         this.grid.addTroops(ship.attacker, ship.troops);
         continue;
       }
+      if (owner !== NEUTRAL_PLAYER && this.allies.areAllied(ship.attacker, owner)) {
+        // The destination became an ally's shore mid-voyage — the landing is
+        // called off and the troops disembark home rather than storming a friend.
+        this.grid.addTroops(ship.attacker, ship.troops);
+        continue;
+      }
 
       const cost = this.beachheadCost(dest, ship.attacker, owner, ship.troops);
       if (ship.troops < cost) {
@@ -498,7 +679,9 @@ export class RasterConflict {
         // owner, expanding from the freshly-taken beachhead.
         const existing = this.attacks.find((a) => a.attacker === ship.attacker && a.target === owner);
         if (existing) existing.committed += remaining;
-        else this.attacks.push({ attacker: ship.attacker, target: owner, committed: remaining, anchor: dest });
+        // A beachhead's inland push has no clicked target — it radiates outward
+        // from the landing tile (undirected).
+        else this.attacks.push({ attacker: ship.attacker, target: owner, committed: remaining, anchor: dest, toward: -1 });
       } else {
         this.grid.addTroops(ship.attacker, remaining);
       }
@@ -547,25 +730,16 @@ export class RasterConflict {
   private advanceAttacks(): void {
     const survivors: RasterAttack[] = [];
 
-    // Per-defender garrison resistance for this tick. A defender's pool resists
-    // the *combined* assault against it, not each front independently: sum every
-    // front's committed force per target, then snapshot one strength factor per
-    // defender from that total. So a nation attacked on several borders can't
-    // defend each at full strength — every extra front dilutes the factor (more
-    // committed force in the denominator) — and the value is stable for the whole
-    // tick regardless of the order fronts are processed in.
-    const committedAgainst = new Map<PlayerId, number>();
-    for (const a of this.attacks) {
-      if (a.target === NEUTRAL_PLAYER) continue;
-      committedAgainst.set(a.target, (committedAgainst.get(a.target) ?? 0) + a.committed);
-    }
-    const strengthByDefender = new Map<PlayerId, number>();
-    for (const [target, committed] of committedAgainst) {
-      strengthByDefender.set(target, defenderStrengthFactor(this.grid.troopsOf(target), committed));
-    }
-
     for (const attack of this.attacks) {
-      const frontier = this.orderedFrontier(attack.attacker, attack.target);
+      // An alliance forged while the front was already pushing turns it into
+      // friendly ground — the assault stands down and its troops come home in
+      // full (a peace, not a defeat, so no retreat malus).
+      if (attack.target !== NEUTRAL_PLAYER && this.allies.areAllied(attack.attacker, attack.target)) {
+        this.grid.addTroops(attack.attacker, attack.committed);
+        continue;
+      }
+
+      const frontier = this.orderedFrontier(attack.attacker, attack.target, attack.toward);
 
       // No reachable target tiles: the front is blocked or the target is gone.
       // Pulling back from a player is taxed (retreat malus); neutral is free.
@@ -579,52 +753,49 @@ export class RasterConflict {
       // pre-capture frontier so the label sits on the contested edge.
       attack.anchor = this.frontierAnchor(frontier);
 
-      // The defender-strength multiplier for this front, snapshotted above from
-      // the garrison's pool against the *combined* committed force pressing this
-      // defender. A strongly-held nation makes every tile dearer, so an
-      // under-committed assault stalls — this is what lets a defender repel an
-      // attack by holding troops — while attacking on multiple fronts dilutes it.
-      const strengthFactor = strengthByDefender.get(attack.target) ?? 1;
+      const vsPlayer = attack.target !== NEUTRAL_PLAYER;
+      const defenderTroops = vsPlayer ? this.grid.troopsOf(attack.target) : 0;
+      // Snapshot the defender's raw density and per-tile bleed once for the tick,
+      // so capturing many tiles this advance doesn't compound either mid-front.
+      const defenderDensity = vsPlayer ? this.defenderDensityOf(attack.target) : 0;
+      const defenderBleed = vsPlayer ? this.defenderLossFor(attack.target) : 0;
+      // A sprawling nation defends each tile worse (OpenFront's defenseSig), so
+      // its tiles cost the attacker less — an anti-snowball lever. Snapshotted
+      // once for the tick from the defender's current territory.
+      const largeFactor = vsPlayer ? largeDefenderLossFactor(this.grid.tileCountOf(attack.target)) : 1;
 
-      // Spend at most this slice of the remaining troops this tick, but always
-      // enough to attempt the cheapest possible capture so progress is steady.
-      // The front advances faster the bigger the attacker's troop advantage
-      // (a weak garrison is overrun quicker, a strong one slows the push);
-      // `expansionSpeed` is the attacker's own speed modifier (Swift Attacker).
+      // Tiles this front may take this tick (OpenFront's `attackTilesPerTick`):
+      // it scales with the attacker's troop advantage and the contested border
+      // width, so an overwhelming assault rolls fast while an under-committed poke
+      // barely creeps. `expansionSpeed` is the attacker's own speed modifier.
       const expansionSpeed = this.grid.modifiersOf(attack.attacker).expansionSpeed;
-      const speed = expansionSpeed * attackSpeedFactor(strengthFactor);
-      const budget = Math.max(NEUTRAL_CAPTURE_COST, attack.committed * EXPANSION_SPEND_FRACTION * speed);
-      let spent = 0;
-      // Snapshot the defender's per-tile bleed once for the tick: capturing many
-      // tiles this advance shouldn't compound the density loss mid-front.
-      const defenderLoss = attack.target !== NEUTRAL_PLAYER ? this.defenderLossFor(attack.target) : 0;
+      const budget = Math.max(
+        1,
+        Math.round(attackTilesPerTick(defenderTroops, attack.committed, frontier.length, vsPlayer) * expansionSpeed),
+      );
 
+      let taken = 0;
       for (const ref of frontier) {
+        if (taken >= budget) break;
         // A tile may have been captured already if a player relinquished it; skip
         // anything no longer owned by the target.
         if (this.grid.ownerOf(ref) !== attack.target) continue;
-        const cost = this.captureCost(ref, attack.target, strengthFactor);
-        if (attack.committed < cost) continue;
-        // The first affordable tile (highest priority) is always taken so a front
-        // never deadlocks on ground that costs more than one tick's budget; later
-        // tiles this tick must fit the remaining budget, keeping advance gradual.
-        if (spent > 0 && spent + cost > budget) continue;
+        // OpenFront's per-tile attacker loss: the ratio shifts as the assault is
+        // spent down, so a front that bleeds out grinds to a halt on the spot.
+        const loss = this.attackerTileLoss(ref, attack.target, attack.committed, defenderTroops, defenderDensity) * largeFactor;
+        if (attack.committed < loss) break;
 
-        if (attack.target !== NEUTRAL_PLAYER) {
-          this.grid.addTroops(attack.target, -defenderLoss);
-        }
+        if (vsPlayer) this.grid.addTroops(attack.target, -defenderBleed);
         this.grid.claim(ref, attack.attacker);
-        attack.committed -= cost;
-        spent += cost;
+        attack.committed -= loss;
+        taken += 1;
       }
 
-      // Decide the attack's fate. The frontier was non-empty (handled above), so
-      // `spent === 0` means nothing on it was affordable — the front is blocked by
-      // terrain/defence cost, a retreat that taxes player refunds (and can't
-      // stall, since otherwise it would carry the same troops forever). Capturing
-      // something then winding down below the cheapest tile is a natural finish,
-      // whose sub-1 remainder is returned whole.
-      if (spent === 0) {
+      // Decide the attack's fate. Nothing taken means the leading frontier tile
+      // was unaffordable — the front is blocked (a retreat that taxes player
+      // refunds, and can't stall carrying the same troops forever). Otherwise a
+      // sub-1 remainder is returned whole; anything more survives to push on.
+      if (taken === 0) {
         this.refundRetreat(attack.attacker, attack.committed, attack.target);
       } else if (attack.committed < NEUTRAL_CAPTURE_COST) {
         this.grid.addTroops(attack.attacker, attack.committed);

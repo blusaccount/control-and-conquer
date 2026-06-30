@@ -19,8 +19,21 @@ export interface PlayerModifiers {
   seaRange: number;
   /** Scales boat speed (lower sea-crossing surcharge + faster animation). */
   seaSpeed: number;
-  /** Scales troop income. */
+  /**
+   * Scales how many transport ships the player may have at sea at once (the base
+   * cap times this, bounded ≥1). Mirrors `seaRange` so both naval limits flex
+   * through the same per-player plumbing instead of one being a hard constant.
+   */
+  shipCapacity: number;
+  /** Scales troop income (the per-tick growth). */
   income: number;
+  /**
+   * Scales the player's maximum population — their territory-scaled troop
+   * ceiling. Mirrors OpenFront's per-difficulty cap multiplier for nations (and
+   * the bot ÷3): a lower ceiling caps how big an AI's army can ever get, on top
+   * of the {@link income} growth multiplier.
+   */
+  troopCapMultiplier: number;
 }
 
 /** A modifiers bundle with no effect — every player's baseline. */
@@ -29,5 +42,7 @@ export const IDENTITY_MODIFIERS: PlayerModifiers = Object.freeze({
   defense: 1,
   seaRange: 1,
   seaSpeed: 1,
+  shipCapacity: 1,
   income: 1,
+  troopCapMultiplier: 1,
 });

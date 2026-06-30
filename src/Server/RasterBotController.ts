@@ -1,7 +1,7 @@
 import type { RasterGameSession } from "./RasterGameSession.js";
 import type { GameMap, TileRef } from "../Core/GameMap.js";
 import { NEUTRAL_PLAYER, type PlayerId, type TerritoryGrid } from "../Core/TerritoryGrid.js";
-import { MAX_POOL_PER_TILE } from "../Core/rasterCombatConfig.js";
+import { maxTroops } from "../Core/rasterCombatConfig.js";
 import { buildingCost } from "../Core/buildings.js";
 import type { RasterServerMessage, RasterSnapshot } from "../Core/types.js";
 
@@ -77,14 +77,14 @@ export const DEFAULT_RASTER_BOT_CONFIG: RasterBotConfig = {
  * same data the snapshot already carries to every client — each player's exact
  * troop pool and tile count is public — so the bot gains no hidden information;
  * it simply skips a redundant base64 decode. Crucially, reading the grid lets the
- * bot consult precomputed **sea links**, so it can plan amphibious assaults
- * across narrow straits instead of stranding itself on its home landmass (the
- * old land-only frontier scan's fatal flaw on water-heavy maps).
+ * bot consult **water-component reachability**, so it can plan amphibious boat
+ * assaults onto coasts across the sea instead of stranding itself on its home
+ * landmass (the old land-only frontier scan's fatal flaw on water-heavy maps).
  *
  * ## Strategy
  * Every `decisionCooldownTicks`, once it has banked `minPool` troops, the bot:
  *  1. Enumerates the owners its border touches — neutral land and each rival —
- *     via {@link TerritoryGrid.frontierTargets} (one pass, sea crossings included).
+ *     via {@link TerritoryGrid.frontierTargets} (land borders plus boat targets).
  *  2. Finds the weakest rival it can currently beat on troops
  *     (`myPool >= theirPool * attackPoolRatio`).
  *  3. Picks a move by personality:
@@ -119,7 +119,9 @@ export class RasterBotController {
     // Subscribe headless (wantsRaster=false): the bot reads engine state via
     // peekGrid and never decodes the wire ownership, so the session skips the
     // costly per-tick owner encoding for it.
-    const unsubscribe = session.subscribe(this.config.botId, (message) => this.onMessage(message), true, false);
+    // isBot=true so the session applies the per-difficulty AI handicaps and the
+    // full conquer bounty when this nation is beaten.
+    const unsubscribe = session.subscribe(this.config.botId, (message) => this.onMessage(message), true, false, undefined, true);
     return () => {
       this.session = null;
       this.myPlayerId = null;
@@ -168,9 +170,14 @@ export class RasterBotController {
     const grid = this.session.peekGrid();
     const map = this.session.peekMap();
 
-    // Reinvest banked gold into a city independent of the troop decision below,
-    // so a maturing bot economy keeps compounding without stalling expansion.
-    this.maybeBuildCity(grid, map);
+    // Reinvest banked gold into structures independent of the troop decision
+    // below, so a maturing bot economy keeps compounding without stalling
+    // expansion.
+    this.maybeBuild(grid, map);
+
+    // Diplomacy: answer pending offers, sue for peace with a dangerous rival, or
+    // (for the ruthless) betray a pact that has boxed it in. One move per tick.
+    this.manageDiplomacy(grid);
 
     if (grid.troopsOf(this.myPlayerId) < this.config.personality.minPool) return;
 
@@ -178,32 +185,116 @@ export class RasterBotController {
   }
 
   /**
-   * Queue a city build when the bot can afford its next one and has interior
-   * land to place it on. Picks the lowest-`TileRef` owned tile not already built
-   * on — deterministic, so replays stay identical.
+   * Reinvest banked gold into one structure this decision. A coastal bot opens a
+   * **port** first — a steady trade dividend that compounds its economy — then
+   * pours the rest into **cities**. At most one structure per call so the bot
+   * doesn't dump its whole treasury at once. Deterministic throughout
+   * (lowest-`TileRef` eligible tile).
    */
-  private maybeBuildCity(grid: TerritoryGrid, map: GameMap): void {
+  private maybeBuild(grid: TerritoryGrid, map: GameMap): void {
+    const me = this.myPlayerId;
+    if (me === null || !this.session) return;
+    if (grid.tileCountOf(me) < RasterBotController.MIN_TILES_TO_BUILD) return;
+    // One port for the coastal gold dividend, then compound into cities.
+    if (this.tryQueueBuild(grid, map, "port", (ref) => map.isShore(ref), 1)) return;
+    this.tryQueueBuild(grid, map, "city", () => true);
+  }
+
+  /**
+   * Queue a build of `type` on the lowest-`TileRef` owned, unbuilt, `eligible`
+   * tile when the bot can afford its next one and owns fewer than `cap` of the
+   * type. Returns whether an order was queued, so the caller can fall through to
+   * the next building choice. Deterministic, so replays stay identical.
+   */
+  private tryQueueBuild(
+    grid: TerritoryGrid,
+    map: GameMap,
+    type: "city" | "port",
+    eligible: (ref: TileRef) => boolean,
+    cap = Number.POSITIVE_INFINITY,
+  ): boolean {
+    const me = this.myPlayerId;
+    const session = this.session;
+    if (me === null || !session) return false;
+    const owned = grid.buildingCountOf(me, type);
+    if (owned >= cap) return false;
+    if (grid.goldOf(me) < buildingCost(type, owned)) return false;
+
+    for (const ref of grid.tilesOf(me)) {
+      if (!grid.hasBuilding(ref) && eligible(ref)) {
+        session.queueBuild(this.config.botId, { targetX: map.x(ref), targetY: map.y(ref), building: type });
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Run at most one diplomacy move per decision, in priority order:
+   *  1. **Answer** the lowest-id pending alliance offer. Defensive personalities
+   *     welcome any ally; aggressive ones accept only an offer from someone at
+   *     least as strong (never a weakling they could simply eat).
+   *  2. **Propose** peace to the strongest rival on its border that clearly
+   *     outguns it — only defensive bots sue for peace, and only against a real
+   *     threat.
+   *  3. **Betray:** a ruthless bot hemmed in *only* by allies (no neutral land,
+   *     no other rival to fight) turns on the weakest ally it decisively outguns
+   *     rather than stagnate behind its own pacts.
+   * Deterministic throughout (ascending-id tiebreaks, no RNG).
+   */
+  private manageDiplomacy(grid: TerritoryGrid): void {
     const me = this.myPlayerId;
     const session = this.session;
     if (me === null || !session) return;
-    if (grid.tileCountOf(me) < RasterBotController.MIN_TILES_TO_BUILD) return;
-    const cost = buildingCost("city", grid.buildingCountOf(me, "city"));
-    if (grid.goldOf(me) < cost) return;
+    const alliances = session.peekAlliances();
+    const p = this.config.personality;
+    const myPool = grid.troopsOf(me);
 
-    let target: TileRef | null = null;
-    for (const ref of grid.tilesOf(me)) {
-      if (!grid.hasBuilding(ref)) {
-        target = ref;
-        break;
-      }
+    // 1) Respond to a pending offer.
+    const incoming = alliances.incomingProposals(me);
+    if (incoming.length > 0) {
+      const from = incoming[0];
+      const accept = p.aggression < 0.5 || grid.troopsOf(from) >= myPool;
+      session.respondAlliance(this.config.botId, from, accept);
+      return;
     }
-    if (target === null) return;
 
-    session.queueBuild(this.config.botId, {
-      targetX: map.x(target),
-      targetY: map.y(target),
-      building: "city",
-    });
+    const bordering = grid.frontierTargets(me).filter((t) => t.target !== NEUTRAL_PLAYER);
+
+    // 2) Defensive bots sue for peace with a clearly stronger bordering rival.
+    if (p.aggression < 0.5) {
+      let threat: PlayerId | null = null;
+      let threatPool = -1;
+      for (const t of bordering) {
+        if (alliances.areAllied(me, t.target) || alliances.hasProposal(me, t.target)) continue;
+        const theirPool = grid.troopsOf(t.target);
+        if (theirPool > myPool * 1.5 && theirPool > threatPool) {
+          threatPool = theirPool;
+          threat = t.target;
+        }
+      }
+      if (threat !== null) session.proposeAlliance(this.config.botId, threat);
+      return;
+    }
+
+    // 3) Betrayal — only for the ruthless, and only when fully hemmed in by allies.
+    if (p.aggression >= 0.9) {
+      const hasOpenTarget = grid.frontierTargets(me).some(
+        (t) => t.target === NEUTRAL_PLAYER || !alliances.areAllied(me, t.target),
+      );
+      if (hasOpenTarget) return;
+      let prey: PlayerId | null = null;
+      let preyPool = Infinity;
+      for (const t of bordering) {
+        if (!alliances.areAllied(me, t.target)) continue;
+        const theirPool = grid.troopsOf(t.target);
+        if (myPool >= theirPool * (p.attackPoolRatio + 0.5) && theirPool < preyPool) {
+          preyPool = theirPool;
+          prey = t.target;
+        }
+      }
+      if (prey !== null) session.breakAlliance(this.config.botId, prey);
+    }
   }
 
   /** Pick and queue one expand intent for this decision tick (or bank troops). */
@@ -213,12 +304,17 @@ export class RasterBotController {
     if (me === null || !session) return;
     const p = this.config.personality;
     const pool = grid.troopsOf(me);
+    const alliances = session.peekAlliances();
 
     const targets = grid.frontierTargets(me);
     if (targets.length === 0) return; // Fully boxed in — nothing reachable; bank income.
 
     const neutral = targets.find((t) => t.target === NEUTRAL_PLAYER) ?? null;
-    const enemies = targets.filter((t) => t.target !== NEUTRAL_PLAYER);
+    // Allies are off the table — a pact bars attacking them, so they never enter
+    // the target-selection maths (the engine would reject such an intent anyway).
+    const enemies = targets.filter(
+      (t) => t.target !== NEUTRAL_PLAYER && !alliances.areAllied(me, t.target),
+    );
 
     // Weakest rival we can currently beat on troop pool (deterministic tiebreak:
     // lowest pool, then lowest target id thanks to ascending `targets` order).
@@ -250,9 +346,12 @@ export class RasterBotController {
       fraction = p.attackCommit;
     } else {
       // Boxed in by stronger rivals only. Banking income is the right call —
-      // unless the pool is saturating (capped at tiles * MAX_POOL_PER_TILE), in
-      // which case further income is lost, so spend down on the softest target.
-      const cap = grid.tileCountOf(me) * MAX_POOL_PER_TILE;
+      // unless the pool is saturating (capped at the territory-scaled ceiling),
+      // in which case further income is lost, so spend down on the softest target.
+      // With nothing left to fight (only allies or neutral-free borders), bank.
+      if (enemies.length === 0) return;
+      const cap = maxTroops(grid.tileCountOf(me), grid.activeBuildingCountOf(me, "city")) *
+        grid.modifiersOf(me).troopCapMultiplier;
       if (pool < cap * 0.9) return;
       const softest = enemies.reduce((a, b) => (grid.troopsOf(b.target) < grid.troopsOf(a.target) ? b : a));
       sample = softest.sample;
