@@ -1200,13 +1200,13 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     for (const [key, path] of paths) {
       if (key === meKey) continue;
       ctx.strokeStyle = key;
-      ctx.lineWidth = 1.4;
+      ctx.lineWidth = 1.8;
       ctx.stroke(path);
     }
     const mePath = paths.get(meKey);
     if (mePath) {
       ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
-      ctx.lineWidth = 2.2;
+      ctx.lineWidth = 2.4;
       ctx.stroke(mePath);
     }
     ctx.restore();
