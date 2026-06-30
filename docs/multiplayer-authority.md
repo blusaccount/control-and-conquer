@@ -67,9 +67,17 @@ Client                              Server
    tick) mutates ownership and troop pools. There is no path by which a client
    can influence state except through validated, queued intents.
 
-4. **Broadcast**: after every tick the session sends a full `RasterSnapshot` to
-   each subscriber. Static terrain bytes are shipped only on the first snapshot
-   per client (keyed by `terrainHash`); subsequent snapshots omit them.
+4. **Broadcast**: after every tick the session sends a `RasterSnapshot` to each
+   subscriber. The subscriber-independent body (player standings, buildings,
+   fronts, diplomacy, …) is assembled **once per tick** (`buildSharedSnapshot`)
+   and reused for every subscriber; only the per-client ownership view is
+   attached afterwards (`attachOwnership`). Static terrain bytes are shipped only
+   on the first snapshot per client (keyed by `terrainHash`); ownership is sent
+   as the full raster once, then as compact per-tile deltas. Headless subscribers
+   (server-side bots) take the shared body verbatim — no terrain, no ownership
+   encoding, no per-subscriber allocation — since they read engine state directly.
+   This keeps the per-tick cost from scaling with the number of subscribers, which
+   is what a shared multiplayer session needs.
 
 ---
 

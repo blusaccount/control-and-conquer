@@ -116,8 +116,21 @@ export interface BuildSnapshotInput {
   allianceRequests?: RasterAllianceRequest[];
 }
 
-export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot => {
-  const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, includeTerrain, terrainHash, terrainBase64, winnerPlayerId, recentEvents, crossings, ships, fronts, rails = [], trains = [], ownerDeltaBase64, omitOwner, eliminated, alliances = [], allianceRequests = [] } = input;
+/**
+ * Build every field of a snapshot that does **not** vary between subscribers:
+ * the player standings, placed buildings, fronts/ships/rails/trains, scalar
+ * match state and diplomacy. The per-subscriber bits — the terrain bytes and the
+ * ownership raster (full or delta) — are deliberately omitted here and attached
+ * afterwards by {@link attachOwnership}.
+ *
+ * Splitting the snapshot this way lets the session build this (relatively
+ * expensive — it allocates the player array and sorts the building map) body
+ * **once per tick** and reuse it for every subscriber, instead of rebuilding it
+ * per client. Headless subscribers (bots) can take the returned object verbatim
+ * since they never read the ownership raster at all.
+ */
+export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot => {
+  const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, terrainHash, winnerPlayerId, recentEvents, crossings, ships, fronts, rails = [], trains = [], eliminated, alliances = [], allianceRequests = [] } = input;
 
   const players: RasterPlayerInfo[] = [];
   for (const id of grid.players()) {
@@ -158,15 +171,6 @@ export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
     width: map.width,
     height: map.height,
     terrainHash,
-    ...(includeTerrain ? { terrainBase64 } : {}),
-    // Ownership representation: omitted entirely for headless subscribers; else
-    // an incremental delta when the caller supplies one, otherwise the full
-    // raster.
-    ...(omitOwner
-      ? {}
-      : ownerDeltaBase64 !== undefined
-        ? { ownerDeltaBase64 }
-        : { ownerBase64: encodeOwners(grid.owner) }),
     players,
     capturableCount: grid.capturableCount,
     winnerPlayerId,
@@ -180,4 +184,45 @@ export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
     alliances,
     allianceRequests,
   };
+};
+
+/**
+ * Attach the per-subscriber terrain bytes and ownership raster to a freshly
+ * **copied** shared snapshot body, returning a snapshot ready to send. The
+ * shared body is never mutated, so a single body can be fanned out to many
+ * subscribers, each getting its own terrain/ownership decision:
+ *  - `includeTerrain` — emit the (large, static) terrain bytes (first snapshot).
+ *  - `ownerDeltaBase64` — emit an incremental ownership update; otherwise the
+ *    full raster is encoded (via `fullOwner`, which the caller can memoise so a
+ *    high-churn tick encodes the full raster at most once across subscribers).
+ *  - `omitOwner` — ship no ownership at all (headless/bot subscribers).
+ */
+export const attachOwnership = (
+  shared: RasterSnapshot,
+  opts: {
+    includeTerrain: boolean;
+    terrainBase64: string;
+    ownerDeltaBase64?: string;
+    omitOwner?: boolean;
+    fullOwner: () => string;
+  },
+): RasterSnapshot => {
+  const snapshot: RasterSnapshot = { ...shared };
+  if (opts.includeTerrain) snapshot.terrainBase64 = opts.terrainBase64;
+  if (!opts.omitOwner) {
+    if (opts.ownerDeltaBase64 !== undefined) snapshot.ownerDeltaBase64 = opts.ownerDeltaBase64;
+    else snapshot.ownerBase64 = opts.fullOwner();
+  }
+  return snapshot;
+};
+
+export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot => {
+  const shared = buildSharedSnapshot(input);
+  return attachOwnership(shared, {
+    includeTerrain: input.includeTerrain,
+    terrainBase64: input.terrainBase64,
+    ownerDeltaBase64: input.ownerDeltaBase64,
+    omitOwner: input.omitOwner,
+    fullOwner: () => encodeOwners(input.grid.owner),
+  });
 };

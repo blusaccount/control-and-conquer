@@ -23,7 +23,8 @@ import { RASTER_MATCH_DURATION_SECONDS } from "../Core/rasterCombatConfig.js";
 import { BUILDING_DEFS, buildingCost } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import type { RasterMatchPhase } from "../Core/types.js";
-import { buildRasterSnapshot, encodeOwnerDelta, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
+import { attachOwnership, buildSharedSnapshot, encodeOwnerDelta, encodeOwners, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
+import type { RasterSnapshot } from "../Core/types.js";
 
 export type RasterMessageHandler = (message: RasterServerMessage) => void;
 
@@ -556,7 +557,7 @@ export class RasterGameSession {
       this.pendingExpands.length = 0;
       this.pendingBuilds.length = 0;
       if (this.spawnTicksElapsed < this.spawnPhaseTicks) {
-        for (const subscriber of this.subscribers.values()) this.sendSnapshotTo(subscriber);
+        this.broadcastSnapshots();
         return;
       }
       // Countdown over: seat any no-shows and switch to the game phase, then fall
@@ -681,9 +682,7 @@ export class RasterGameSession {
       });
     }
 
-    for (const subscriber of this.subscribers.values()) {
-      this.sendSnapshotTo(subscriber);
-    }
+    this.broadcastSnapshots();
 
     // Give every player eliminated this tick their own end-of-run summary now —
     // a defeat screen the instant their last tile falls, rather than leaving them
@@ -1032,33 +1031,18 @@ export class RasterGameSession {
     }
   }
 
-  private sendSnapshotTo(subscriber: RasterSubscriber): void {
-    // Headless subscribers (bots) read engine state directly and discard the
-    // wire ownership, so we skip the terrain bytes and the whole-map owner
-    // encoding for them entirely — the single biggest per-tick saving on large
-    // maps, multiplied across every bot in the match.
-    const includeTerrain = subscriber.wantsRaster && !subscriber.hasTerrain;
-    const owner = this.grid.owner;
-
-    // Owner encoding: the first snapshot (and any with no baseline yet) carries
-    // the full raster and seeds the baseline. Later snapshots send only the
-    // tiles that changed — unless the churn is so high that a full resend would
-    // be smaller, in which case we resend in full.
-    let ownerDeltaBase64: string | undefined;
-    if (subscriber.wantsRaster) {
-      if (subscriber.lastOwner === null) {
-        subscriber.lastOwner = Uint16Array.from(owner);
-      } else {
-        const { deltaBase64, changed } = encodeOwnerDelta(subscriber.lastOwner, owner);
-        // 6 bytes/change vs 2 bytes/tile full: a delta only wins below ~1/3 churn.
-        if (changed * 3 <= owner.length) ownerDeltaBase64 = deltaBase64;
-      }
-    }
-
+  /**
+   * Assemble the subscriber-independent snapshot body for the current tick —
+   * the player standings, buildings, fronts and all scalar/diplomacy state. The
+   * ownership raster and terrain bytes are *not* included; those are attached
+   * per subscriber in {@link sendSnapshotTo}. Built once and shared across every
+   * subscriber so the (allocation-heavy) player/building assembly runs once per
+   * tick rather than once per client.
+   */
+  private buildSharedBody(): RasterSnapshot {
     const spawnRemainingTicks =
       this.phase === "spawn" ? Math.max(0, this.spawnPhaseTicks - this.spawnTicksElapsed) : 0;
-
-    const snapshot = buildRasterSnapshot({
+    return buildSharedSnapshot({
       tick: this.conflict.tick,
       mapName: this.mapName,
       phase: this.phase,
@@ -1066,7 +1050,7 @@ export class RasterGameSession {
       map: this.map,
       grid: this.grid,
       playerMeta: this.playerMeta,
-      includeTerrain,
+      includeTerrain: false,
       terrainHash: this.terrainHash,
       terrainBase64: this.terrainBase64,
       winnerPlayerId: this.conflict.winner,
@@ -1076,11 +1060,71 @@ export class RasterGameSession {
       fronts: this.lastFronts,
       rails: this.lastRails,
       trains: this.lastTrains,
-      ownerDeltaBase64,
-      omitOwner: !subscriber.wantsRaster,
       eliminated: this.eliminated,
       alliances: this.alliances.pairs(),
       allianceRequests: this.alliances.proposals(),
+    });
+  }
+
+  /**
+   * Broadcast a snapshot to every subscriber for the current tick, building the
+   * shared body just once and memoising any full-owner encoding so a high-churn
+   * tick encodes the whole raster at most once even with many human clients.
+   */
+  private broadcastSnapshots(): void {
+    const shared = this.buildSharedBody();
+    let fullOwnerCache: string | undefined;
+    const fullOwner = (): string => (fullOwnerCache ??= encodeOwners(this.grid.owner));
+    for (const subscriber of this.subscribers.values()) {
+      this.sendSnapshotTo(subscriber, shared, fullOwner);
+    }
+  }
+
+  /**
+   * Send one subscriber its snapshot. Reuses the shared body (built once per
+   * broadcast) and attaches this subscriber's ownership view:
+   *  - Headless subscribers (bots) read engine state directly and discard the
+   *    wire ownership, so they take the shared body verbatim — no terrain bytes,
+   *    no owner encoding, no per-subscriber allocation at all.
+   *  - Real clients get the terrain once, then per-tile owner deltas against
+   *    their own baseline (falling back to a full resend when churn is high).
+   *
+   * `shared`/`fullOwner` default so a one-off send (on subscribe / spawn pick)
+   * outside the broadcast loop still works.
+   */
+  private sendSnapshotTo(
+    subscriber: RasterSubscriber,
+    shared: RasterSnapshot = this.buildSharedBody(),
+    fullOwner: () => string = () => encodeOwners(this.grid.owner),
+  ): void {
+    if (!subscriber.wantsRaster) {
+      // Bots only read tick/phase/winner off the body — share it as-is.
+      subscriber.send({ type: "SERVER_RASTER_SNAPSHOT", payload: shared });
+      return;
+    }
+
+    const includeTerrain = !subscriber.hasTerrain;
+    const owner = this.grid.owner;
+
+    // Owner encoding: the first snapshot (and any with no baseline yet) carries
+    // the full raster and seeds the baseline. Later snapshots send only the
+    // tiles that changed — unless the churn is so high that a full resend would
+    // be smaller, in which case we resend in full. encodeOwnerDelta advances the
+    // baseline in place either way, so it stays in sync even on a full resend.
+    let ownerDeltaBase64: string | undefined;
+    if (subscriber.lastOwner === null) {
+      subscriber.lastOwner = Uint16Array.from(owner);
+    } else {
+      const { deltaBase64, changed } = encodeOwnerDelta(subscriber.lastOwner, owner);
+      // 6 bytes/change vs 2 bytes/tile full: a delta only wins below ~1/3 churn.
+      if (changed * 3 <= owner.length) ownerDeltaBase64 = deltaBase64;
+    }
+
+    const snapshot = attachOwnership(shared, {
+      includeTerrain,
+      terrainBase64: this.terrainBase64,
+      ownerDeltaBase64,
+      fullOwner,
     });
     subscriber.send({ type: "SERVER_RASTER_SNAPSHOT", payload: snapshot });
     if (includeTerrain) {
