@@ -124,15 +124,16 @@ export const buildRasterSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
     const meta = playerMeta.get(id) ?? { name: `Player ${id}`, color: "#888" };
     const tiles = grid.tileCountOf(id);
     const cities = grid.buildingCountOf(id, "city");
+    const ports = grid.buildingCountOf(id, "port");
     players.push({
       playerId: id,
       name: meta.name,
       color: meta.color,
       troops: Math.floor(grid.troopsOf(id)),
       gold: Math.floor(grid.goldOf(id)),
-      goldPerSecond: goldPerSecond(tiles, cities, SIMULATION_TICK_RATE),
+      goldPerSecond: goldPerSecond(tiles, cities, ports, SIMULATION_TICK_RATE),
       cities,
-      ports: grid.buildingCountOf(id, "port"),
+      ports,
       forts: grid.buildingCountOf(id, "fort"),
       factories: grid.buildingCountOf(id, "factory"),
       tiles,

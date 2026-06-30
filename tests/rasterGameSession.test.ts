@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { RasterGameSession } from "../src/Server/RasterGameSession.js";
-import { MAX_SEA_CROSSING_TILES } from "../src/Core/rasterCombatConfig.js";
 import { NEUTRAL_PLAYER } from "../src/Core/TerritoryGrid.js";
 import type { RasterServerMessage, RasterSnapshot } from "../src/Core/types.js";
 
@@ -20,10 +19,10 @@ const lastSnapshot = (messages: RasterServerMessage[]): RasterSnapshot => {
 };
 
 /**
- * Stage a sea assault for player 1 on a hand-authored map: find a sea-link pair
- * spanning two landmasses, give player 1 a coastal foothold on the near one, and
- * return the far tile to click. Procedural continents almost never place a small
- * island within ship range of a spawn, so we construct the situation explicitly.
+ * Stage a sea assault for player 1 on a hand-authored map: give player 1 a
+ * coastal foothold and return a neutral tile on a *different* landmass that a
+ * transport can reach by water — so the only way there is by ship. Footholds
+ * that reach nothing are reverted, leaving exactly the one that works claimed.
  */
 const stageSeaTarget = (session: RasterGameSession): { x: number; y: number } => {
   const grid = session.peekGrid();
@@ -33,21 +32,20 @@ const stageSeaTarget = (session: RasterGameSession): { x: number; y: number } =>
     return -1;
   })();
   for (let a = 0; a < map.size; a += 1) {
+    if (!grid.isCapturable(a) || !map.isShore(a) || grid.ownerOf(a) !== 0) continue;
     const compA = grid.landComponentId(a);
-    if (compA < 0) continue;
-    // Only consider links within a base player's reach: the crossing graph now
-    // spans the wider port/perk-extended range, but an un-upgraded player (and so
-    // this test) can only auto-target shores inside MAX_SEA_CROSSING_TILES.
-    for (const b of grid.seaLinks.neighborsWithin(a, MAX_SEA_CROSSING_TILES)) {
+    grid.claim(a, 1); // player 1 gains a coast on landmass A
+    for (let b = 0; b < map.size; b += 1) {
+      if (grid.ownerOf(b) !== 0 || !grid.isCapturable(b)) continue;
       const compB = grid.landComponentId(b);
       // b must be a different landmass from both the foothold and the spawn, so
-      // the only way to reach it is by ship.
-      if (compB === compA || compB === spawnComp || grid.ownerOf(b) !== 0) continue;
-      grid.claim(a, 1); // player 1 gains a coast on landmass A
-      return { x: map.x(b), y: map.y(b) };
+      // the only route is a boat.
+      if (compB === compA || compB === spawnComp) continue;
+      if (grid.findSeaPath(1, b) !== null) return { x: map.x(b), y: map.y(b) };
     }
+    grid.claim(a, NEUTRAL_PLAYER); // this foothold reached nothing — revert it
   }
-  throw new Error("no cross-landmass sea link on this map");
+  throw new Error("no cross-landmass sea target on this map");
 };
 
 test("first subscriber gets PLAYER_ASSIGNED and an initial snapshot with terrain", () => {

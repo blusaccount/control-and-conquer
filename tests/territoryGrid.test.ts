@@ -4,7 +4,6 @@ import { GameMap, type TileRef } from "../src/Core/GameMap.js";
 import { NEUTRAL_PLAYER, type PlayerId, TerritoryGrid } from "../src/Core/TerritoryGrid.js";
 import { encodeTile, IMPASSABLE_MAGNITUDE } from "../src/Core/terrainCodec.js";
 import { generateTerrain } from "../src/Core/terrainGenerator.js";
-import { MAX_SEA_CROSSING_TILES } from "../src/Core/rasterCombatConfig.js";
 
 /** Build a flat all-land map of the given size (elevation 0). */
 const flatLand = (width: number, height: number, elevation = 0): GameMap => {
@@ -188,7 +187,8 @@ test("frontierTargets agrees with per-target frontierOf on a real map", () => {
 test("frontierOf matches a brute-force scan over a real generated map", () => {
   // The owned-set-driven frontier must be byte-identical to a naive full-raster
   // scan that asks, per capturable target tile, whether the attacker can reach
-  // it across a land border or a sea crossing.
+  // it across a land border or by boat. (The map is well under the sea-scan
+  // budget, so a boat target is exactly a tile findSeaPath can route to.)
   const map = generateTerrain({ width: 40, height: 28, seed: 7 });
   const grid = new TerritoryGrid(map);
   const players: PlayerId[] = [1, 2, 3];
@@ -210,14 +210,11 @@ test("frontierOf matches a brute-force scan over a real generated map", () => {
     const out: TileRef[] = [];
     for (let ref = 0; ref < map.size; ref += 1) {
       if (grid.ownerOf(ref) !== target || !grid.isCapturable(ref)) continue;
-      // Players here have default modifiers, so their effective sea reach is the
-      // base crossing range — mirror that with neighborsWithin (the graph itself
-      // is now built out to the wider perk-boosted maximum).
+      // Reachable iff the attacker borders it by land, or a transport could be
+      // routed to it (findSeaPath is the same connectivity the frontier uses).
       const reaches =
         map.neighbors(ref).some((n) => grid.ownerOf(n) === attacker) ||
-        grid.seaLinks
-          .neighborsWithin(ref, MAX_SEA_CROSSING_TILES)
-          .some((n) => grid.ownerOf(n) === attacker);
+        grid.findSeaPath(attacker, ref) !== null;
       if (reaches) out.push(ref);
     }
     return out;

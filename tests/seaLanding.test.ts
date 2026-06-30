@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildTerrainFromMask } from "../src/Core/terrainBuilder.js";
-import { TerritoryGrid } from "../src/Core/TerritoryGrid.js";
+import { NEUTRAL_PLAYER, TerritoryGrid } from "../src/Core/TerritoryGrid.js";
 
 /** Build a TerritoryGrid from rows of '#' (land) / '.' (water). */
 const gridFromRows = (rows: string[]): TerritoryGrid => {
@@ -62,6 +62,30 @@ test("a click toward a disconnected body routes to the nearest reachable shore",
   grid.claim(grid.map.ref(0, 0), 1);
   assert.equal(grid.findSeaPath(1, grid.map.ref(4, 0)), null, "land4 on seaB is directly unreachable");
   assert.equal(grid.resolveSeaLanding(1, grid.map.ref(4, 0)), grid.map.ref(2, 0), "routes to the reachable seaA shore");
+});
+
+test("a target across water is frontier (a boat target), never a land hop", () => {
+  // col0 owned | col1 water | col2 neutral land — a separate landmass reachable
+  // only by boat. Going fully OpenFront, the land frontier never crosses water,
+  // but the boat target still surfaces so the AI can choose to sail there.
+  const grid = gridFromRows(["#.#", "#.#", "#.#"]);
+  grid.addPlayer(1, 50);
+  for (let y = 0; y < 3; y += 1) grid.claim(grid.map.ref(0, y), 1);
+
+  const here = grid.map.ref(0, 1);
+  const farLand = grid.map.ref(2, 1);
+  // Different landmasses: no land route exists between them.
+  assert.notEqual(grid.landComponentId(here), grid.landComponentId(farLand));
+  // The far coast is on the frontier as a boat target, and surfaces in the
+  // per-owner summary the bots read.
+  assert.ok(grid.frontierOf(1, NEUTRAL_PLAYER).includes(farLand), "boat target is on the frontier");
+  const target = grid.frontierTargets(1).find((t) => t.target === NEUTRAL_PLAYER);
+  assert.ok(target, "frontierTargets surfaces the neutral coast across the water");
+  assert.equal(
+    grid.landComponentId(target!.sample),
+    grid.landComponentId(farLand),
+    "its sample sits on the far landmass, reachable only by boat",
+  );
 });
 
 test("a fully landlocked player can launch no boats", () => {

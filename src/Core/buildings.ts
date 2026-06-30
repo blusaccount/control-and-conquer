@@ -66,11 +66,11 @@ export const CITY_GOLD_PER_TICK = 0.05;
 export const CITY_TROOP_INCOME_PER_TICK = 0.1;
 
 /**
- * Sea-range bonus (as a fraction added to the base crossing reach) each port
- * grants its owner, letting a maritime nation project transport ships across
- * wider water. Folded into {@link TerritoryGrid.seaRangeOf} and bounded there.
+ * Extra gold per tick each port adds — a coastal trade dividend (OpenFront's
+ * ports drive the maritime economy). Set a touch above a city's so claiming and
+ * developing coastline is worthwhile now that transports cross water freely.
  */
-export const PORT_SEA_RANGE_PER = 0.34;
+export const PORT_GOLD_PER_TICK = 0.08;
 
 /** A fort's defense-post aura — strength multiplier and radius (in tiles). */
 export const FORT_DEFENSE_STRENGTH = 2;
@@ -140,7 +140,7 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
   port: {
     type: "port",
     name: "Port",
-    description: "Extends how far your fronts spread across water on their own.",
+    description: "A coastal trade hub: steady gold income.",
     icon: "\u{2693}", // ⚓
     baseCost: 80,
     costGrowth: 1.5,
@@ -175,12 +175,15 @@ export const buildingCost = (type: BuildingType, owned: number): number => {
 };
 
 /**
- * Gold generated per second by a player at the current territory + city count —
- * the figure the HUD/leaderboard shows as "(+N/s)". Derived from the same
- * per-tick income the engine applies so the displayed rate matches reality.
+ * Gold generated per second by a player at the current territory, city and port
+ * count — the figure the HUD/leaderboard shows as "(+N/s)". Derived from the
+ * same per-tick income the engine applies so the displayed rate matches reality.
  */
 export const goldPerSecond = (
   tiles: number,
   cities: number,
+  ports: number,
   ticksPerSecond: number,
-): number => (tiles * GOLD_PER_TILE_PER_TICK + cities * CITY_GOLD_PER_TICK) * ticksPerSecond;
+): number =>
+  (tiles * GOLD_PER_TILE_PER_TICK + cities * CITY_GOLD_PER_TICK + ports * PORT_GOLD_PER_TICK) *
+  ticksPerSecond;
