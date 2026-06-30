@@ -1,5 +1,3 @@
-import { Buffer } from "node:buffer";
-import { createHash } from "node:crypto";
 import type { GameMap } from "../Core/GameMap.js";
 import type { TerritoryGrid } from "../Core/TerritoryGrid.js";
 import { troopsPerSecond } from "../Core/rasterCombatConfig.js";
@@ -8,15 +6,30 @@ import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import type { RasterAlliancePair, RasterAllianceRequest, RasterAttackFront, RasterBuilding, RasterCrossing, RasterMatchPhase, RasterPlayerInfo, RasterRail, RasterShip, RasterSnapshot, RasterTrain } from "../Core/types.js";
 
 /**
- * Serialize a `GameMap`'s static terrain into base64 plus a stable hash.
- *
- * Hash is SHA-256 truncated to 12 hex chars — collisions are astronomically
- * unlikely for our use case (client-side terrain cache key) and the short
- * string keeps wire size down.
+ * Stable 12-hex-char fingerprint of the terrain bytes, used purely as a
+ * client-side cache key (no cryptographic strength required). Two independent
+ * FNV-1a passes give 48 bits — ample to tell our handful of maps apart — using
+ * only portable integer math, so this module stays free of `node:crypto` and can
+ * run unchanged in a browser Web Worker.
+ */
+const hashTerrain = (bytes: Uint8Array): string => {
+  let h1 = 0x811c9dc5;
+  let h2 = 0xcafebabe;
+  for (let i = 0; i < bytes.length; i += 1) {
+    h1 = Math.imul(h1 ^ bytes[i], 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ bytes[i], 0x01000193) >>> 0;
+  }
+  return (h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0")).slice(0, 12);
+};
+
+/**
+ * Serialize a `GameMap`'s static terrain into base64 plus a stable hash. Uses the
+ * Node `Buffer` global on the server for a fast native base64; the worker path
+ * never calls this (it passes terrain bytes to the main thread directly).
  */
 export const encodeTerrain = (map: GameMap): { terrainBase64: string; terrainHash: string } => {
   const terrainBase64 = Buffer.from(map.terrain).toString("base64");
-  const terrainHash = createHash("sha256").update(map.terrain).digest("hex").slice(0, 12);
+  const terrainHash = hashTerrain(map.terrain);
   return { terrainBase64, terrainHash };
 };
 
