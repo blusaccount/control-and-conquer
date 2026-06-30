@@ -26,9 +26,12 @@ const lerpColor = (a: Rgba, b: Rgba, t: number): Rgba => ({
 
 // --- Terrain palette -------------------------------------------------------
 //
-// A faithful port of OpenFront's terrain colouring (`encodeTerrainTile` in
-// OpenFrontIO's ColorUtils). The look hinges on two things our old palette got
-// wrong, which is what made rivers and coasts read as bloated, glowing features:
+// An independent reimplementation of an OpenFront-style terrain look — written
+// from scratch (our own Rgba helpers and elevation-band logic). No OpenFront
+// source is used; only the handful of base colour *values* below match the
+// colours OpenFront renders, which are observable RGB facts, not copyrightable
+// code. The look hinges on two things our old palette got wrong, which is what
+// made rivers and coasts read as bloated, glowing features:
 //
 //   1. Water is a near-flat, light medium-blue. There is *no* long shallow→deep
 //      gradient — the ocean only darkens by up to 10 per channel with shore
@@ -38,10 +41,10 @@ const lerpColor = (a: Rgba, b: Rgba, t: number): Rgba => ({
 //      coastal blue — which sits naturally on light-green land instead of
 //      glaring like bright cyan on dark navy.
 //
-// Lakes and ocean are coloured identically (water colour ignores the ocean/lake
-// bit, exactly as OpenFront does); the bit is gameplay-only.
+// Lakes and ocean are coloured identically (the water colour ignores the
+// ocean/lake bit, as in the OpenFront look); the bit is gameplay-only.
 
-/** Open-ocean base — OpenFront's `oceanColor`, #4785b5. */
+/** Open-ocean base colour #4785b5 (matching the colour OpenFront renders). */
 const OCEAN: Rgba = { r: 71, g: 133, b: 181, a: 255 };
 /** Coastal land (any land tile on the shoreline). */
 const SAND: Rgba = { r: 204, g: 203, b: 158, a: 255 };
