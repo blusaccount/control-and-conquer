@@ -116,40 +116,46 @@ export const RETREAT_MALUS_FRACTION = 0.25;
 export const NEUTRAL_CAPTURE_COST = 1;
 
 /**
- * Base troop cost to capture a flat enemy-held tile at troop parity, before the
- * terrain, attacker-efficiency and garrison factors. Higher than neutral land:
- * an opposed border is dearer to push than empty wilderness.
- */
-export const ENEMY_CAPTURE_BASE = 3;
-
-/**
  * Flat attacker efficiency (OpenFront's ~20% attacker bonus): the attacker loses
- * this fraction of the nominal cost per tile, so committing to an assault is a
- * touch cheaper than the raw terrain/garrison maths imply. < 1 favours the
- * attacker; 1 would be neutral.
+ * 0.8× the nominal per-tile magnitude, so committing to an assault is a touch
+ * cheaper than the raw terrain/garrison maths imply.
  */
 export const ATTACKER_EFFICIENCY = 0.8;
 
 /**
- * Terrain capture-cost multipliers by elevation band, mirroring OpenFront's
- * plains/highland/mountain split (plains are softer, mountains dearer). Land
- * elevation runs 0–30 (see `terrainCodec`); the two thresholds bucket it into
- * the three bands. The multiplier scales the *attacker's* per-tile loss, so high
- * ground is harder to take — but only mildly (a ~1.4× spread), as in OpenFront,
- * rather than the steep linear ramp the engine used before.
+ * Terrain combat profile by elevation band, mirroring OpenFront's
+ * plains/highland/mountain `mag`/`speed` pairs. `mag` is the per-tile troop-loss
+ * magnitude (higher ground costs the attacker more); `speed` biases how fast the
+ * front rolls through. Land elevation runs 0–30 (see `terrainCodec`), bucketed by
+ * the two thresholds into three bands; magnitude 31 is impassable (never owned or
+ * attacked), matching OpenFront's encoding.
  */
-export const TERRAIN_PLAINS_MAX_ELEVATION = 7;
-export const TERRAIN_HIGHLAND_MAX_ELEVATION = 18;
-export const TERRAIN_LOSS_PLAINS = 0.9;
-export const TERRAIN_LOSS_HIGHLAND = 1.0;
-export const TERRAIN_LOSS_MOUNTAIN = 1.3;
+export const TERRAIN_PLAINS_MAX_ELEVATION = 9;
+export const TERRAIN_HIGHLAND_MAX_ELEVATION = 19;
+export interface TerrainCombat {
+  /** Per-tile troop-loss magnitude. */
+  readonly mag: number;
+  /** Advance-rate bias (higher = the front moves through faster). */
+  readonly speed: number;
+}
+export const TERRAIN_COMBAT_PLAINS: TerrainCombat = { mag: 80, speed: 16.5 };
+export const TERRAIN_COMBAT_HIGHLAND: TerrainCombat = { mag: 100, speed: 20 };
+export const TERRAIN_COMBAT_MOUNTAIN: TerrainCombat = { mag: 120, speed: 25 };
 
-/** Capture-cost multiplier for a tile's terrain, by its land elevation (0–30). */
-export const terrainLossMultiplier = (elevation: number): number => {
-  if (elevation <= TERRAIN_PLAINS_MAX_ELEVATION) return TERRAIN_LOSS_PLAINS;
-  if (elevation <= TERRAIN_HIGHLAND_MAX_ELEVATION) return TERRAIN_LOSS_HIGHLAND;
-  return TERRAIN_LOSS_MOUNTAIN;
+/** Combat profile (mag/speed) for a tile's terrain, by its land elevation (0–30). */
+export const terrainCombat = (elevation: number): TerrainCombat => {
+  if (elevation <= TERRAIN_PLAINS_MAX_ELEVATION) return TERRAIN_COMBAT_PLAINS;
+  if (elevation <= TERRAIN_HIGHLAND_MAX_ELEVATION) return TERRAIN_COMBAT_HIGHLAND;
+  return TERRAIN_COMBAT_MOUNTAIN;
 };
+
+/** Divisor for the attacker's per-tile loss when claiming neutral land (mag/5). */
+export const NEUTRAL_LOSS_DIVISOR = 5;
+/** Weights blending the troop-ratio loss term with the defender-density term. */
+export const ATTACK_RATIO_LOSS_WEIGHT = 0.6;
+export const ATTACK_DENSITY_LOSS_WEIGHT = 0.4;
+/** Multiplier on the density term of the attacker's per-tile loss (OpenFront's 1.3). */
+export const ATTACK_DENSITY_FACTOR = 1.3;
 
 /**
  * Garrison-strength clamp bounds for {@link defenderStrengthFactor}. The cost an
@@ -188,26 +194,50 @@ export const defenderStrengthFactor = (defenderTroops: number, attackerTroops: n
 };
 
 /**
- * How much faster (or slower) a front advances given the garrison it faces —
- * OpenFront's "conquest speed scales with the attacker's advantage". The speed
- * is simply the reciprocal of the garrison factor: a weak defender (factor < 1)
- * is overrun faster, a strong one (factor > 1) slows the advance. Neutral land
- * has no garrison (factor 1), so it advances at the base rate.
- *
- * The bounds are **derived from** the garrison-factor band rather than picked
- * independently, so they stay consistent with it: the only input in play is
- * {@link defenderStrengthFactor}'s output, itself clamped to
- * [{@link DEFENDER_STRENGTH_MIN}, {@link DEFENDER_STRENGTH_MAX}], so the speed
- * can only ever range over [1/MAX, 1/MIN]. Hard-coding a wider ceiling (the old
- * `2.0`) was dead — the reciprocal of a clamped-in factor could never reach it —
- * and misleadingly implied a speed the engine can't produce. A degenerate
- * non-positive factor still floors to the ceiling.
+ * Troops the attacker loses to capture one *enemy* tile, mirroring OpenFront's
+ * `attackLogic`: a blend of (a) the clamped defender/attacker troop ratio times
+ * the terrain magnitude and the flat attacker bonus, and (b) the defender's troop
+ * density spread over the magnitude. `mag` is the tile's magnitude *after* any
+ * defensive multipliers (defense post, fortress wall). A weak, thinly-spread
+ * defender is cheap to roll over; a dense, well-garrisoned one is dear — so a
+ * stockpiled army has real defensive value and high ground costs more to take.
  */
-export const ATTACK_SPEED_MIN = 1 / DEFENDER_STRENGTH_MAX;
-export const ATTACK_SPEED_MAX = 1 / DEFENDER_STRENGTH_MIN;
-export const attackSpeedFactor = (garrisonFactor: number): number => {
-  if (garrisonFactor <= 0) return ATTACK_SPEED_MAX;
-  return Math.min(ATTACK_SPEED_MAX, Math.max(ATTACK_SPEED_MIN, 1 / garrisonFactor));
+export const attackerLossPerTile = (
+  defenderTroops: number,
+  defenderDensity: number,
+  attackForce: number,
+  mag: number,
+): number => {
+  const ratioTerm = defenderStrengthFactor(defenderTroops, attackForce) * mag * ATTACKER_EFFICIENCY;
+  const densityTerm = ATTACK_DENSITY_FACTOR * defenderDensity * (mag / 100);
+  return ATTACK_RATIO_LOSS_WEIGHT * ratioTerm + ATTACK_DENSITY_LOSS_WEIGHT * densityTerm;
+};
+
+/** Troops the attacker loses to claim one neutral tile of magnitude `mag` (mag/5). */
+export const neutralLossPerTile = (mag: number): number => mag / NEUTRAL_LOSS_DIVISOR;
+
+/**
+ * Tiles a front may capture in a single tick, mirroring OpenFront's
+ * `attackTilesPerTick`. Against a player the budget scales with the attacker's
+ * troop advantage (clamped into a band) and the contested border width; against
+ * neutral land it is simply a multiple of the border. `border` is the number of
+ * frontier tiles pressed this tick. So an overwhelming assault rolls fast while
+ * an under-committed poke barely creeps.
+ */
+export const ENEMY_TILES_PER_TICK_MIN = 0.01;
+export const ENEMY_TILES_PER_TICK_MAX = 0.5;
+export const ENEMY_TILES_BORDER_MULT = 3;
+export const NEUTRAL_TILES_BORDER_MULT = 2;
+export const attackTilesPerTick = (
+  defenderTroops: number,
+  attackForce: number,
+  border: number,
+  vsPlayer: boolean,
+): number => {
+  if (!vsPlayer) return border * NEUTRAL_TILES_BORDER_MULT;
+  const advantage = ((5 * attackForce) / Math.max(1, defenderTroops)) * 2;
+  const clamped = Math.min(ENEMY_TILES_PER_TICK_MAX, Math.max(ENEMY_TILES_PER_TICK_MIN, advantage));
+  return clamped * border * ENEMY_TILES_BORDER_MULT;
 };
 
 /**
