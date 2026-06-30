@@ -134,6 +134,11 @@ interface RasterRuntime {
   players: RasterPlayerInfo[];
   recentEvents: string[];
   matchEnded: boolean;
+  /**
+   * True when *this player* was eliminated mid-match. Actions are blocked but
+   * the map keeps updating so they can spectate the rest of the game.
+   */
+  myEliminated: boolean;
   winnerPlayerId: number | null;
   /** Offscreen 1px-per-tile render of terrain + ownership, updated per snapshot. */
   base: HTMLCanvasElement | null;
@@ -329,6 +334,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     players: [],
     recentEvents: [],
     matchEnded: false,
+    myEliminated: false,
     winnerPlayerId: null,
     base: null,
     baseImage: null,
@@ -436,7 +442,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
 
   /** Refresh each build button's cost, affordability and selected state. */
   const refreshBuildMenu = (): void => {
-    const canBuild = runtime.spawned && runtime.phase === "playing" && !runtime.matchEnded;
+    const canBuild = runtime.spawned && runtime.phase === "playing" && !runtime.matchEnded && !runtime.myEliminated;
     for (const btn of ui.buildMenu.querySelectorAll<HTMLButtonElement>("[data-building]")) {
       const type = btn.getAttribute("data-building") as BuildingType;
       const cost = buildingCost(type, myBuildingCount(type));
@@ -480,28 +486,46 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   const onMatchEnded = (payload: RasterMatchEndedPayload): void => {
-    runtime.matchEnded = true;
-    runtime.winnerPlayerId = payload.winnerPlayerId;
-    setStatus(ui, payload.stats.won ? "You won the run!" : "Run over.", "victory");
+    // A mid-match elimination sends winnerPlayerId=null + stats.eliminated=true.
+    // In that case we enter spectate mode rather than ending the match — the player
+    // can dismiss the defeat overlay and keep watching the remaining action.
+    const isEliminatedMidMatch = payload.stats.eliminated && payload.winnerPlayerId === null;
+
+    if (isEliminatedMidMatch) {
+      runtime.myEliminated = true;
+      // Don't set matchEnded: keep receiving snapshots for spectating.
+      ui.teamInfo.textContent = `Spectating — ${runtime.myName}`;
+      ui.teamInfo.style.color = "#94a3b8";
+    } else {
+      runtime.matchEnded = true;
+      runtime.winnerPlayerId = payload.winnerPlayerId;
+    }
+
+    setStatus(ui, payload.stats.won ? "You won the run!" : isEliminatedMidMatch ? "Eliminated — spectating." : "Run over.", "victory");
 
     const storage = safeStorage();
     const record = recordRun(storage, payload, Date.now());
-    showStatsScreen(payload, record, loadRunHistory(storage));
+    showStatsScreen(payload, record, loadRunHistory(storage), isEliminatedMidMatch);
   };
 
   /**
    * Render the post-match stats screen: this run's verdict and key figures, a
    * Play-Again button, and a short tail of previous runs from local history.
+   * When `spectateMode` is true (mid-match elimination), a "Spectate" button is
+   * shown that dismisses the overlay so the player can watch the rest of the game.
    */
   const showStatsScreen = (
     payload: RasterMatchEndedPayload,
     record: RunRecord,
     history: RunRecord[],
+    spectateMode = false,
   ): void => {
     const { stats, reason, durationTicks, tickRate } = payload;
     const verdictClass = stats.won ? "win" : "loss";
-    const verdictText = stats.won ? "Victory!" : stats.eliminated ? "Eliminated" : "Defeated";
-    const reasonText = reason === "conquest" ? "by conquest" : "on the clock";
+    const verdictText = stats.won ? "Victory!" : stats.eliminated ? "Eliminated!" : "Defeated";
+    const reasonText = spectateMode
+      ? "Your nation was conquered"
+      : reason === "conquest" ? "by conquest" : "on the clock";
     const matchSeconds = tickRate > 0 ? Math.round(durationTicks / tickRate) : 0;
 
     const recent = history
@@ -516,23 +540,37 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       })
       .join("");
 
+    const spectateBtn = spectateMode
+      ? `<button id="statsSpectate" class="menu-button" type="button" style="width:100%;margin-top:8px;">Spectate the battle</button>`
+      : "";
+
     ui.statsOverlay.innerHTML =
       `<div class="stats-card">` +
       `<p class="verdict ${verdictClass}">${verdictText}</p>` +
-      `<p class="run-label">Run #${record.run} · ${escapeHtml(reasonText)} · match ${formatDuration(matchSeconds)}</p>` +
+      `<p class="run-label">` +
+      (spectateMode ? `${escapeHtml(reasonText)} after ${formatDuration(matchSeconds)}` : `Run #${record.run} · ${escapeHtml(reasonText)} · match ${formatDuration(matchSeconds)}`) +
+      `</p>` +
       `<div class="stats-grid">` +
       `<span class="k">Peak territory</span><span class="v">${stats.peakTiles} tiles</span>` +
       `<span class="k">Final territory</span><span class="v">${stats.finalTiles} tiles</span>` +
       `<span class="k">Eliminations</span><span class="v">${stats.kills}</span>` +
       `<span class="k">Survival time</span><span class="v">${formatDuration(record.survivedSeconds)}</span>` +
       `</div>` +
-      `<button id="statsPlayAgain" class="menu-button primary" type="button" style="width:100%;margin-top:16px;">Play Again</button>` +
-      (recent ? `<div class="stats-history"><h3>Recent runs</h3>${recent}</div>` : "") +
+      spectateBtn +
+      `<button id="statsPlayAgain" class="menu-button primary" type="button" style="width:100%;margin-top:${spectateMode ? "8" : "16"}px;">Play Again</button>` +
+      (recent && !spectateMode ? `<div class="stats-history"><h3>Recent runs</h3>${recent}</div>` : "") +
       `</div>`;
     ui.statsOverlay.classList.remove("hidden");
 
     const again = ui.statsOverlay.querySelector<HTMLButtonElement>("#statsPlayAgain");
     again?.addEventListener("click", () => window.location.reload());
+
+    // Spectate: dismiss the overlay so the player can watch the rest of the battle
+    const spectateButton = ui.statsOverlay.querySelector<HTMLButtonElement>("#statsSpectate");
+    spectateButton?.addEventListener("click", () => {
+      ui.statsOverlay.classList.add("hidden");
+      setStatus(ui, "Spectating — your nation was eliminated. Watch the rest of the battle.");
+    });
   };
 
   const onAssigned = (payload: RasterPlayerAssignedPayload): void => {
@@ -640,6 +678,17 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     }
 
     runtime.fronts = snapshot.fronts ?? [];
+
+    // When spectating (eliminated mid-match), watch for the match to end via
+    // the snapshot's winnerPlayerId — eliminated players don't receive the
+    // SERVER_RASTER_MATCH_ENDED broadcast, so we pick it up here instead.
+    if (runtime.myEliminated && !runtime.matchEnded && snapshot.winnerPlayerId !== null) {
+      runtime.matchEnded = true;
+      runtime.winnerPlayerId = snapshot.winnerPlayerId;
+      const winnerInfo = snapshot.players.find((p) => p.playerId === snapshot.winnerPlayerId);
+      const winnerName = winnerInfo?.name ?? `Player ${snapshot.winnerPlayerId}`;
+      setStatus(ui, `Match over — ${escapeHtml(winnerName)} won!`, "victory");
+    }
 
     const ships = snapshot.ships ?? [];
     runtime.myShips = ships.reduce((n, s) => (s.playerId === runtime.myPlayerId ? n + 1 : n), 0);
@@ -1419,7 +1468,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     }
 
     const rel = diplomacyState();
-    const canDiplo = runtime.spawned && runtime.phase === "playing" && !runtime.matchEnded && runtime.myPlayerId !== null;
+    const canDiplo = runtime.spawned && runtime.phase === "playing" && !runtime.matchEnded && !runtime.myEliminated && runtime.myPlayerId !== null;
     const leaderId = active[0].playerId;
     ui.leaderboard.innerHTML = active
       .map((p) => {
@@ -1494,7 +1543,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   const endDrag = (event: PointerEvent): void => {
     if (!dragging) return;
     dragging = false;
-    if (moved || !runtime.map || runtime.matchEnded) return;
+    if (moved || !runtime.map || runtime.matchEnded || runtime.myEliminated) return;
 
     const { x, y } = toCanvasPixels(event);
     const tileX = Math.floor(runtime.view.x + x / runtime.view.scale);
