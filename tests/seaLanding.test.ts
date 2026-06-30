@@ -97,6 +97,32 @@ test("a fully landlocked player can launch no boats", () => {
   assert.equal(grid.findSeaPath(1, grid.map.ref(2, 2)), null, "no water, no sea path");
 });
 
+test("a far coast on the SAME landmass, across water, is a boat once out of land reach", () => {
+  // A horseshoe: one connected landmass whose two free ends (top of col0 and top
+  // of col2) are a single water tile apart across the bay (col1), but a long
+  // march apart around the bottom of the U. The attacker holds the left end and
+  // clicks the right end.
+  const grid = gridFromRows(["#.#", "#.#", "#.#", "###"]);
+  grid.addPlayer(1, 50);
+  grid.claim(grid.map.ref(0, 0), 1);
+
+  const here = grid.map.ref(0, 0);
+  const farEnd = grid.map.ref(2, 0);
+  // Same landmass — a contiguous land route exists (the long way round the U).
+  assert.equal(grid.landComponentId(here), grid.landComponentId(farEnd));
+  assert.ok(grid.ownsLandComponentOf(1, farEnd), "the far end is on the attacker's landmass");
+
+  // The land route round the U is 8 steps. Within a generous reach it is a march…
+  assert.equal(grid.canReachByLand(1, farEnd, 20), true, "reachable by land when the cap is generous");
+  // …but once the reach is shorter than that detour, the far coast is out of land
+  // reach — the click should become a boat across the bay instead.
+  assert.equal(grid.canReachByLand(1, farEnd, 2), false, "out of land reach under a short cap");
+  // And a boat can in fact cross: the near shore for the click is the end itself,
+  // one water tile from the attacker's coast.
+  assert.equal(grid.resolveSeaLanding(1, farEnd), farEnd, "the bay is crossable by boat");
+  assert.notEqual(grid.findSeaPath(1, farEnd), null, "a one-tile sea hop exists");
+});
+
 test("a boat routes across a sea and up a river to an inland shore", () => {
   // col0 is the attacker's coast; col1 is a sea strip joined to a river that runs
   // inland along row 1 (cols 1..8). The far shore (9,1) sits at the river's head,

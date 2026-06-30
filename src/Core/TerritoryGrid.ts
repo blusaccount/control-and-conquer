@@ -3,6 +3,7 @@ import {
   CLICK_SNAP_RADIUS,
   DEFENSE_POST_RADIUS,
   DEFENSE_POST_STRENGTH,
+  LAND_ATTACK_REACH,
   MAX_TRANSPORT_SHIPS_PER_PLAYER,
   SEA_TARGET_SCAN_BUDGET,
 } from "./rasterCombatConfig.js";
@@ -132,6 +133,9 @@ export class TerritoryGrid {
   // Reused, generation-stamped scratch for the {@link seaTargetTiles} BFS.
   private seaScanStamp?: Int32Array;
   private seaScanGeneration?: number;
+  // Reused, generation-stamped scratch for the {@link canReachByLand} BFS.
+  private landReachStamp?: Int32Array;
+  private landReachGeneration?: number;
 
   constructor(map: GameMap) {
     this.map = map;
@@ -246,6 +250,56 @@ export class TerritoryGrid {
     const comp = this.landComponent[ref];
     if (comp < 0) return false;
     return (this.componentCounts.get(player)?.get(comp) ?? 0) > 0;
+  }
+
+  /**
+   * True if a land attack could march from `player`'s territory to `dest` over a
+   * *bounded* corridor of contiguous capturable land — i.e. `dest` is close
+   * enough by land that crossing it on foot is the sensible route. This is the
+   * land-vs-boat gate (OpenFront's model): a 4-connected BFS spreads out of
+   * `dest` over capturable land (any owner) and succeeds the instant it touches a
+   * tile `player` owns, but gives up once it has travelled `maxSteps` tiles.
+   *
+   * The cap is the whole point. Two coasts of one giant landmass are technically
+   * land-connected, so an unbounded "same landmass?" test ({@link
+   * ownsLandComponentOf}) would always answer "march" — and a click on a coast
+   * across a bay would crawl a front the long way round instead of sending a
+   * boat. Bounding the reach makes a far coast fall through to an amphibious
+   * order ({@link resolveSeaLanding}) exactly when the land detour is long, which
+   * is what a player means by "that landmass across the water".
+   *
+   * Fast-rejects via {@link ownsLandComponentOf} when `dest` is on a landmass the
+   * player holds no ground on (a different island can never be land-reachable),
+   * so the BFS only runs for same-landmass clicks. Generation-stamped scratch
+   * keeps repeated calls allocation-free.
+   */
+  canReachByLand(player: PlayerId, dest: TileRef, maxSteps: number = LAND_ATTACK_REACH): boolean {
+    if (!this.isCapturable(dest)) return false;
+    // Different landmass (or none) → no land route exists at any distance.
+    if (!this.ownsLandComponentOf(player, dest)) return false;
+
+    const size = this.map.size;
+    const stamp = (this.landReachStamp ??= new Int32Array(size).fill(-1));
+    const generation = (this.landReachGeneration = (this.landReachGeneration ?? 0) + 1);
+    // Parallel depth tracked in the queue so we can stop past `maxSteps`.
+    const queue: TileRef[] = [dest];
+    const depth: number[] = [0];
+    stamp[dest] = generation;
+
+    for (let head = 0; head < queue.length; head += 1) {
+      const tile = queue[head];
+      const d = depth[head];
+      for (const n of this.map.neighbors(tile)) {
+        // Touching the player's own ground means a contiguous front can reach here.
+        if (this.owner[n] === player) return true;
+        if (d < maxSteps && this.isCapturable(n) && stamp[n] !== generation) {
+          stamp[n] = generation;
+          queue.push(n);
+          depth.push(d + 1);
+        }
+      }
+    }
+    return false;
   }
 
   /** Adjust `player`'s owned-tile tally for one land component by `delta`. */
