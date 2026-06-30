@@ -10,12 +10,13 @@ import {
   buildingCost,
   goldPerSecond,
   BUILDING_DEFS,
+  GOLD_BASE_PER_TICK,
   GOLD_PER_TILE_PER_TICK,
   CITY_GOLD_PER_TICK,
   PORT_GOLD_PER_TICK,
   FORT_DEFENSE_STRENGTH,
 } from "../src/Core/buildings.js";
-import { MAX_POOL_PER_TILE } from "../src/Core/rasterCombatConfig.js";
+import { maxTroops } from "../src/Core/rasterCombatConfig.js";
 
 /** A flat all-land strip of `width` tiles — deterministic ground to own/build on. */
 const landStrip = (width: number): TerritoryGrid => {
@@ -42,25 +43,30 @@ const claimRun = (grid: TerritoryGrid, player: PlayerId, count: number): number[
 
 // --- buildings.ts pure maths -----------------------------------------------
 
-test("buildingCost ramps geometrically with how many you already own", () => {
-  assert.equal(buildingCost("city", 0), 100);
-  assert.equal(buildingCost("city", 1), 160); // 100 * 1.6
-  assert.equal(buildingCost("city", 2), 256); // 100 * 1.6^2
-  assert.equal(buildingCost("port", 0), 80);
-  assert.equal(buildingCost("fort", 0), 120);
-  // Each successive structure of a type costs strictly more.
+test("buildingCost follows OpenFront's capped ramps (geometric ×2, linear fort)", () => {
+  // City/port/factory double each time, capped at 1,000,000.
+  assert.equal(buildingCost("city", 0), 125_000);
+  assert.equal(buildingCost("city", 1), 250_000); // 125k * 2
+  assert.equal(buildingCost("city", 2), 500_000); // 125k * 2^2
+  assert.equal(buildingCost("city", 4), 1_000_000); // capped (would be 2,000,000)
+  assert.equal(buildingCost("port", 0), 125_000);
+  assert.equal(buildingCost("factory", 0), 125_000);
+  // Fort (defense post) grows linearly, capped at 250,000.
+  assert.equal(buildingCost("fort", 0), 50_000); // (0+1) * 50k
+  assert.equal(buildingCost("fort", 1), 100_000);
+  assert.equal(buildingCost("fort", 9), 250_000); // capped (would be 500,000)
   assert.ok(buildingCost("port", 3) > buildingCost("port", 0));
 });
 
-test("goldPerSecond folds in territory, city and port dividends", () => {
-  assert.equal(goldPerSecond(10, 0, 0, 20), 10 * GOLD_PER_TILE_PER_TICK * 20);
+test("goldPerSecond folds in the flat base plus territory, city and port dividends", () => {
+  assert.equal(goldPerSecond(10, 0, 0, 20), (GOLD_BASE_PER_TICK + 10 * GOLD_PER_TILE_PER_TICK) * 20);
   assert.equal(
     goldPerSecond(10, 2, 0, 20),
-    (10 * GOLD_PER_TILE_PER_TICK + 2 * CITY_GOLD_PER_TICK) * 20,
+    (GOLD_BASE_PER_TICK + 10 * GOLD_PER_TILE_PER_TICK + 2 * CITY_GOLD_PER_TICK) * 20,
   );
   assert.equal(
     goldPerSecond(10, 2, 3, 20),
-    (10 * GOLD_PER_TILE_PER_TICK + 2 * CITY_GOLD_PER_TICK + 3 * PORT_GOLD_PER_TICK) * 20,
+    (GOLD_BASE_PER_TICK + 10 * GOLD_PER_TILE_PER_TICK + 2 * CITY_GOLD_PER_TICK + 3 * PORT_GOLD_PER_TICK) * 20,
   );
 });
 
@@ -161,9 +167,10 @@ test("gold accrues each tick in proportion to tiles held", () => {
   claimRun(grid, 1, 10); // own 10 of 20 tiles (rest neutral so the match continues)
   const conflict = new RasterConflict(grid);
   for (let i = 0; i < 100; i += 1) conflict.processTick();
-  // 10 tiles * 0.01 gold/tile/tick * 100 ticks ≈ 10 gold (a sub-1 fractional
-  // remainder may still be sitting in the accumulator, so allow ±1).
-  assert.ok(grid.goldOf(1) >= 9 && grid.goldOf(1) <= 10, `expected ~10 gold, got ${grid.goldOf(1)}`);
+  // (base 100 + 10 tiles * 3) = 130 gold/tick * 100 ticks = 13,000 (the rate is a
+  // whole number here, so no fractional remainder lags behind).
+  const expected = (GOLD_BASE_PER_TICK + 10 * GOLD_PER_TILE_PER_TICK) * 100;
+  assert.equal(grid.goldOf(1), expected, `expected ${expected} gold, got ${grid.goldOf(1)}`);
 });
 
 test("a city boosts both gold income and troop growth", () => {
@@ -178,12 +185,14 @@ test("a city boosts both gold income and troop growth", () => {
   const withCity = makeGrid(true);
   const cPlain = new RasterConflict(plain);
   const cCity = new RasterConflict(withCity);
-  for (let i = 0; i < 200; i += 1) {
+  for (let i = 0; i < 600; i += 1) {
     cPlain.processTick();
     cCity.processTick();
   }
   assert.ok(withCity.goldOf(1) > plain.goldOf(1), "the city earns extra gold");
-  assert.ok(withCity.troopsOf(1) > plain.troopsOf(1), "the city earns extra troops");
+  // A city raises the population ceiling, so the bell-curve growth has more
+  // headroom and the pool climbs faster than the city-less empire's.
+  assert.ok(withCity.troopsOf(1) > plain.troopsOf(1), "the city's higher ceiling grows troops faster");
 });
 
 test("cities never push the troop pool past its territory soft cap", () => {
@@ -194,8 +203,8 @@ test("cities never push the troop pool past its territory soft cap", () => {
   for (let i = 0; i < 4; i += 1) grid.placeBuilding(refs[i], "city");
   const conflict = new RasterConflict(grid);
   for (let i = 0; i < 8000; i += 1) conflict.processTick();
-  const cap = grid.tileCountOf(1) * MAX_POOL_PER_TILE;
-  assert.ok(grid.troopsOf(1) <= cap, "the soft cap still bounds the pool with cities");
+  const cap = maxTroops(grid.tileCountOf(1), grid.buildingCountOf(1, "city"));
+  assert.ok(grid.troopsOf(1) <= cap, "the territory-scaled ceiling still bounds the pool with cities");
 });
 
 // --- RasterGameSession: end-to-end build flow ------------------------------
@@ -246,15 +255,19 @@ const stageBuilder = (
 
 test("a player with gold can build a city, spending the gold", () => {
   const { session, messages, build } = stageBuilder(11);
-  session.peekGrid().setGold(1, 500);
+  session.peekGrid().setGold(1, 1_000_000);
   session.queueBuild("human", { targetX: build.x, targetY: build.y, building: "city" });
   session.tick();
 
   const grid = session.peekGrid();
   assert.equal(grid.buildingCountOf(1, "city"), 1, "the city is placed");
-  // Build spends the base cost before income is applied; a 2-tile territory's
-  // per-tick gold income floors to 0, so the pool is exactly 500 - 100.
-  assert.equal(grid.goldOf(1), 500 - BUILDING_DEFS.city.baseCost);
+  // Build spends the base cost; one tick of gold income then accrues on top, so
+  // the pool sits just above (start - cost).
+  const afterCost = 1_000_000 - BUILDING_DEFS.city.baseCost;
+  assert.ok(
+    grid.goldOf(1) >= afterCost && grid.goldOf(1) < afterCost + 1000,
+    `expected ~${afterCost} gold after the build, got ${grid.goldOf(1)}`,
+  );
 
   const snap = lastSnapshot(messages);
   const me = snap.players.find((p) => p.playerId === 1);
@@ -291,16 +304,29 @@ test("building on a tile you don't own is rejected", () => {
 
 test("building on the founding tile is allowed (no capital restriction)", () => {
   const { session, messages, origin } = stageBuilder(14);
-  session.peekGrid().setGold(1, 500);
+  session.peekGrid().setGold(1, 100_000);
   session.queueBuild("human", { targetX: origin.x, targetY: origin.y, building: "fort" });
   session.tick();
   assert.ok(!rejections(messages).includes("NOT_BUILDABLE"), "the founding tile is just normal owned land now");
   assert.equal(session.peekGrid().buildingCountOf(1, "fort"), 1, "the fort is placed on the founding tile");
 });
 
+test("a second building too close to the first is rejected (minimum spacing)", () => {
+  // `build` and `origin` are adjacent tiles, well inside the 15-tile minimum
+  // spacing, so a structure on one blocks a structure on the other.
+  const { session, messages, build, origin } = stageBuilder(21);
+  session.peekGrid().setGold(1, 1_000_000);
+  session.queueBuild("human", { targetX: build.x, targetY: build.y, building: "fort" });
+  session.tick();
+  session.queueBuild("human", { targetX: origin.x, targetY: origin.y, building: "fort" });
+  session.tick();
+  assert.ok(rejections(messages).includes("TILE_OCCUPIED"), "the second, too-close build is rejected");
+  assert.equal(session.peekGrid().buildingCount, 1, "only the first structure stands");
+});
+
 test("a second building on the same tile is rejected as occupied", () => {
   const { session, messages, build } = stageBuilder(15);
-  session.peekGrid().setGold(1, 1000);
+  session.peekGrid().setGold(1, 1_000_000);
   session.queueBuild("human", { targetX: build.x, targetY: build.y, building: "city" });
   session.tick();
   session.queueBuild("human", { targetX: build.x, targetY: build.y, building: "port" });

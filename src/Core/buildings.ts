@@ -37,44 +37,80 @@ export interface BuildingDef {
   /**
    * Multiplier applied per building of the type the player already owns, so each
    * additional structure of a kind costs more (`baseCost * growth^owned`). Keeps
-   * a runaway empire from blanketing the map in free cities.
+   * a runaway empire from blanketing the map in free cities. Ignored when
+   * {@link costLinear} is set.
    */
   readonly costGrowth: number;
+  /**
+   * Hard cap on the cost of one building, mirroring OpenFront's per-structure
+   * ceilings (`min(1_000_000, …)` for cities/ports/factories, `min(250_000, …)`
+   * for defense posts), so the geometric/linear ramp plateaus instead of running
+   * away.
+   */
+  readonly costCap: number;
+  /**
+   * When set, the cost grows **linearly** — `baseCost * (owned + 1)` — instead of
+   * geometrically, mirroring OpenFront's defense-post pricing `(n + 1) * 50_000`.
+   */
+  readonly costLinear?: boolean;
 }
 
 // --- Economy constants -----------------------------------------------------
 
 /**
- * Fractional gold generated per owned tile per tick — the territory dividend.
- * Accumulated per player and flushed into the integer gold pool, mirroring the
- * troop income model. 0.01 at 20 TPS ≈ 0.2 gold/tile/second.
+ * Flat gold every player earns each tick regardless of size, mirroring
+ * OpenFront's per-tick `goldAdditionRate` base (a steady trickle independent of
+ * territory). The dominant gold engines in OpenFront are trade ships and trains;
+ * this base keeps structures affordable on the OpenFront cost scale (10⁵–10⁶)
+ * before that maritime/rail economy is built up.
  */
-export const GOLD_PER_TILE_PER_TICK = 0.01;
+export const GOLD_BASE_PER_TICK = 100;
+
+/**
+ * Gold generated per owned tile per tick — a territory dividend on top of the
+ * flat base, so holding more land still funds a bigger building programme. (A
+ * pragmatic stand-in for OpenFront's trade-driven gold until trade ships land;
+ * OpenFront's own passive gold is flat, with territory paying out via trade.)
+ */
+export const GOLD_PER_TILE_PER_TICK = 3;
 
 /** Every player starts a run with this much gold. */
 export const STARTING_GOLD = 0;
 
 /** Extra gold per tick each city adds on top of the territory dividend. */
-export const CITY_GOLD_PER_TICK = 0.05;
+export const CITY_GOLD_PER_TICK = 60;
 
 /**
- * Extra troop income per tick each city adds (before the logistic soft cap is
- * applied), so a city is also a military engine — not merely a gold mine. Still
- * multiplied by the empire's {@link growthFactor}, so cities never push the pool
- * past its territory-scaled ceiling.
+ * Troops each city adds to a player's **maximum** population (OpenFront's
+ * `cityTroopIncrease`). A city is a military engine by *raising the ceiling*, not
+ * by paying a per-tick dividend: it lifts `maxTroops` so the empire's bell-curve
+ * growth has more headroom to climb into. Sized to OpenFront's value so it stays
+ * consistent with the territory term (`2·(tiles^0.6·1000 + 50 000)`).
  */
-export const CITY_TROOP_INCOME_PER_TICK = 0.1;
+export const CITY_MAX_TROOP_INCREASE = 250_000;
 
 /**
  * Extra gold per tick each port adds — a coastal trade dividend (OpenFront's
  * ports drive the maritime economy). Set a touch above a city's so claiming and
  * developing coastline is worthwhile now that transports cross water freely.
  */
-export const PORT_GOLD_PER_TICK = 0.08;
+export const PORT_GOLD_PER_TICK = 60;
 
-/** A fort's defense-post aura — strength multiplier and radius (in tiles). */
-export const FORT_DEFENSE_STRENGTH = 2;
-export const FORT_DEFENSE_RADIUS = 4;
+/**
+ * A fort's defense-post aura — strength multiplier and radius (in tiles),
+ * mirroring OpenFront's defense post (`defensePostDefenseBonus` 5,
+ * `defensePostRange` 30). Capture cost peaks at `strength`× on the post and
+ * tapers over the radius (a smoothed rendition of OpenFront's in-range bonus).
+ */
+export const FORT_DEFENSE_STRENGTH = 5;
+export const FORT_DEFENSE_RADIUS = 30;
+
+/**
+ * Minimum Euclidean distance (tiles) required between two of a player's
+ * structures, mirroring OpenFront's `structureMinDist` (15). Keeps a player from
+ * stacking buildings on adjacent tiles; placement snaps/validates against it.
+ */
+export const STRUCTURE_MIN_DIST = 15;
 
 // --- Railroads + trains ----------------------------------------------------
 //
@@ -112,8 +148,11 @@ export const RAIL_MAX_LENGTH = 90;
 /** Most railroads any one station may anchor — caps fan-out into a mesh. */
 export const RAIL_MAX_CONNECTIONS = 4;
 
-/** Gold a train pays its owner each time it reaches a city or port station. */
-export const TRAIN_GOLD_PER_STATION = 10;
+/**
+ * Gold a train pays its owner each time it reaches a city or port station,
+ * scaled to OpenFront's train economy (its `trainGold` pays ~10 000+ per stop).
+ */
+export const TRAIN_GOLD_PER_STATION = 10_000;
 
 /** Tiles of track a train advances per tick. */
 export const TRAIN_TILES_PER_TICK = 3;
@@ -132,52 +171,59 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
   city: {
     type: "city",
     name: "City",
-    description: "Boosts gold income and troop growth.",
+    description: "Raises max population and pays a gold dividend.",
     icon: "\u{1F3DB}\u{FE0F}", // 🏛️
-    baseCost: 100,
-    costGrowth: 1.6,
+    baseCost: 125_000,
+    costGrowth: 2,
+    costCap: 1_000_000,
   },
   port: {
     type: "port",
     name: "Port",
-    description: "A coastal trade hub: steady gold income.",
+    description: "A coastal trade hub: steady gold income (must sit on a shore).",
     icon: "\u{2693}", // ⚓
-    baseCost: 80,
-    costGrowth: 1.5,
+    baseCost: 125_000,
+    costGrowth: 2,
+    costCap: 1_000_000,
   },
   fort: {
     type: "fort",
     name: "Fort",
     description: "Fortifies the surrounding tiles against capture.",
     icon: "\u{1F6E1}\u{FE0F}", // 🛡️
-    baseCost: 120,
-    costGrowth: 1.7,
+    baseCost: 50_000,
+    costGrowth: 1,
+    costCap: 250_000,
+    costLinear: true,
   },
   factory: {
     type: "factory",
     name: "Factory",
     description: "Lays railroads to nearby cities and ports; trains earn gold.",
     icon: "\u{1F3ED}", // 🏭
-    baseCost: 150,
-    costGrowth: 1.6,
+    baseCost: 125_000,
+    costGrowth: 2,
+    costCap: 1_000_000,
   },
 };
 
 /**
  * Gold cost for a player's next building of `type`, given how many of that type
- * they already own. Rounded to a whole number (rounding, not ceil, so float
- * noise like `100 * 1.6 = 160.000…3` doesn't tick the cost up by one). Grows
- * geometrically with `owned` (see {@link BuildingDef.costGrowth}).
+ * they already own. Grows geometrically (`baseCost * growth^owned`) or linearly
+ * (`baseCost * (owned + 1)`, see {@link BuildingDef.costLinear}), then clamps to
+ * the type's {@link BuildingDef.costCap} — mirroring OpenFront's capped ramps.
  */
 export const buildingCost = (type: BuildingType, owned: number): number => {
   const def = BUILDING_DEFS[type];
-  return Math.round(def.baseCost * Math.pow(def.costGrowth, Math.max(0, owned)));
+  const n = Math.max(0, owned);
+  const raw = def.costLinear ? def.baseCost * (n + 1) : def.baseCost * Math.pow(def.costGrowth, n);
+  return Math.min(def.costCap, Math.round(raw));
 };
 
 /**
  * Gold generated per second by a player at the current territory, city and port
- * count — the figure the HUD/leaderboard shows as "(+N/s)". Derived from the
- * same per-tick income the engine applies so the displayed rate matches reality.
+ * count — the figure the HUD/leaderboard shows as "(+N/s)". Includes the flat
+ * per-tick base so the displayed rate matches the engine's real income.
  */
 export const goldPerSecond = (
   tiles: number,
@@ -185,5 +231,8 @@ export const goldPerSecond = (
   ports: number,
   ticksPerSecond: number,
 ): number =>
-  (tiles * GOLD_PER_TILE_PER_TICK + cities * CITY_GOLD_PER_TICK + ports * PORT_GOLD_PER_TICK) *
+  (GOLD_BASE_PER_TICK +
+    tiles * GOLD_PER_TILE_PER_TICK +
+    cities * CITY_GOLD_PER_TICK +
+    ports * PORT_GOLD_PER_TICK) *
   ticksPerSecond;

@@ -5,7 +5,7 @@ import { generateTerrain } from "../src/Core/terrainGenerator.js";
 import { buildTerrainFromMask } from "../src/Core/terrainBuilder.js";
 import { TerritoryGrid } from "../src/Core/TerritoryGrid.js";
 import { encodeTerrain, encodeOwners, buildRasterSnapshot } from "../src/Server/rasterSerialization.js";
-import { INCOME_PER_TILE_PER_TICK, growthFactor } from "../src/Core/rasterCombatConfig.js";
+import { maxTroops, troopGrowth } from "../src/Core/rasterCombatConfig.js";
 import { SIMULATION_TICK_RATE } from "../src/Server/simulationConfig.js";
 
 test("encodeTerrain returns a stable hash for identical terrain", () => {
@@ -81,10 +81,10 @@ test("buildRasterSnapshot reports troopsPerSecond proportional to tiles", () => 
   });
   const row = snap.players[0];
   assert.equal(row.tiles, claimed);
-  // Rate must track the engine's real income: tiles * per-tick income * TPS,
-  // tapered by the logistic soft-cap growth factor (pool 50 of cap 4*50=200).
-  const expected =
-    claimed * INCOME_PER_TILE_PER_TICK * SIMULATION_TICK_RATE * growthFactor(50, claimed);
+  // Rate must track the engine's real income: OpenFront's per-tick bell-curve
+  // growth at the current pool (50) and territory-scaled ceiling, times TPS.
+  const expected = troopGrowth(50, maxTroops(claimed, 0)) * SIMULATION_TICK_RATE;
   assert.ok(row.troopsPerSecond > 0, "rate should be positive while below the cap");
-  assert.ok(Math.abs(row.troopsPerSecond - expected) < 1e-9, "rate should equal real (logistic) per-second income");
+  assert.ok(Math.abs(row.troopsPerSecond - expected) < 1e-9, "rate should equal real (bell-curve) per-second income");
+  assert.equal(row.maxTroops, Math.floor(maxTroops(claimed, 0)), "row reports the territory ceiling");
 });

@@ -23,7 +23,6 @@ import { paintRaster, paintTileInto } from "./rasterPaint.js";
 import { borderColor, playerColor, playerEmoji } from "./rasterPalette.js";
 import { loadRunHistory, recordRun, type RunRecord, type StorageLike } from "./runHistory.js";
 import { computeNameAnchors, type NameAnchor } from "./nameLayout.js";
-import { MAX_POOL_PER_TILE } from "../Core/rasterCombatConfig.js";
 import {
   BUILDING_DEFS,
   BUILDING_TYPES,
@@ -134,6 +133,8 @@ interface RasterRuntime {
   myColor: string;
   pool: number;
   myTiles: number;
+  /** Our territory-scaled troop ceiling (server-computed), for the pool/max HUD. */
+  myMaxTroops: number;
   myShips: number;
   /** Our troop-pool growth per second, for the top resource bar. */
   troopsPerSecond: number;
@@ -347,6 +348,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     myColor: "#888",
     pool: 0,
     myTiles: 0,
+    myMaxTroops: 0,
     myShips: 0,
     troopsPerSecond: 0,
     gold: 0,
@@ -686,6 +688,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const me = snapshot.players.find((p) => p.playerId === runtime.myPlayerId);
     runtime.pool = me?.troops ?? 0;
     runtime.myTiles = me?.tiles ?? 0;
+    runtime.myMaxTroops = me?.maxTroops ?? 0;
     runtime.troopsPerSecond = me?.troopsPerSecond ?? 0;
     runtime.gold = me?.gold ?? 0;
     runtime.goldPerSecond = me?.goldPerSecond ?? 0;
@@ -1405,7 +1408,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         : `Battle begins in ${runtime.spawnRemainingSeconds}s`;
       ui.goldInfo.innerHTML = `<span class="res res-muted">${escapeHtml(hint)}</span>`;
     } else {
-      const maxPool = runtime.myTiles * MAX_POOL_PER_TILE;
+      const maxPool = runtime.myMaxTroops;
       const pct = runtime.capturableTotal > 0 ? (runtime.myTiles / runtime.capturableTotal) * 100 : 0;
       const pctStr = pct >= 10 ? String(Math.round(pct)) : pct.toFixed(1);
       ui.goldInfo.innerHTML =
@@ -1576,7 +1579,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
           .join(" ");
         const allyMark = isAlly ? "🤝 " : "";
         const name = `${allyMark}${playerEmoji(p.playerId)} ${escapeHtml(p.name)}` + (isMe ? " (you)" : "");
-        const maxPool = p.tiles * MAX_POOL_PER_TILE;
+        const maxPool = p.maxTroops;
         const own = runtime.capturableTotal > 0 ? (p.tiles / runtime.capturableTotal) * 100 : 0;
         const ownStr = own >= 10 ? String(Math.round(own)) : own.toFixed(1);
         const stats =

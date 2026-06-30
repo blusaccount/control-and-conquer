@@ -3,7 +3,7 @@
  * touch game-state semantics (those live in `src/Core/conflictConfig.ts`).
  */
 
-export const SIMULATION_TICK_RATE = 20;
+export const SIMULATION_TICK_RATE = 10;
 export const TICK_INTERVAL_MS = 1000 / SIMULATION_TICK_RATE;
 
 /**

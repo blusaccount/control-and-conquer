@@ -65,6 +65,12 @@ export interface RasterPlayerInfo {
    */
   troopsPerSecond: number;
   /**
+   * Maximum troop pool at the current territory + city count (OpenFront's
+   * territory-scaled population ceiling). Server-computed so the HUD and
+   * leaderboard show `pool/max` without the client re-deriving the formula.
+   */
+  maxTroops: number;
+  /**
    * True once this player has been wiped off the map — their last tile captured.
    * A nation is beaten only when its *entire* territory has been taken (there is
    * no capital shortcut); eliminated players hold no tiles and are dropped from

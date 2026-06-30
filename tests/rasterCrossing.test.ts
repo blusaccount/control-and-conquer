@@ -7,6 +7,15 @@ import {
   MAX_TRANSPORT_SHIPS_PER_PLAYER,
   SEA_CROSSING_SURCHARGE,
 } from "../src/Core/rasterCombatConfig.js";
+import { IDENTITY_MODIFIERS } from "../src/Core/playerModifiers.js";
+
+/**
+ * Freeze every seated player's troop income so a crossing test measures only the
+ * landing/refund accounting; the economy is covered in income.test.ts.
+ */
+const freezeIncome = (grid: TerritoryGrid): void => {
+  for (const id of grid.players()) grid.setModifiers(id, { ...IDENTITY_MODIFIERS, income: 0 });
+};
 
 /** Single-row map from a mask: '#' = land, ' ' = water. */
 const rowMap = (mask: string) => {
@@ -87,6 +96,7 @@ test("a ship too small to pay the beachhead cost is repelled and refunds its tro
   grid.addPlayer(1, 50);
   grid.claim(0, 1);
   grid.claim(1, 1);
+  freezeIncome(grid);
   const conflict = new RasterConflict(grid);
 
   const tooFew = SEA_CROSSING_SURCHARGE - 1; // can't afford to land
@@ -108,6 +118,7 @@ test("a landing repelled off a player-held shore loses the retreat malus", () =>
   grid.claim(1, 1);
   grid.claim(3, 2);
   grid.claim(4, 2);
+  freezeIncome(grid);
   const conflict = new RasterConflict(grid);
 
   assert.equal(conflict.launchShip({ attacker: 1, dest: 3, troops: 1 }), null);
@@ -128,18 +139,18 @@ test("a player may have at most three transport ships at sea", () => {
   const conflict = new RasterConflict(grid);
 
   for (let i = 0; i < MAX_TRANSPORT_SHIPS_PER_PLAYER; i += 1) {
-    assert.equal(conflict.launchShip({ attacker: 1, dest: 5, troops: 20 }), null, `ship ${i + 1} launches`);
+    assert.equal(conflict.launchShip({ attacker: 1, dest: 5, troops: 30 }), null, `ship ${i + 1} launches`);
   }
   assert.equal(conflict.shipCountOf(1), MAX_TRANSPORT_SHIPS_PER_PLAYER);
   // The fourth simultaneous launch is rejected.
-  assert.equal(conflict.launchShip({ attacker: 1, dest: 5, troops: 20 }), "TOO_MANY_SHIPS");
+  assert.equal(conflict.launchShip({ attacker: 1, dest: 5, troops: 30 }), "TOO_MANY_SHIPS");
 
   // Once the ships land (taking islet 5), every slot frees up again. Islet 9 is
   // now reachable by sea from the freshly-held coast at 5.
   for (let i = 0; i < 20; i += 1) conflict.processTick();
   assert.equal(grid.ownerOf(5), 1, "the fleet took its beachhead");
   assert.equal(conflict.shipCountOf(1), 0, "ships eventually land and free their slots");
-  assert.equal(conflict.launchShip({ attacker: 1, dest: 9, troops: 20 }), null, "a freed slot accepts a new ship");
+  assert.equal(conflict.launchShip({ attacker: 1, dest: 9, troops: 30 }), null, "a freed slot accepts a new ship");
 });
 
 test("a wide but connected sea can be crossed (no distance cap)", () => {
