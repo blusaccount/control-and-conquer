@@ -51,6 +51,26 @@ test("adjacent banks across a one-tile river are linked", () => {
   assert.ok(links.areLinked(1, 3), "a one-tile river should be crossable");
 });
 
+test("a one-tile inland-lake river (not ocean) is still a crossable strait", () => {
+  // A 5x5 block of land with a single enclosed water tile at the centre: a river
+  // that never reaches the sea, so the finishing pass classifies it as a lake,
+  // not ocean. Crossings use isWater (all water), not isOcean, so the two banks
+  // must still link — rivers are crossable barriers regardless of ocean/lake.
+  const w = 5;
+  const h = 5;
+  const land = new Uint8Array(w * h).fill(1);
+  const elevation = new Uint8Array(w * h);
+  const centre = 2 * w + 2;
+  land[centre] = 0; // the lone enclosed river tile
+  const m = buildTerrainFromMask({ width: w, height: h, land, elevation });
+
+  assert.ok(m.isWater(centre) && !m.isOcean(centre), "the enclosed tile is a lake, not ocean");
+  const links = SeaLinks.build(m, 6);
+  const westBank = 2 * w + 1;
+  const eastBank = 2 * w + 3;
+  assert.ok(links.areLinked(westBank, eastBank), "lake-river banks should be crossable");
+});
+
 test("neighborsWithin filters links by crossing distance", () => {
   // land 0,1 ; water 2..6 (5 tiles) ; land 7,8. Built wide; filtered narrow.
   const m = rowMap("##     ##");
