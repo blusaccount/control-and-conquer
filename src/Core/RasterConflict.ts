@@ -3,7 +3,6 @@ import { NEUTRAL_PLAYER, type PlayerId, type TerritoryGrid } from "./TerritoryGr
 import { NO_ALLIANCES, type AllianceView } from "./alliances.js";
 import {
   CITY_GOLD_PER_TICK,
-  CITY_TROOP_INCOME_PER_TICK,
   GOLD_PER_TILE_PER_TICK,
   PORT_GOLD_PER_TICK,
 } from "./buildings.js";
@@ -20,9 +19,8 @@ import {
   FRONTIER_PRIORITY_FLOOR,
   FRONTIER_SURROUND_WEIGHT,
   FRONTIER_TOWARD_WEIGHT,
-  growthFactor,
-  INCOME_PER_TILE_PER_TICK,
-  MAX_POOL_PER_TILE,
+  maxTroops,
+  troopGrowth,
   MAX_TRANSPORT_SHIPS_PER_PLAYER,
   NEUTRAL_CAPTURE_COST,
   RETREAT_MALUS_FRACTION,
@@ -487,25 +485,26 @@ export class RasterConflict {
   private applyIncome(): void {
     for (const id of this.grid.players()) {
       const tiles = this.grid.tileCountOf(id);
+      if (tiles <= 0) {
+        this.incomeAccumulator.set(id, 0);
+        continue;
+      }
+      // OpenFront's territory-scaled ceiling, lifted by each city, capping the
+      // pool; the bell-curve growth above tapers to zero as the pool nears it.
+      const cap = maxTroops(tiles, this.grid.buildingCountOf(id, "city"));
       const troops = this.grid.troopsOf(id);
-      const cap = tiles * MAX_POOL_PER_TILE;
       if (troops >= cap) {
         this.incomeAccumulator.set(id, 0);
         continue;
       }
-      // Logistic soft cap: income tapers as the pool nears its ceiling, so an
-      // empire's army growth slows and plateaus instead of climbing forever. A
-      // city adds a flat troop dividend on top of the per-tile income, but it is
-      // gated by the same soft cap so cities never break the pool ceiling.
-      const baseRate = tiles * INCOME_PER_TILE_PER_TICK * this.grid.modifiersOf(id).income;
-      const cityRate = this.grid.buildingCountOf(id, "city") * CITY_TROOP_INCOME_PER_TICK;
-      const incomeRate = (baseRate + cityRate) * growthFactor(troops, tiles);
-      const accumulated = (this.incomeAccumulator.get(id) ?? 0) + incomeRate;
+      // Bell-curve growth: slow when the pool is tiny, fastest mid-range, easing
+      // to zero at the cap. A per-player income modifier scales the rate. The
+      // fractional remainder is carried between ticks so the integer pool tracks
+      // the real-valued growth without losing sub-1 increments.
+      const add = troopGrowth(troops, cap) * this.grid.modifiersOf(id).income;
+      const accumulated = (this.incomeAccumulator.get(id) ?? 0) + add;
       const whole = Math.floor(accumulated);
-      if (whole > 0) {
-        const next = Math.min(cap, this.grid.troopsOf(id) + whole);
-        this.grid.setTroops(id, next);
-      }
+      if (whole > 0) this.grid.setTroops(id, Math.min(cap, troops + whole));
       this.incomeAccumulator.set(id, accumulated - whole);
     }
   }

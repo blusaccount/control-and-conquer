@@ -1,7 +1,7 @@
 import type { RasterGameSession } from "./RasterGameSession.js";
 import type { GameMap, TileRef } from "../Core/GameMap.js";
 import { NEUTRAL_PLAYER, type PlayerId, type TerritoryGrid } from "../Core/TerritoryGrid.js";
-import { MAX_POOL_PER_TILE } from "../Core/rasterCombatConfig.js";
+import { maxTroops } from "../Core/rasterCombatConfig.js";
 import { buildingCost } from "../Core/buildings.js";
 import type { RasterServerMessage, RasterSnapshot } from "../Core/types.js";
 
@@ -344,11 +344,11 @@ export class RasterBotController {
       fraction = p.attackCommit;
     } else {
       // Boxed in by stronger rivals only. Banking income is the right call —
-      // unless the pool is saturating (capped at tiles * MAX_POOL_PER_TILE), in
-      // which case further income is lost, so spend down on the softest target.
+      // unless the pool is saturating (capped at the territory-scaled ceiling),
+      // in which case further income is lost, so spend down on the softest target.
       // With nothing left to fight (only allies or neutral-free borders), bank.
       if (enemies.length === 0) return;
-      const cap = grid.tileCountOf(me) * MAX_POOL_PER_TILE;
+      const cap = maxTroops(grid.tileCountOf(me), grid.buildingCountOf(me, "city"));
       if (pool < cap * 0.9) return;
       const softest = enemies.reduce((a, b) => (grid.troopsOf(b.target) < grid.troopsOf(a.target) ? b : a));
       sample = softest.sample;

@@ -4,12 +4,13 @@ import { GameMap } from "../src/Core/GameMap.js";
 import { NEUTRAL_PLAYER, TerritoryGrid } from "../src/Core/TerritoryGrid.js";
 import { RasterConflict, type AttackIntent } from "../src/Core/RasterConflict.js";
 import { encodeTile } from "../src/Core/terrainCodec.js";
+import { IDENTITY_MODIFIERS } from "../src/Core/playerModifiers.js";
 import {
   ATTACK_SPEED_MAX,
   ATTACK_SPEED_MIN,
   DEFENDER_STRENGTH_MAX,
   DEFENDER_STRENGTH_MIN,
-  INCOME_PER_TILE_PER_TICK,
+  maxTroops,
   MAX_TRANSPORT_SHIPS_PER_PLAYER,
   TERRAIN_LOSS_HIGHLAND,
   TERRAIN_LOSS_MOUNTAIN,
@@ -26,21 +27,33 @@ const flatLand = (width: number, height: number): GameMap => {
   return new GameMap(width, height, terrain);
 };
 
+/**
+ * Freeze every seated player's troop income (income modifier 0) so a combat test
+ * measures only combat. The economy's bell-curve growth is verified on its own in
+ * income.test.ts; at this small scale it would otherwise add ~10 troops/tick and
+ * perturb the exact troop accounting these combat assertions rely on.
+ */
+const freezeIncome = (grid: TerritoryGrid): void => {
+  for (const id of grid.players()) grid.setModifiers(id, { ...IDENTITY_MODIFIERS, income: 0 });
+};
+
 /** Run `n` empty ticks. */
 const runTicks = (conflict: RasterConflict, n: number): void => {
   for (let i = 0; i < n; i += 1) conflict.processTick();
 };
 
-test("income grows the pool proportionally to owned tiles", () => {
+test("income grows the pool toward its territory-scaled ceiling", () => {
   const grid = new TerritoryGrid(flatLand(10, 10));
   grid.addPlayer(1, 0);
   for (let ref = 0; ref < 10; ref += 1) grid.claim(ref, 1); // 10 tiles, far from victory
   const conflict = new RasterConflict(grid);
 
-  // 10 tiles * 0.02 = 0.2 troops/tick -> exactly 1 whole troop after 5 ticks.
-  const ticksForOne = Math.round(1 / (10 * INCOME_PER_TILE_PER_TICK));
-  runTicks(conflict, ticksForOne);
-  assert.equal(grid.troopsOf(1), 1);
+  // OpenFront's bell-curve growth lifts the pool from empty toward maxTroops(10);
+  // it must climb above zero yet never breach the territory-scaled ceiling.
+  runTicks(conflict, 50);
+  const cap = maxTroops(10, 0);
+  assert.ok(grid.troopsOf(1) > 0, "the pool grows from empty");
+  assert.ok(grid.troopsOf(1) <= cap, "the pool stays under the territory ceiling");
 });
 
 test("launchAttack rejects invalid intents without mutating state", () => {
@@ -143,6 +156,7 @@ test("defender bleed is density-based: a dense defender loses more per tile", ()
   grid.addPlayer(2, 40);
   grid.claim(0, 1);
   for (let ref = 1; ref < 5; ref += 1) grid.claim(ref, 2);
+  freezeIncome(grid);
   const conflict = new RasterConflict(grid);
 
   assert.equal(conflict.launchAttack({ attacker: 1, target: 2, troops: 100 }), null);
@@ -246,6 +260,7 @@ test("a strong garrison repels the very assault a weak one cannot", () => {
     grid.claim(0, 1);
     grid.claim(1, 2);
     grid.claim(2, 2);
+    freezeIncome(grid);
     return { grid, conflict: new RasterConflict(grid) };
   };
 
@@ -280,6 +295,7 @@ test("a garrison can't hold every front at full strength: a second front dilutes
     grid.claim(2, 3);
     grid.claim(3, 3);
     grid.claim(4, 2);
+    freezeIncome(grid);
     return { grid, conflict: new RasterConflict(grid) };
   };
 
@@ -382,6 +398,7 @@ test("a front blocked against a player refunds troops minus the retreat malus", 
   grid.addPlayer(2, 10);
   grid.claim(0, 1);
   grid.claim(1, 2);
+  freezeIncome(grid);
   const conflict = new RasterConflict(grid);
 
   assert.equal(conflict.launchAttack({ attacker: 1, target: 2, troops: 2 }), null);
@@ -401,6 +418,7 @@ test("a front blocked against neutral land refunds troops in full", () => {
   grid.addPlayer(1, 3);
   grid.claim(0, 1);
   grid.addDefensePost(1, 1, 5); // factor 5 at the tile -> cost ceil(1*0.9*0.8*5)=4
+  freezeIncome(grid);
   const conflict = new RasterConflict(grid);
 
   assert.equal(conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 3 }), null);

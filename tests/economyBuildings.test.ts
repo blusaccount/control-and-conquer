@@ -15,7 +15,7 @@ import {
   PORT_GOLD_PER_TICK,
   FORT_DEFENSE_STRENGTH,
 } from "../src/Core/buildings.js";
-import { MAX_POOL_PER_TILE } from "../src/Core/rasterCombatConfig.js";
+import { maxTroops } from "../src/Core/rasterCombatConfig.js";
 
 /** A flat all-land strip of `width` tiles — deterministic ground to own/build on. */
 const landStrip = (width: number): TerritoryGrid => {
@@ -178,12 +178,14 @@ test("a city boosts both gold income and troop growth", () => {
   const withCity = makeGrid(true);
   const cPlain = new RasterConflict(plain);
   const cCity = new RasterConflict(withCity);
-  for (let i = 0; i < 200; i += 1) {
+  for (let i = 0; i < 600; i += 1) {
     cPlain.processTick();
     cCity.processTick();
   }
   assert.ok(withCity.goldOf(1) > plain.goldOf(1), "the city earns extra gold");
-  assert.ok(withCity.troopsOf(1) > plain.troopsOf(1), "the city earns extra troops");
+  // A city raises the population ceiling, so the bell-curve growth has more
+  // headroom and the pool climbs faster than the city-less empire's.
+  assert.ok(withCity.troopsOf(1) > plain.troopsOf(1), "the city's higher ceiling grows troops faster");
 });
 
 test("cities never push the troop pool past its territory soft cap", () => {
@@ -194,8 +196,8 @@ test("cities never push the troop pool past its territory soft cap", () => {
   for (let i = 0; i < 4; i += 1) grid.placeBuilding(refs[i], "city");
   const conflict = new RasterConflict(grid);
   for (let i = 0; i < 8000; i += 1) conflict.processTick();
-  const cap = grid.tileCountOf(1) * MAX_POOL_PER_TILE;
-  assert.ok(grid.troopsOf(1) <= cap, "the soft cap still bounds the pool with cities");
+  const cap = maxTroops(grid.tileCountOf(1), grid.buildingCountOf(1, "city"));
+  assert.ok(grid.troopsOf(1) <= cap, "the territory-scaled ceiling still bounds the pool with cities");
 });
 
 // --- RasterGameSession: end-to-end build flow ------------------------------

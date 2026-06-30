@@ -13,43 +13,57 @@
  *     claiming flat neutral land.
  */
 
-import { CITY_TROOP_INCOME_PER_TICK } from "./buildings.js";
+import { CITY_MAX_TROOP_INCREASE } from "./buildings.js";
+
+// ---------------------------------------------------------------------------
+// Population / troops (OpenFront's max-population + bell-curve growth model).
+//
+// A single troop **pool** per player (OpenFront has no worker/troop split). Its
+// ceiling rises sub-linearly with territory and flatly with cities; growth is a
+// bell curve that peaks partway to the ceiling and tapers to zero at it. All
+// constants and formula shapes mirror OpenFront's `maxTroops`/`troopIncreaseRate`
+// (documented behaviour, not ported code).
+// ---------------------------------------------------------------------------
+
+/** Flat floor term inside the max-population formula (OpenFront's 50 000). */
+export const MAX_POP_FLAT = 50_000;
+/** Per-tile scale inside the max-population formula (OpenFront's 1000). */
+export const MAX_POP_LAND_SCALE = 1_000;
+/** Sub-linear land exponent in the max-population formula (OpenFront's 0.6). */
+export const MAX_POP_LAND_EXPONENT = 0.6;
 
 /**
- * Fractional troops generated per owned tile per tick. Accumulated per player
- * and flushed into the integer pool once it reaches >= 1, mirroring the
- * polygon engine's income model. 0.02 at 20 TPS ~= 0.4 troops/tile/second.
+ * Maximum troop pool for an empire of `tiles` tiles holding `cities` cities,
+ * mirroring OpenFront's `maxTroops`: a sub-linear land term (so each extra tile
+ * lifts the ceiling by ever less) plus a flat floor, doubled, plus a flat
+ * per-city increase. Cities are the deliberate way to raise the cap —
+ * {@link CITY_MAX_TROOP_INCREASE} each — not a per-tick troop dividend.
  */
-export const INCOME_PER_TILE_PER_TICK = 0.02;
-
-/** Troop pool ceiling, scaled by territory size, to keep numbers bounded. */
-export const MAX_POOL_PER_TILE = 50;
-
-/** Soft-cap troop pool maximum for an empire of `tiles` tiles. */
-export const poolCap = (tiles: number): number => tiles * MAX_POOL_PER_TILE;
+export const maxTroops = (tiles: number, cities = 0): number =>
+  2 * (Math.pow(Math.max(0, tiles), MAX_POP_LAND_EXPONENT) * MAX_POP_LAND_SCALE + MAX_POP_FLAT) +
+  Math.max(0, cities) * CITY_MAX_TROOP_INCREASE;
 
 /**
- * Logistic growth factor in [0, 1] used as a **soft cap** on the troop pool:
- * full income when the pool is empty, tapering to zero as the pool approaches
- * its {@link poolCap}. Income is multiplied by this factor, so the pool
- * approaches the cap asymptotically instead of piling up at a flat rate — a
- * sprawling empire's army growth visibly slows and plateaus (OpenFront feel),
- * rather than every "+N/s" climbing without limit.
+ * Troops added to a pool in a single tick, mirroring OpenFront's bell-curve
+ * growth: a base that itself rises sub-linearly with the current pool, scaled by
+ * how far the pool sits below its ceiling `max`. Growth is therefore slow when
+ * the pool is tiny, peaks in the mid-range, and tapers to 0 at the cap. Never
+ * negative; the caller clamps the running pool to `max`.
  */
-export const growthFactor = (troops: number, tiles: number): number => {
-  const cap = poolCap(tiles);
-  if (cap <= 0) return 0;
-  return Math.max(0, 1 - troops / cap);
+export const troopGrowth = (troops: number, max: number): number => {
+  if (max <= 0) return 0;
+  const t = Math.max(0, troops);
+  const base = 10 + Math.pow(t, 0.73) / 4;
+  return Math.max(0, base * (1 - t / max));
 };
 
 /**
  * Troops generated per second by a player — the figure the leaderboard shows as
- * "(+N/s)". Derived directly from the engine's real per-tick income (including
- * the logistic {@link growthFactor} soft cap) so the displayed rate matches the
- * pool growth a player actually sees: it tapers toward 0 as the empire fills up.
- * `incomeMultiplier` folds in any income modifiers; `cities` adds each city's
- * flat troop dividend (gated by the same soft cap); `ticksPerSecond` converts
- * the per-tick income to seconds.
+ * "(+N/s)". Derived directly from the real per-tick {@link troopGrowth} at the
+ * empire's current pool and territory-scaled ceiling, so the displayed rate
+ * matches the growth a player actually sees: it tapers toward 0 as the empire
+ * fills up. `incomeMultiplier` folds in any per-player income modifier; `cities`
+ * lifts the ceiling; `ticksPerSecond` converts the per-tick add to seconds.
  */
 export const troopsPerSecond = (
   tiles: number,
@@ -57,12 +71,8 @@ export const troopsPerSecond = (
   ticksPerSecond: number,
   incomeMultiplier = 1,
   cities = 0,
-): number => {
-  const perTick =
-    (tiles * INCOME_PER_TILE_PER_TICK * incomeMultiplier + cities * CITY_TROOP_INCOME_PER_TICK) *
-    growthFactor(troops, tiles);
-  return perTick * ticksPerSecond;
-};
+): number =>
+  troopGrowth(troops, maxTroops(tiles, cities)) * incomeMultiplier * ticksPerSecond;
 
 /**
  * Maximum wall-clock length of a single roguelite run, in seconds. When the

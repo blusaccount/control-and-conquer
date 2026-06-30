@@ -101,7 +101,8 @@ export interface RasterGameSessionOptions {
   seed?: number;
   /** Map name shown in the UI. Default "Procedural Continent". */
   mapName?: string;
-  /** Starting troop pool every player begins with. Default 50. */
+  /** Starting troop pool every player begins with. Default 25 000 (OpenFront's
+   * human start manpower). */
   startingTroops?: number;
   /**
    * When set to a known map id, the match runs on that map instead of
@@ -147,7 +148,7 @@ const DEFAULT_OPTIONS: Required<Omit<RasterGameSessionOptions, "prebuiltMap">> =
   height: 40,
   seed: 1,
   mapName: "Procedural Continent",
-  startingTroops: 50,
+  startingTroops: 25_000,
   realMapId: "",
   mapSize: 0,
   maxDurationTicks: RASTER_MATCH_DURATION_SECONDS * SIMULATION_TICK_RATE,

@@ -1,6 +1,6 @@
 import type { GameMap } from "../Core/GameMap.js";
 import type { TerritoryGrid } from "../Core/TerritoryGrid.js";
-import { troopsPerSecond } from "../Core/rasterCombatConfig.js";
+import { maxTroops, troopsPerSecond } from "../Core/rasterCombatConfig.js";
 import { goldPerSecond } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import type { RasterAlliancePair, RasterAllianceRequest, RasterAttackFront, RasterBuilding, RasterCrossing, RasterMatchPhase, RasterPlayerInfo, RasterRail, RasterShip, RasterSnapshot, RasterTrain } from "../Core/types.js";
@@ -187,6 +187,7 @@ export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
       factories: grid.buildingCountOf(id, "factory"),
       tiles,
       troopsPerSecond: troopsPerSecond(tiles, grid.troopsOf(id), SIMULATION_TICK_RATE, grid.incomeMultiplierOf(id), cities),
+      maxTroops: Math.floor(maxTroops(tiles, cities)),
       eliminated: eliminated?.has(id) ?? false,
     });
   }

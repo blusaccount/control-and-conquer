@@ -58,12 +58,13 @@ export const STARTING_GOLD = 0;
 export const CITY_GOLD_PER_TICK = 0.05;
 
 /**
- * Extra troop income per tick each city adds (before the logistic soft cap is
- * applied), so a city is also a military engine — not merely a gold mine. Still
- * multiplied by the empire's {@link growthFactor}, so cities never push the pool
- * past its territory-scaled ceiling.
+ * Troops each city adds to a player's **maximum** population (OpenFront's
+ * `cityTroopIncrease`). A city is a military engine by *raising the ceiling*, not
+ * by paying a per-tick dividend: it lifts `maxTroops` so the empire's bell-curve
+ * growth has more headroom to climb into. Sized to OpenFront's value so it stays
+ * consistent with the territory term (`2·(tiles^0.6·1000 + 50 000)`).
  */
-export const CITY_TROOP_INCOME_PER_TICK = 0.1;
+export const CITY_MAX_TROOP_INCREASE = 250_000;
 
 /**
  * Extra gold per tick each port adds — a coastal trade dividend (OpenFront's
