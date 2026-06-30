@@ -16,9 +16,27 @@ let selectedMapId = DEFAULT_MAP_CHOICE_ID;
 let selectedDifficulty: RasterDifficulty = "medium";
 
 const DIFFICULTY_INFO: Record<RasterDifficulty, { name: string; description: string }> = {
-  easy: { name: "Easy", description: "A small field of cautious rivals — room to find your feet." },
-  medium: { name: "Medium", description: "A balanced field of opponents at a steady pace." },
-  hard: { name: "Hard", description: "A crowded map of many aggressive nations." },
+  easy: { name: "Easy", description: "Fewer, more cautious rivals — room to find your feet." },
+  medium: { name: "Medium", description: "A balanced field of opponents pressing at a steady pace." },
+  hard: { name: "Hard", description: "A dense, aggressive crowd of nations fighting for every tile." },
+};
+
+/**
+ * Approx. tile count shown on a map card. Mirrors the server's height formula
+ * (Earth's cropped 136° latitude band, rounded to an even height — see
+ * `resolveHeightmapSize` in heightmapMaps) so the menu matches the real grid.
+ */
+const estimateTiles = (mapSize: number): string => {
+  const height = Math.round((mapSize * (136 / 360)) / 2) * 2;
+  const tiles = mapSize * height;
+  if (tiles >= 1_000_000) return `~${(tiles / 1_000_000).toFixed(1)}M tiles`;
+  return `~${Math.round(tiles / 1000)}k tiles`;
+};
+
+/** Split "Earth — Large" into a kicker ("Earth") and a prominent tier ("Large"). */
+const splitMapName = (name: string): { kicker?: string; title: string } => {
+  const parts = name.split(/\s*—\s*/);
+  return parts.length > 1 ? { kicker: parts[0], title: parts.slice(1).join(" — ") } : { title: name };
 };
 
 const mapCards = document.querySelector<HTMLDivElement>("#mapCards");
@@ -27,9 +45,17 @@ if (mapCards) {
   // never drift on the set of selectable maps.
   mapCards.innerHTML = MAP_CHOICES.map((choice) => {
     const selected = choice.id === selectedMapId ? " selected" : "";
+    const { kicker, title } = splitMapName(choice.name);
+    const isDefault = choice.id === DEFAULT_MAP_CHOICE_ID;
+    const tiles = choice.options.mapSize ? estimateTiles(choice.options.mapSize) : "";
     return (
       `<button class="perk-card map-card${selected}" type="button" data-map="${choice.id}" aria-pressed="${choice.id === selectedMapId}">` +
-      `<h3>${choice.name}</h3><p>${choice.description}</p>` +
+      `<div class="map-card-head">` +
+      (kicker ? `<span class="map-kicker">${kicker}</span>` : "") +
+      (isDefault ? `<span class="map-default">Default</span>` : "") +
+      `</div>` +
+      `<h3>${title}</h3><p>${choice.description}</p>` +
+      (tiles ? `<div class="map-meta">${tiles}</div>` : "") +
       `</button>`
     );
   }).join("");
