@@ -544,9 +544,11 @@ export class RasterConflict {
         this.incomeAccumulator.set(id, 0);
         continue;
       }
-      // OpenFront's territory-scaled ceiling, lifted by each city, capping the
-      // pool; the bell-curve growth above tapers to zero as the pool nears it.
-      const cap = maxTroops(tiles, this.grid.buildingCountOf(id, "city"));
+      // OpenFront's territory-scaled ceiling, lifted by each city and scaled by
+      // the player's difficulty cap multiplier (weaker AI get a lower ceiling);
+      // the bell-curve growth tapers to zero as the pool nears it.
+      const cap = maxTroops(tiles, this.grid.buildingCountOf(id, "city")) *
+        this.grid.modifiersOf(id).troopCapMultiplier;
       const troops = this.grid.troopsOf(id);
       if (troops >= cap) {
         this.incomeAccumulator.set(id, 0);

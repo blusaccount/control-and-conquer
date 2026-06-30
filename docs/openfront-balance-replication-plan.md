@@ -29,7 +29,10 @@
 > Dazu das **Eroberungs-Bounty** (`conquerGoldAmount`): Sieger erbt das Gold einer
 > besiegten Nation (KI 100 %, Mensch 50 %). Truppen-Wachstumsformel war seit P0
 > schon exakt. Damit deckt sich Ökonomie **und** Population/Wachstum wertgenau mit
-> OpenFront (offen bleibt nur die Bot/Nation-Schwierigkeits-Skalierung).
+> OpenFront. **Bot/Nation-Schwierigkeits-Skalierung jetzt ebenfalls drin:** KI
+> nimmt OpenFronts Nations-Handicaps je Stufe — Start 12 500/18 750/25 000,
+> Pop-Cap ×0.5/0.75/1.0, Wachstum ×0.9/0.95/1.0 (leicht/mittel/schwer); der
+> Mensch spielt immer auf voller Stärke.
 
 Der **Balancing-Kern** (Truppen/Population, Land-Kampf, Wirtschaft/Gebäude) ist
 damit wertgenau auf OpenFront umgestellt; 238 Unit-Tests grün. P3/P4 sind als

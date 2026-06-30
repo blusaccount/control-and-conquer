@@ -119,7 +119,9 @@ export class RasterBotController {
     // Subscribe headless (wantsRaster=false): the bot reads engine state via
     // peekGrid and never decodes the wire ownership, so the session skips the
     // costly per-tick owner encoding for it.
-    const unsubscribe = session.subscribe(this.config.botId, (message) => this.onMessage(message), true, false);
+    // isBot=true so the session applies the per-difficulty AI handicaps and the
+    // full conquer bounty when this nation is beaten.
+    const unsubscribe = session.subscribe(this.config.botId, (message) => this.onMessage(message), true, false, undefined, true);
     return () => {
       this.session = null;
       this.myPlayerId = null;
@@ -348,7 +350,8 @@ export class RasterBotController {
       // in which case further income is lost, so spend down on the softest target.
       // With nothing left to fight (only allies or neutral-free borders), bank.
       if (enemies.length === 0) return;
-      const cap = maxTroops(grid.tileCountOf(me), grid.buildingCountOf(me, "city"));
+      const cap = maxTroops(grid.tileCountOf(me), grid.buildingCountOf(me, "city")) *
+        grid.modifiersOf(me).troopCapMultiplier;
       if (pool < cap * 0.9) return;
       const softest = enemies.reduce((a, b) => (grid.troopsOf(b.target) < grid.troopsOf(a.target) ? b : a));
       sample = softest.sample;

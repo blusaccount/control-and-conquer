@@ -188,8 +188,8 @@ export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
       forts: grid.buildingCountOf(id, "fort"),
       factories: grid.buildingCountOf(id, "factory"),
       tiles,
-      troopsPerSecond: troopsPerSecond(tiles, grid.troopsOf(id), SIMULATION_TICK_RATE, grid.incomeMultiplierOf(id), cities),
-      maxTroops: Math.floor(maxTroops(tiles, cities)),
+      troopsPerSecond: troopsPerSecond(tiles, grid.troopsOf(id), SIMULATION_TICK_RATE, grid.incomeMultiplierOf(id), cities, grid.modifiersOf(id).troopCapMultiplier),
+      maxTroops: Math.floor(maxTroops(tiles, cities) * grid.modifiersOf(id).troopCapMultiplier),
       eliminated: eliminated?.has(id) ?? false,
     });
   }

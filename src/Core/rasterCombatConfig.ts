@@ -71,8 +71,9 @@ export const troopsPerSecond = (
   ticksPerSecond: number,
   incomeMultiplier = 1,
   cities = 0,
+  troopCapMultiplier = 1,
 ): number =>
-  troopGrowth(troops, maxTroops(tiles, cities)) * incomeMultiplier * ticksPerSecond;
+  troopGrowth(troops, maxTroops(tiles, cities) * troopCapMultiplier) * incomeMultiplier * ticksPerSecond;
 
 /**
  * Maximum wall-clock length of a single roguelite run, in seconds. When the
