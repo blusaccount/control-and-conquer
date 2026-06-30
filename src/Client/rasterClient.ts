@@ -18,6 +18,7 @@ import type {
   RasterTrain,
 } from "../Core/types.js";
 import { hideMenu, setStatus, type UiElements } from "./dom.js";
+import { createWebSocketTransport, createWorkerTransport, type RasterTransport } from "./transport.js";
 import { paintRaster, paintTileInto } from "./rasterPaint.js";
 import { borderColor, playerColor, playerEmoji } from "./rasterPalette.js";
 import { loadRunHistory, recordRun, type RunRecord, type StorageLike } from "./runHistory.js";
@@ -37,6 +38,12 @@ export interface RasterClientOptions {
   mapId: string;
   /** Selected difficulty (size + aggression of the AI field). */
   difficulty: RasterDifficulty;
+  /**
+   * How the match is hosted. `"worker"` (default) runs the whole solo sim in a
+   * browser Web Worker with no network round-trip (OpenFront-style client-side
+   * lockstep); `"websocket"` connects to the authoritative server instead.
+   */
+  transport?: "worker" | "websocket";
 }
 
 /**
@@ -378,15 +385,15 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     spawnRemainingSeconds: 0,
   };
 
-  const socketProtocol = window.location.protocol === "https:" ? "wss" : "ws";
-  const socket = new WebSocket(`${socketProtocol}://${window.location.host}/`);
+  const transport: RasterTransport =
+    options.transport === "websocket" ? createWebSocketTransport() : createWorkerTransport();
 
   const sendExpand = (targetX: number, targetY: number, percent: number): void => {
     const message: RasterClientMessage = {
       type: "CLIENT_RASTER_EXPAND",
       payload: { targetX, targetY, percent },
     };
-    socket.send(JSON.stringify(message));
+    transport.send(message);
   };
 
   const sendSelectSpawn = (x: number, y: number): void => {
@@ -395,7 +402,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.spawnX = x;
     runtime.spawnY = y;
     const message: RasterClientMessage = { type: "CLIENT_RASTER_SELECT_SPAWN", payload: { x, y } };
-    socket.send(JSON.stringify(message));
+    transport.send(message);
   };
 
   const sendBuild = (targetX: number, targetY: number, building: BuildingType): void => {
@@ -403,22 +410,22 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       type: "CLIENT_RASTER_BUILD",
       payload: { targetX, targetY, building },
     };
-    socket.send(JSON.stringify(message));
+    transport.send(message);
   };
 
   const sendAllyPropose = (targetId: number): void => {
     const message: RasterClientMessage = { type: "CLIENT_RASTER_ALLY_PROPOSE", payload: { targetId } };
-    socket.send(JSON.stringify(message));
+    transport.send(message);
   };
 
   const sendAllyRespond = (targetId: number, accept: boolean): void => {
     const message: RasterClientMessage = { type: "CLIENT_RASTER_ALLY_RESPOND", payload: { targetId, accept } };
-    socket.send(JSON.stringify(message));
+    transport.send(message);
   };
 
   const sendAllyBreak = (targetId: number): void => {
     const message: RasterClientMessage = { type: "CLIENT_RASTER_ALLY_BREAK", payload: { targetId } };
-    socket.send(JSON.stringify(message));
+    transport.send(message);
   };
 
   /** How many of `type` we currently own — feeds the geometric cost ramp. */
@@ -480,21 +487,19 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     }
   };
 
-  // Seat ourselves on the chosen map as soon as the socket is open.
-  socket.addEventListener("open", () => {
+  // Seat ourselves on the chosen map as soon as the transport is ready.
+  transport.onOpen(() => {
     const join: RasterClientMessage = {
       type: "CLIENT_RASTER_JOIN",
       payload: { mapId: options.mapId, difficulty: options.difficulty },
     };
-    socket.send(JSON.stringify(join));
+    transport.send(join);
   });
-  socket.addEventListener("message", (event) => {
-    const message = JSON.parse(String(event.data)) as RasterServerMessage;
-    handleMessage(message);
-  });
-  socket.addEventListener("close", () => {
+  transport.onMessage((message) => handleMessage(message));
+  transport.onClose(() => {
     setStatus(ui, "Connection closed.", "error");
   });
+  transport.start();
 
   const handleMessage = (message: RasterServerMessage): void => {
     if (message.type === "SERVER_RASTER_PLAYER_ASSIGNED") {

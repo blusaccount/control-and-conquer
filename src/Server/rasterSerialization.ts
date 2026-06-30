@@ -22,16 +22,36 @@ const hashTerrain = (bytes: Uint8Array): string => {
   return (h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0")).slice(0, 12);
 };
 
+/** A `Buffer`-like shape exposing just the static base64 helper we need. */
+interface BufferLike {
+  from(bytes: Uint8Array): { toString(encoding: string): string };
+}
+
 /**
- * Serialize a `GameMap`'s static terrain into base64 plus a stable hash. Uses the
- * Node `Buffer` global on the server for a fast native base64; the worker path
- * never calls this (it passes terrain bytes to the main thread directly).
+ * Base64-encode a byte array, isomorphically. On the server the Node `Buffer`
+ * global gives a fast native encode; in a browser Web Worker (where `Buffer`
+ * does not exist) it falls back to chunked `btoa`. This keeps the whole module
+ * runnable in the worker that hosts a solo match, with no Node dependency and no
+ * server-side slowdown.
  */
-export const encodeTerrain = (map: GameMap): { terrainBase64: string; terrainHash: string } => {
-  const terrainBase64 = Buffer.from(map.terrain).toString("base64");
-  const terrainHash = hashTerrain(map.terrain);
-  return { terrainBase64, terrainHash };
+const bytesToBase64 = (bytes: Uint8Array): string => {
+  const maybeBuffer = (globalThis as { Buffer?: BufferLike }).Buffer;
+  if (maybeBuffer) return maybeBuffer.from(bytes).toString("base64");
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
 };
+
+/**
+ * Serialize a `GameMap`'s static terrain into base64 plus a stable hash.
+ */
+export const encodeTerrain = (map: GameMap): { terrainBase64: string; terrainHash: string } => ({
+  terrainBase64: bytesToBase64(map.terrain),
+  terrainHash: hashTerrain(map.terrain),
+});
 
 /**
  * Serialize the current owner array (`Uint16Array`) to base64. We write
@@ -39,11 +59,12 @@ export const encodeTerrain = (map: GameMap): { terrainBase64: string; terrainHas
  * native byte order (browsers can disagree with the server's V8).
  */
 export const encodeOwners = (owner: ArrayLike<number>): string => {
-  const buffer = Buffer.alloc(owner.length * 2);
+  const bytes = new Uint8Array(owner.length * 2);
+  const view = new DataView(bytes.buffer);
   for (let i = 0; i < owner.length; i += 1) {
-    buffer.writeUInt16LE(owner[i], i * 2);
+    view.setUint16(i * 2, owner[i], true /* little-endian */);
   }
-  return buffer.toString("base64");
+  return bytesToBase64(bytes);
 };
 
 /**
@@ -64,14 +85,15 @@ export const encodeOwnerDelta = (
   for (let i = 0; i < curr.length; i += 1) if (prev[i] !== curr[i]) indices.push(i);
 
   const changed = indices.length;
-  const buffer = Buffer.alloc(changed * 6);
+  const bytes = new Uint8Array(changed * 6);
+  const view = new DataView(bytes.buffer);
   for (let k = 0; k < changed; k += 1) {
     const i = indices[k];
-    buffer.writeUInt32LE(i, k * 6);
-    buffer.writeUInt16LE(curr[i], k * 6 + 4);
+    view.setUint32(k * 6, i, true);
+    view.setUint16(k * 6 + 4, curr[i], true);
     prev[i] = curr[i];
   }
-  return { deltaBase64: buffer.toString("base64"), changed };
+  return { deltaBase64: bytesToBase64(bytes), changed };
 };
 
 /** Per-player metadata needed to build a `RasterPlayerInfo`. */
