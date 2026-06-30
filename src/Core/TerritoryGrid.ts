@@ -93,6 +93,14 @@ export class TerritoryGrid {
   private readonly componentCounts = new Map<PlayerId, Map<number, number>>();
 
   private readonly standings = new Map<PlayerId, PlayerStanding>();
+  /**
+   * Cached ascending list of registered player ids, returned by {@link players}.
+   * The standings set only ever grows (via {@link addPlayer}; eliminated players
+   * keep their zero-tile standing), so this is invalidated only when a player is
+   * added and otherwise reused — keeping the per-tick `players()` calls (income,
+   * victory check, snapshot, …) off a fresh allocate-and-sort every time.
+   */
+  private playerIdsCache: PlayerId[] | null = null;
 
   /**
    * Fortified locations (a tile → its aura radius and peak strength). A defense
@@ -309,6 +317,7 @@ export class TerritoryGrid {
       modifiers: { ...IDENTITY_MODIFIERS },
       buildingCounts: new Map(),
     });
+    this.playerIdsCache = null;
   }
 
   /** This player's gameplay modifiers. */
@@ -341,9 +350,16 @@ export class TerritoryGrid {
     return this.standings.has(id);
   }
 
-  /** All registered player ids, in ascending order for deterministic iteration. */
+  /**
+   * All registered player ids, in ascending order for deterministic iteration.
+   * Returns a cached, shared array (rebuilt only when a player is added) — treat
+   * it as read-only; callers that need to mutate should copy it first.
+   */
   players(): PlayerId[] {
-    return [...this.standings.keys()].sort((a, b) => a - b);
+    if (this.playerIdsCache === null) {
+      this.playerIdsCache = [...this.standings.keys()].sort((a, b) => a - b);
+    }
+    return this.playerIdsCache;
   }
 
   private standing(id: PlayerId): PlayerStanding {
