@@ -182,7 +182,7 @@ export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
       color: meta.color,
       troops: Math.floor(grid.troopsOf(id)),
       gold: Math.floor(grid.goldOf(id)),
-      goldPerSecond: goldPerSecond(tiles, cities, ports, SIMULATION_TICK_RATE),
+      goldPerSecond: goldPerSecond(SIMULATION_TICK_RATE),
       cities,
       ports,
       forts: grid.buildingCountOf(id, "fort"),

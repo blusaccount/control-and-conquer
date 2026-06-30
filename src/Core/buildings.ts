@@ -70,43 +70,37 @@ export interface BuildingDef {
 // --- Economy constants -----------------------------------------------------
 
 /**
- * Flat gold every player earns each tick regardless of size, mirroring
- * OpenFront's per-tick `goldAdditionRate` base (a steady trickle independent of
- * territory). The dominant gold engines in OpenFront are trade ships and trains;
- * this base keeps structures affordable on the OpenFront cost scale (10⁵–10⁶)
- * before that maritime/rail economy is built up.
+ * Flat gold every player earns each tick, **exactly like OpenFront**: its
+ * `goldAdditionRate` pays a fixed amount per tick that does **not** depend on
+ * territory, cities or ports. Passive gold is just this steady trickle; the
+ * economy is grown through **trade ships** (port↔port) and **trains**, plus a
+ * one-time **conquer bounty**. At 10 ticks/s this is 1000 gold/s for a nation —
+ * a first City (125 000) is ~125 s away on passive income alone, as in OpenFront.
+ *
+ * (OpenFront pays bots only 50/tick; our AI opponents behave like OpenFront's
+ * *nations*, which earn the full 100/tick, so a single flat base is faithful.)
  */
 export const GOLD_BASE_PER_TICK = 100;
-
-/**
- * Gold generated per owned tile per tick — a territory dividend on top of the
- * flat base, so holding more land still funds a bigger building programme. (A
- * pragmatic stand-in for OpenFront's trade-driven gold until trade ships land;
- * OpenFront's own passive gold is flat, with territory paying out via trade.)
- */
-export const GOLD_PER_TILE_PER_TICK = 3;
 
 /** Every player starts a run with this much gold. */
 export const STARTING_GOLD = 0;
 
-/** Extra gold per tick each city adds on top of the territory dividend. */
-export const CITY_GOLD_PER_TICK = 60;
-
 /**
  * Troops each city adds to a player's **maximum** population (OpenFront's
- * `cityTroopIncrease`). A city is a military engine by *raising the ceiling*, not
- * by paying a per-tick dividend: it lifts `maxTroops` so the empire's bell-curve
- * growth has more headroom to climb into. Sized to OpenFront's value so it stays
- * consistent with the territory term (`2·(tiles^0.6·1000 + 50 000)`).
+ * `cityTroopIncrease`). In OpenFront a city pays **no gold** — it is purely a
+ * military engine that *raises the ceiling*: it lifts `maxTroops` so the empire's
+ * bell-curve growth has more headroom to climb into. Sized to OpenFront's value
+ * so it stays consistent with the territory term (`2·(tiles^0.6·1000 + 50 000)`).
  */
 export const CITY_MAX_TROOP_INCREASE = 250_000;
 
 /**
- * Extra gold per tick each port adds — a coastal trade dividend (OpenFront's
- * ports drive the maritime economy). Set a touch above a city's so claiming and
- * developing coastline is worthwhile now that transports cross water freely.
+ * Fraction of a fallen nation's gold the conqueror inherits — OpenFront's
+ * `conquerGoldAmount`: the full pool from a beaten AI/bot, half from a human. A
+ * one-time bounty paid when a player is eliminated (no per-tile capture bounty).
  */
-export const PORT_GOLD_PER_TICK = 60;
+export const CONQUER_GOLD_FRACTION_AI = 1;
+export const CONQUER_GOLD_FRACTION_HUMAN = 0.5;
 
 /**
  * A fort's defense-post aura — strength multiplier and radius (in tiles),
@@ -278,18 +272,10 @@ export const buildingCost = (type: BuildingType, owned: number): number => {
 };
 
 /**
- * Gold generated per second by a player at the current territory, city and port
- * count — the figure the HUD/leaderboard shows as "(+N/s)". Includes the flat
- * per-tick base so the displayed rate matches the engine's real income.
+ * Passive gold per second — the figure the HUD/leaderboard shows as "(+N/s)".
+ * Like OpenFront this is just the flat per-tick base × the tick rate; it is
+ * independent of territory, cities and ports. Trade ships, trains and conquest
+ * top up the pool in bursts on top of this steady passive rate.
  */
-export const goldPerSecond = (
-  tiles: number,
-  cities: number,
-  ports: number,
-  ticksPerSecond: number,
-): number =>
-  (GOLD_BASE_PER_TICK +
-    tiles * GOLD_PER_TILE_PER_TICK +
-    cities * CITY_GOLD_PER_TICK +
-    ports * PORT_GOLD_PER_TICK) *
-  ticksPerSecond;
+export const goldPerSecond = (ticksPerSecond: number): number =>
+  GOLD_BASE_PER_TICK * ticksPerSecond;

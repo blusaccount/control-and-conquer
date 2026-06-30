@@ -20,7 +20,7 @@ import type {
   RasterTrain,
 } from "../Core/types.js";
 import { LAND_ATTACK_REACH, RASTER_MATCH_DURATION_SECONDS, SPAWN_IMMUNITY_SECONDS } from "../Core/rasterCombatConfig.js";
-import { BUILDING_DEFS, buildingCost, COASTAL_BUILDING_TYPES, STRUCTURE_MIN_DIST } from "../Core/buildings.js";
+import { BUILDING_DEFS, buildingCost, COASTAL_BUILDING_TYPES, CONQUER_GOLD_FRACTION_AI, CONQUER_GOLD_FRACTION_HUMAN, STRUCTURE_MIN_DIST } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import type { RasterMatchPhase } from "../Core/types.js";
 import { attachOwnership, buildSharedSnapshot, encodeOwnerDelta, encodeOwners, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
@@ -826,6 +826,12 @@ export class RasterGameSession {
    * (newest first) plus the ids eliminated this call. Pure bookkeeping
    * otherwise — no broadcast here.
    */
+  /** Whether `id` is a human (a subscribed client) rather than an AI nation. */
+  private isHuman(id: PlayerId): boolean {
+    for (const sub of this.subscribers.values()) if (sub.playerId === id) return true;
+    return false;
+  }
+
   private resolveEliminations(): { lines: string[]; eliminated: PlayerId[] } {
     const lines: string[] = [];
     const eliminated: PlayerId[] = [];
@@ -845,7 +851,13 @@ export class RasterGameSession {
       const conqueror = sample !== undefined ? this.grid.ownerOf(sample) : NEUTRAL_PLAYER;
       if (conqueror !== NEUTRAL_PLAYER && conqueror !== playerId) {
         this.kills.set(conqueror, (this.kills.get(conqueror) ?? 0) + 1);
+        // Conquer bounty (OpenFront's `conquerGoldAmount`): the victor inherits
+        // the fallen nation's treasury — all of an AI's gold, half of a human's.
+        const fraction = this.isHuman(playerId) ? CONQUER_GOLD_FRACTION_HUMAN : CONQUER_GOLD_FRACTION_AI;
+        const bounty = Math.floor(this.grid.goldOf(playerId) * fraction);
+        if (bounty > 0) this.grid.addGold(conqueror, bounty);
       }
+      this.grid.setGold(playerId, 0); // the fallen nation's treasury is gone
 
       const fallenName = this.playerMeta.get(playerId)?.name ?? `Player ${playerId}`;
       const conquerorName = conqueror === NEUTRAL_PLAYER || conqueror === playerId

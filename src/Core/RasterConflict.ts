@@ -1,13 +1,7 @@
 import type { TileRef } from "./GameMap.js";
 import { NEUTRAL_PLAYER, type PlayerId, type TerritoryGrid } from "./TerritoryGrid.js";
 import { NO_ALLIANCES, type AllianceView } from "./alliances.js";
-import {
-  CITY_GOLD_PER_TICK,
-  GOLD_BASE_PER_TICK,
-  GOLD_PER_TILE_PER_TICK,
-  PORT_GOLD_PER_TICK,
-  WARSHIP_INTERCEPT_RANGE,
-} from "./buildings.js";
+import { GOLD_BASE_PER_TICK, WARSHIP_INTERCEPT_RANGE } from "./buildings.js";
 import { RailSystem, type RailView, type TrainView } from "./railSystem.js";
 import { TradeSystem, type TradeView } from "./tradeSystem.js";
 import {
@@ -179,8 +173,6 @@ export class RasterConflict {
   /** Monotonic id source so each ship has a stable handle for the client. */
   private nextShipId = 1;
   private readonly incomeAccumulator = new Map<PlayerId, number>();
-  /** Fractional gold carried between ticks, flushed into the integer pool. */
-  private readonly goldAccumulator = new Map<PlayerId, number>();
   /**
    * Tick (exclusive) until which a freshly-seated player is immune from attack.
    * Set by {@link grantImmunity} when the session seats a player; checked before
@@ -573,25 +565,15 @@ export class RasterConflict {
   }
 
   /**
-   * Each player earns gold proportional to the tiles they hold, plus a flat
-   * dividend per city, accumulated fractionally and flushed into the integer
-   * gold pool. Unlike troops, gold is uncapped — it is a spend resource, drained
-   * by building structures — so there is no logistic soft cap here.
+   * Each player earns a **flat** passive gold trickle every tick, exactly like
+   * OpenFront's `goldAdditionRate` — independent of territory, cities and ports.
+   * Gold is otherwise grown through trade ships, trains and conquest, not a
+   * per-tile/per-building dividend. Uncapped (a spend resource), so no soft cap.
    */
   private applyGoldIncome(): void {
     for (const id of this.grid.players()) {
-      const tiles = this.grid.tileCountOf(id);
-      const cities = this.grid.buildingCountOf(id, "city");
-      const ports = this.grid.buildingCountOf(id, "port");
-      const rate =
-        GOLD_BASE_PER_TICK +
-        tiles * GOLD_PER_TILE_PER_TICK +
-        cities * CITY_GOLD_PER_TICK +
-        ports * PORT_GOLD_PER_TICK;
-      const accumulated = (this.goldAccumulator.get(id) ?? 0) + rate;
-      const whole = Math.floor(accumulated);
-      if (whole > 0) this.grid.addGold(id, whole);
-      this.goldAccumulator.set(id, accumulated - whole);
+      if (this.grid.tileCountOf(id) <= 0) continue; // eliminated — earns nothing
+      this.grid.addGold(id, GOLD_BASE_PER_TICK);
     }
   }
 
