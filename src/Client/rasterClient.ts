@@ -785,9 +785,29 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     if (runtime.captureFlashes.length > MAX_CAPTURE_FLASHES) {
       runtime.captureFlashes.splice(0, runtime.captureFlashes.length - MAX_CAPTURE_FLASHES);
     }
+    // Repaint each touched tile and track their bounding box, so the GPU upload
+    // below covers only the changed region instead of re-uploading the whole
+    // (up to 1.6M-pixel) base every snapshot. Per-tick churn at a front is a tiny
+    // fraction of the map, so this keeps `putImageData` cheap on big maps.
     const highlight = runtime.myPlayerId ?? -1;
-    for (const ref of dirty) paintTileInto(map, owner, ref, target.image.data, undefined, highlight);
-    target.base.getContext("2d")?.putImageData(target.image, 0, 0);
+    let minX = map.width;
+    let minY = map.height;
+    let maxX = -1;
+    let maxY = -1;
+    for (const ref of dirty) {
+      paintTileInto(map, owner, ref, target.image.data, undefined, highlight);
+      const tx = ref % map.width;
+      const ty = (ref - tx) / map.width;
+      if (tx < minX) minX = tx;
+      if (tx > maxX) maxX = tx;
+      if (ty < minY) minY = ty;
+      if (ty > maxY) maxY = ty;
+    }
+    if (maxX >= 0) {
+      target.base
+        .getContext("2d")
+        ?.putImageData(target.image, 0, 0, minX, minY, maxX - minX + 1, maxY - minY + 1);
+    }
   };
 
   /**
@@ -944,11 +964,23 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
    * changes hands without paying the cost every frame.
    */
   const recomputeNames = (now: number): void => {
-    if (now - runtime.lastNameComputeMs < NAME_RECOMPUTE_MS) return;
     const map = runtime.map;
     const owner = runtime.owner;
     if (!map || !owner) return;
+    // Recompute less often on big maps — labels drift slowly and the pass is a
+    // full O(size) owner scan (~10ms on the 1.6M-tile Earth), so a longer
+    // interval keeps the hitch rare.
+    const interval = map.size > 600_000 ? 900 : NAME_RECOMPUTE_MS;
+    if (now - runtime.lastNameComputeMs < interval) return;
     runtime.lastNameComputeMs = now;
+
+    // Skip the whole (full-raster) pass when the camera is zoomed out far enough
+    // that no label would clear the minimum on-screen font size — exactly the
+    // state where the scan is pure waste. `drawNames` culls per-anchor anyway, so
+    // keeping the previous anchors is harmless; the next zoom-in recomputes them.
+    let maxSize = 0;
+    for (const a of runtime.nameAnchors) if (a.size > maxSize) maxSize = a.size;
+    if (maxSize > 0 && maxSize * runtime.view.scale < MIN_NAME_FONT_PX) return;
 
     const players = runtime.players
       .filter((p) => !p.eliminated && p.tiles > 0)

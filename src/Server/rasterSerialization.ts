@@ -44,18 +44,19 @@ export const encodeOwnerDelta = (
   prev: Uint16Array,
   curr: ArrayLike<number>,
 ): { deltaBase64: string; changed: number } => {
-  let changed = 0;
-  for (let i = 0; i < curr.length; i += 1) if (prev[i] !== curr[i]) changed += 1;
+  // Single pass over the raster: collect the changed indices, then size and fill
+  // the buffer from that list. The previous two-pass form scanned the whole
+  // (up-to-1.6M-tile) array twice per tick just to learn the change count first.
+  const indices: number[] = [];
+  for (let i = 0; i < curr.length; i += 1) if (prev[i] !== curr[i]) indices.push(i);
 
+  const changed = indices.length;
   const buffer = Buffer.alloc(changed * 6);
-  let pos = 0;
-  for (let i = 0; i < curr.length; i += 1) {
-    if (prev[i] !== curr[i]) {
-      buffer.writeUInt32LE(i, pos);
-      buffer.writeUInt16LE(curr[i], pos + 4);
-      pos += 6;
-      prev[i] = curr[i];
-    }
+  for (let k = 0; k < changed; k += 1) {
+    const i = indices[k];
+    buffer.writeUInt32LE(i, k * 6);
+    buffer.writeUInt16LE(curr[i], k * 6 + 4);
+    prev[i] = curr[i];
   }
   return { deltaBase64: buffer.toString("base64"), changed };
 };
