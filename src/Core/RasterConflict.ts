@@ -3,6 +3,7 @@ import { NEUTRAL_PLAYER, type PlayerId, type TerritoryGrid } from "./TerritoryGr
 import { NO_ALLIANCES, type AllianceView } from "./alliances.js";
 import {
   CITY_GOLD_PER_TICK,
+  GOLD_BASE_PER_TICK,
   GOLD_PER_TILE_PER_TICK,
   PORT_GOLD_PER_TICK,
 } from "./buildings.js";
@@ -541,7 +542,10 @@ export class RasterConflict {
       const cities = this.grid.buildingCountOf(id, "city");
       const ports = this.grid.buildingCountOf(id, "port");
       const rate =
-        tiles * GOLD_PER_TILE_PER_TICK + cities * CITY_GOLD_PER_TICK + ports * PORT_GOLD_PER_TICK;
+        GOLD_BASE_PER_TICK +
+        tiles * GOLD_PER_TILE_PER_TICK +
+        cities * CITY_GOLD_PER_TICK +
+        ports * PORT_GOLD_PER_TICK;
       const accumulated = (this.goldAccumulator.get(id) ?? 0) + rate;
       const whole = Math.floor(accumulated);
       if (whole > 0) this.grid.addGold(id, whole);

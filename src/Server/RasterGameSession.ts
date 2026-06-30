@@ -19,7 +19,7 @@ import type {
   RasterTrain,
 } from "../Core/types.js";
 import { LAND_ATTACK_REACH, RASTER_MATCH_DURATION_SECONDS } from "../Core/rasterCombatConfig.js";
-import { BUILDING_DEFS, buildingCost } from "../Core/buildings.js";
+import { BUILDING_DEFS, buildingCost, STRUCTURE_MIN_DIST } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import type { RasterMatchPhase } from "../Core/types.js";
 import { attachOwnership, buildSharedSnapshot, encodeOwnerDelta, encodeOwners, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
@@ -989,6 +989,26 @@ export class RasterGameSession {
     }
     if (this.grid.hasBuilding(ref)) {
       return { kind: "rejected", reason: "TILE_OCCUPIED", message: "That tile already has a building." };
+    }
+    // A port is a coastal trade hub (OpenFront snaps it to a shore tile); it can
+    // only stand where the land meets navigable water.
+    if (intent.building === "port" && !this.map.isShore(ref)) {
+      return { kind: "rejected", reason: "NOT_BUILDABLE", message: "A port must be built on a coastal tile." };
+    }
+    // Structures can't be packed together: enforce OpenFront's minimum spacing
+    // (Euclidean) against the builder's other buildings.
+    const minDistSq = STRUCTURE_MIN_DIST * STRUCTURE_MIN_DIST;
+    for (const [other] of this.grid.buildingEntries()) {
+      if (this.grid.ownerOf(other) !== attacker) continue;
+      const dx = this.map.x(other) - intent.targetX;
+      const dy = this.map.y(other) - intent.targetY;
+      if (dx * dx + dy * dy < minDistSq) {
+        return {
+          kind: "rejected",
+          reason: "TILE_OCCUPIED",
+          message: `Too close to another building — keep ${STRUCTURE_MIN_DIST} tiles between structures.`,
+        };
+      }
     }
 
     const cost = buildingCost(intent.building, this.grid.buildingCountOf(attacker, intent.building));
