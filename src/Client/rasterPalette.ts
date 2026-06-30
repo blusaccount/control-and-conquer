@@ -34,6 +34,15 @@ const lerpColor = (a: Rgba, b: Rgba, t: number): Rgba => ({
 
 /** Shallow water (just off the coast). */
 const WATER_SHALLOW: Rgba = { r: 90, g: 155, b: 210, a: 255 };
+/**
+ * Shallow inland water (lakes, and the thin carved river channels). Far darker
+ * and less saturated than the ocean's shallow colour on purpose: rivers are only
+ * a single tile wide, so the bright ocean-shallow colour made them glow and read
+ * as bloated channels (the "halo" each river painted on the relief). A muted
+ * steel-blue lets a 1-tile river recede into the land as a quiet thread instead
+ * of a fat, luminous one, while still being unmistakably water.
+ */
+const WATER_SHALLOW_INLAND: Rgba = { r: 46, g: 96, b: 132, a: 255 };
 /** Deep open water. */
 const WATER_DEEP: Rgba = { r: 12, g: 40, b: 80, a: 255 };
 /** Slight teal shift applied to inland lakes to set them apart from ocean. */
@@ -56,10 +65,16 @@ export const terrainColor = (byte: number): Rgba => {
   if (!isLand(byte)) {
     const depth = magnitude(byte);
     const t = Math.min(1, depth / MAX_WATER_DEPTH_SHADE);
-    const base = lerpColor(WATER_SHALLOW, WATER_DEEP, t);
-    // Lakes (water tiles that are not ocean) get a gentle teal shift.
     const ocean = (byte & 0x20) !== 0;
-    return ocean ? base : lerpColor(base, LAKE_SHIFT, 0.3);
+    // Ocean fades bright-shallow → deep; inland water (lakes and the thin carved
+    // rivers) fades from the muted inland-shallow colour so a 1-tile river reads
+    // as a quiet thread, not a glowing channel. A gentle teal shift keeps inland
+    // water distinct from ocean of the same depth.
+    if (ocean) {
+      return lerpColor(WATER_SHALLOW, WATER_DEEP, t);
+    }
+    const base = lerpColor(WATER_SHALLOW_INLAND, WATER_DEEP, t);
+    return lerpColor(base, LAKE_SHIFT, 0.3);
   }
   if (isImpassable(byte)) {
     return { ...ROCK };
