@@ -1124,23 +1124,61 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
    */
   const drawRails = (ctx: CanvasRenderingContext2D, scale: number): void => {
     if (runtime.rails.length === 0 || scale < 2) return;
-    const lw = Math.max(1, scale * 0.45);
+    const lw = Math.max(1, scale * 0.5);
+    // Sleepers (perpendicular ties) only when there's room to read them.
+    const showSleepers = scale >= 5;
+    const tieSpacing = Math.max(5, scale * 0.85);
     ctx.save();
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     for (const rail of runtime.rails) {
       if (rail.points.length < 2) continue;
+      const pts = rail.points.map((p) => worldToScreen(p[0] + 0.5, p[1] + 0.5));
+
+      // Dark ballast casing under the rails.
       ctx.beginPath();
-      for (let i = 0; i < rail.points.length; i += 1) {
-        const p = worldToScreen(rail.points[i][0] + 0.5, rail.points[i][1] + 0.5);
-        if (i === 0) ctx.moveTo(p.x, p.y);
-        else ctx.lineTo(p.x, p.y);
+      for (let i = 0; i < pts.length; i += 1) {
+        if (i === 0) ctx.moveTo(pts[i].x, pts[i].y);
+        else ctx.lineTo(pts[i].x, pts[i].y);
       }
-      ctx.strokeStyle = "rgba(38, 40, 48, 0.85)";
-      ctx.lineWidth = lw * 1.7;
+      ctx.strokeStyle = "rgba(30, 32, 40, 0.9)";
+      ctx.lineWidth = lw * 2.1;
       ctx.stroke();
-      ctx.strokeStyle = "rgba(176, 182, 194, 0.9)";
-      ctx.lineWidth = Math.max(0.6, lw * 0.55);
+
+      // Wooden sleepers: short perpendicular ties stepped along each segment, so
+      // the line reads as railroad track rather than a plain stroke.
+      if (showSleepers) {
+        ctx.strokeStyle = "rgba(122, 96, 70, 0.95)";
+        ctx.lineWidth = Math.max(1, lw * 0.5);
+        const tieLen = lw * 1.3;
+        for (let i = 1; i < pts.length; i += 1) {
+          const ax = pts[i - 1].x;
+          const ay = pts[i - 1].y;
+          const dx = pts[i].x - ax;
+          const dy = pts[i].y - ay;
+          const segLen = Math.hypot(dx, dy);
+          if (segLen < 1) continue;
+          const nx = -dy / segLen; // unit normal
+          const ny = dx / segLen;
+          for (let d = tieSpacing / 2; d < segLen; d += tieSpacing) {
+            const cx = ax + (dx * d) / segLen;
+            const cy = ay + (dy * d) / segLen;
+            ctx.beginPath();
+            ctx.moveTo(cx - nx * tieLen, cy - ny * tieLen);
+            ctx.lineTo(cx + nx * tieLen, cy + ny * tieLen);
+            ctx.stroke();
+          }
+        }
+      }
+
+      // Steel rail on top.
+      ctx.beginPath();
+      for (let i = 0; i < pts.length; i += 1) {
+        if (i === 0) ctx.moveTo(pts[i].x, pts[i].y);
+        else ctx.lineTo(pts[i].x, pts[i].y);
+      }
+      ctx.strokeStyle = "rgba(196, 202, 214, 0.95)";
+      ctx.lineWidth = Math.max(0.7, lw * 0.55);
       ctx.stroke();
     }
     ctx.restore();
@@ -1217,15 +1255,48 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     // Marker radius scales with zoom but clamps to a legible band; below the dot
     // threshold we draw plain owner dots so the map doesn't clutter.
     const dotMode = scale < 6;
-    const radius = dotMode ? Math.max(1.8, scale * 0.42) : Math.max(9, Math.min(scale * 0.62, 24));
-    const iconPx = radius * 1.25;
+    const radius = dotMode ? Math.max(1.8, scale * 0.42) : Math.max(10, Math.min(scale * 0.66, 26));
+    const iconPx = radius * 1.2;
+
+    type Rgb = { r: number; g: number; b: number };
+    const lighten = (c: Rgb, t: number): string =>
+      rgbaToCss({ r: c.r + (255 - c.r) * t, g: c.g + (255 - c.g) * t, b: c.b + (255 - c.b) * t });
+    const darken = (c: Rgb, t: number): string =>
+      rgbaToCss({ r: c.r * (1 - t), g: c.g * (1 - t), b: c.b * (1 - t) });
+    // Distinct silhouette per structure type (like OpenFront's per-type shapes),
+    // so a glance at the outline already tells city from port from fort. `sides`
+    // 0 means a circle; `rot` orients the polygon.
+    const SHAPE: Record<string, { sides: number; rot: number }> = {
+      city: { sides: 0, rot: 0 },
+      port: { sides: 5, rot: -Math.PI / 2 },
+      factory: { sides: 6, rot: -Math.PI / 2 },
+      fort: { sides: 8, rot: Math.PI / 8 },
+      warship: { sides: 4, rot: 0 },
+    };
+    const tracePath = (cx: number, cy: number, r: number, type: string): void => {
+      const shape = SHAPE[type] ?? { sides: 0, rot: 0 };
+      ctx.beginPath();
+      if (shape.sides === 0) {
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        return;
+      }
+      for (let i = 0; i < shape.sides; i += 1) {
+        const a = shape.rot + (i * 2 * Math.PI) / shape.sides;
+        const x = cx + r * Math.cos(a);
+        const y = cy + r * Math.sin(a);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+    };
+
     ctx.save();
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     if (!dotMode) ctx.font = `${iconPx}px serif`;
     for (const b of runtime.buildings) {
       const { x: sx, y: sy } = worldToScreen(b.x + 0.5, b.y + 0.5);
-      if (sx < -radius || sy < -radius || sx > cw + radius || sy > ch + radius) continue;
+      if (sx < -radius * 2 || sy < -radius * 2 || sx > cw + radius * 2 || sy > ch + radius * 2) continue;
       const col = playerColor(b.playerId);
 
       if (dotMode) {
@@ -1242,18 +1313,46 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         continue;
       }
 
-      // Owner-coloured disc base (darkened so the icon pops) + brighter ring.
+      // 1. Cast shadow — a soft ellipse below the marker so it sits ON the land
+      //    and casts a shadow, instead of floating flat on top of it.
       ctx.beginPath();
-      ctx.arc(sx, sy, radius, 0, Math.PI * 2);
-      ctx.fillStyle = rgbaToCss({ r: col.r * 0.45, g: col.g * 0.45, b: col.b * 0.45 });
+      ctx.ellipse(sx, sy + radius * 0.6, radius * 0.95, radius * 0.42, 0, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(0, 0, 0, 0.30)";
       ctx.fill();
-      ctx.lineWidth = Math.max(1.5, radius * 0.16);
-      ctx.strokeStyle = rgbaToCss(col);
+
+      // 2. Shaped base, filled with a radial gradient (light top-left → dark
+      //    bottom-right) so the token reads as a raised dome, not a flat disc.
+      const grad = ctx.createRadialGradient(
+        sx - radius * 0.38, sy - radius * 0.42, radius * 0.1,
+        sx, sy, radius * 1.08,
+      );
+      grad.addColorStop(0, lighten(col, 0.5));
+      grad.addColorStop(0.55, rgbaToCss(col));
+      grad.addColorStop(1, darken(col, 0.5));
+      tracePath(sx, sy, radius, b.type);
+      ctx.fillStyle = grad;
+      ctx.fill();
+      // Crisp dark outline around the silhouette.
+      ctx.lineWidth = Math.max(1.2, radius * 0.11);
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
       ctx.stroke();
 
-      // The building icon on top, with a dark outline so it reads on the disc.
+      // 3. Rim highlight along the top edge — the glint that sells the volume.
+      ctx.beginPath();
+      ctx.arc(sx, sy, radius * 0.82, Math.PI * 1.12, Math.PI * 1.92);
+      ctx.lineWidth = Math.max(1, radius * 0.13);
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.55)";
+      ctx.stroke();
+
+      // 4. A faint dark well behind the glyph so the icon reads cleanly on top.
+      ctx.beginPath();
+      ctx.arc(sx, sy, radius * 0.6, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(0, 0, 0, 0.18)";
+      ctx.fill();
+
+      // 5. The building icon, dark-outlined for contrast on any owner colour.
       ctx.lineWidth = Math.max(2, iconPx * 0.12);
-      ctx.strokeStyle = "rgba(0, 0, 0, 0.75)";
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.8)";
       ctx.strokeText(BUILDING_DEFS[b.type].icon, sx, sy);
       ctx.fillText(BUILDING_DEFS[b.type].icon, sx, sy);
     }
