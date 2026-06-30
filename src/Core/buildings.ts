@@ -133,6 +133,15 @@ export const FORT_DEFENSE_RADIUS = 30;
 export const STRUCTURE_MIN_DIST = 15;
 
 /**
+ * How far (Chebyshev tiles) a coastal structure (port, warship) snaps to find a
+ * shore tile, mirroring OpenFront's `radiusPortSpawn` (20). A coastline is only
+ * one tile wide, so demanding a pixel-perfect click on it makes ports almost
+ * impossible to place; instead the click resolves to the nearest **owned**
+ * shore tile within this radius — clicking your coast "near enough" just works.
+ */
+export const COASTAL_SNAP_RADIUS = 20;
+
+/**
  * Ticks a structure spends **under construction** before its effects switch on,
  * mirroring OpenFront's `constructionDuration` (2/5/10·10-tick windows at 10
  * ticks/s). Until it finishes a building counts toward its cost ramp but pays no
@@ -241,7 +250,7 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
     type: "city",
     name: "City",
     description: "Raises max population and pays a gold dividend.",
-    icon: "\u{1F3DB}\u{FE0F}", // 🏛️
+    icon: "\u{2302}", // ⌂ house — a monochrome white glyph drawn on the owner-coloured disc
     baseCost: 125_000,
     costGrowth: 2,
     costCap: 1_000_000,
@@ -250,7 +259,7 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
     type: "port",
     name: "Port",
     description: "A coastal trade hub: steady gold income (must sit on a shore).",
-    icon: "\u{2693}", // ⚓
+    icon: "\u{2693}\u{FE0E}", // ⚓ anchor, text-presentation (forced monochrome, not emoji)
     baseCost: 125_000,
     costGrowth: 2,
     costCap: 1_000_000,
@@ -259,7 +268,7 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
     type: "fort",
     name: "Fort",
     description: "Fortifies the surrounding tiles against capture.",
-    icon: "\u{1F6E1}\u{FE0F}", // 🛡️
+    icon: "\u{26E8}\u{FE0E}", // ⛨ cross on shield, text-presentation (monochrome)
     baseCost: 50_000,
     costGrowth: 1,
     costCap: 250_000,
@@ -269,7 +278,7 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
     type: "factory",
     name: "Factory",
     description: "Lays railroads to nearby cities and ports; trains earn gold.",
-    icon: "\u{1F3ED}", // 🏭
+    icon: "\u{2699}\u{FE0E}", // ⚙ gear, text-presentation (monochrome)
     baseCost: 125_000,
     costGrowth: 2,
     costCap: 1_000_000,
@@ -278,7 +287,7 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
     type: "warship",
     name: "Warship",
     description: "Guards the coast: sinks enemy transport ships in range (must sit on a shore).",
-    icon: "\u{1F6A2}", // 🚢
+    icon: "\u{2694}\u{FE0E}", // ⚔ crossed swords, text-presentation (monochrome)
     baseCost: 250_000,
     costGrowth: 1,
     costCap: 1_000_000,

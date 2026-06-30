@@ -20,7 +20,7 @@ import type {
   RasterTrain,
 } from "../Core/types.js";
 import { LAND_ATTACK_REACH, RASTER_MATCH_DURATION_SECONDS, SPAWN_IMMUNITY_SECONDS } from "../Core/rasterCombatConfig.js";
-import { BUILDING_CONSTRUCTION_TICKS, BUILDING_DEFS, buildingCost, COASTAL_BUILDING_TYPES, CONQUER_GOLD_FRACTION_AI, CONQUER_GOLD_FRACTION_HUMAN, costCounterTypes, STRUCTURE_MIN_DIST } from "../Core/buildings.js";
+import { BUILDING_CONSTRUCTION_TICKS, BUILDING_DEFS, buildingCost, COASTAL_BUILDING_TYPES, COASTAL_SNAP_RADIUS, CONQUER_GOLD_FRACTION_AI, CONQUER_GOLD_FRACTION_HUMAN, costCounterTypes, STRUCTURE_MIN_DIST } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import type { RasterDifficulty } from "../Core/messages.js";
 import { IDENTITY_MODIFIERS } from "../Core/playerModifiers.js";
@@ -1041,25 +1041,34 @@ export class RasterGameSession {
       return { kind: "rejected", reason: "INVALID_BUILDING", message: "Unknown building type." };
     }
 
-    const ref = this.map.ref(intent.targetX, intent.targetY);
-    if (!this.grid.isCapturable(ref) || this.grid.ownerOf(ref) !== attacker) {
+    const clickRef = this.map.ref(intent.targetX, intent.targetY);
+    if (!this.grid.isCapturable(clickRef) || this.grid.ownerOf(clickRef) !== attacker) {
       return { kind: "rejected", reason: "NOT_BUILDABLE", message: `Build a ${def.name.toLowerCase()} on land you own.` };
+    }
+    // Coastal structures (ports, warships) can only stand where the land meets
+    // navigable water. A coastline is a single tile wide, so rather than demand a
+    // pixel-perfect click on it (OpenFront never does), snap to the nearest owned
+    // shore tile within {@link COASTAL_SNAP_RADIUS} — clicking your coast "near
+    // enough" just works. Only if no owned shore sits within reach is it rejected.
+    const isCoastal = COASTAL_BUILDING_TYPES.includes(intent.building);
+    const ref = isCoastal && !this.map.isShore(clickRef)
+      ? this.nearestOwnedShore(attacker, intent.targetX, intent.targetY)
+      : clickRef;
+    if (ref === null) {
+      return { kind: "rejected", reason: "NOT_BUILDABLE", message: `A ${def.name.toLowerCase()} must be built near your coast.` };
     }
     if (this.grid.hasBuilding(ref)) {
       return { kind: "rejected", reason: "TILE_OCCUPIED", message: "That tile already has a building." };
     }
-    // Coastal structures (ports, warships) can only stand where the land meets
-    // navigable water — OpenFront snaps them to a shore tile.
-    if (COASTAL_BUILDING_TYPES.includes(intent.building) && !this.map.isShore(ref)) {
-      return { kind: "rejected", reason: "NOT_BUILDABLE", message: `A ${def.name.toLowerCase()} must be built on a coastal tile.` };
-    }
+    const targetX = this.map.x(ref);
+    const targetY = this.map.y(ref);
     // Structures can't be packed together: enforce OpenFront's minimum spacing
     // (Euclidean) against the builder's other buildings.
     const minDistSq = STRUCTURE_MIN_DIST * STRUCTURE_MIN_DIST;
     for (const [other] of this.grid.buildingEntries()) {
       if (this.grid.ownerOf(other) !== attacker) continue;
-      const dx = this.map.x(other) - intent.targetX;
-      const dy = this.map.y(other) - intent.targetY;
+      const dx = this.map.x(other) - targetX;
+      const dy = this.map.y(other) - targetY;
       if (dx * dx + dy * dy < minDistSq) {
         return {
           kind: "rejected",
@@ -1092,8 +1101,43 @@ export class RasterGameSession {
     const builderName = this.playerMeta.get(attacker)?.name ?? `Player ${attacker}`;
     return {
       kind: "ok",
-      line: `${builderName} built a ${def.name} (${cost} gold) at (${intent.targetX}, ${intent.targetY}).`,
+      line: `${builderName} built a ${def.name} (${cost} gold) at (${targetX}, ${targetY}).`,
     };
+  }
+
+  /**
+   * Nearest tile the player owns that sits on a coastline, searched outward from
+   * (`cx`,`cy`) in growing Chebyshev rings up to {@link COASTAL_SNAP_RADIUS}.
+   * Returns the closest owned, capturable shore tile (so a port/warship can stand
+   * there), or `null` if the player holds no coast within reach. Rings are walked
+   * nearest-first so the snap lands on the coast the player most plausibly meant.
+   */
+  private nearestOwnedShore(owner: PlayerId, cx: number, cy: number): TileRef | null {
+    for (let r = 0; r <= COASTAL_SNAP_RADIUS; r += 1) {
+      let best: TileRef | null = null;
+      let bestDistSq = Infinity;
+      for (let dy = -r; dy <= r; dy += 1) {
+        for (let dx = -r; dx <= r; dx += 1) {
+          // Only the perimeter of this ring is new; interior tiles were already
+          // examined by a smaller radius.
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          const x = cx + dx;
+          const y = cy + dy;
+          if (!this.map.inBounds(x, y)) continue;
+          const ref = this.map.ref(x, y);
+          if (!this.map.isShore(ref)) continue;
+          if (!this.grid.isCapturable(ref) || this.grid.ownerOf(ref) !== owner) continue;
+          if (this.grid.hasBuilding(ref)) continue;
+          const distSq = dx * dx + dy * dy;
+          if (distSq < bestDistSq) {
+            bestDistSq = distSq;
+            best = ref;
+          }
+        }
+      }
+      if (best !== null) return best;
+    }
+    return null;
   }
 
   /** Event-log line for a committed land attack. */
