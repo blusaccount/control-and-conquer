@@ -83,6 +83,16 @@ export const troopsPerSecond = (
 export const RASTER_MATCH_DURATION_SECONDS = 600;
 
 /**
+ * Seconds of **spawn immunity** a freshly-seated nation gets, mirroring
+ * OpenFront's post-spawn protection: for this window the player's tiles can't be
+ * attacked (by land or sea), so a new spawn isn't instantly steamrolled by a
+ * neighbouring snowball before it can establish a border. Kept in seconds (a pure
+ * gameplay rule, independent of tick rate); the engine is granted the equivalent
+ * tick count when a player is seated.
+ */
+export const SPAWN_IMMUNITY_SECONDS = 8;
+
+/**
  * Fraction of leftover committed troops lost when an attack against a *player*
  * ends without overrunning them — the front gets blocked, the target slips out
  * of reach, or an amphibious landing is repelled. Mirrors OpenFront's

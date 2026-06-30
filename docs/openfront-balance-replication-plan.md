@@ -21,7 +21,7 @@
 | **P1 — Land-Kampf-Port** (`attackLogic`: mag/speed 80·100·120, Verlust-Blend, `attackTilesPerTick`, emergente Mehrfront-Verdünnung, Terrain-Bänder 9/19) | ✅ **umgesetzt & getestet** |
 | **P2 — Gebäude/Gold/Defense-Post/Platzierung** (City/Port/Factory `2^n·125k` Cap 1M; Fort `(n+1)·50k` Cap 250k; flaches Gold-Base + skalierte Dividenden; Fort Stärke 5/Radius 30; Port nur Küste; `structureMinDist 15`) | ✅ **umgesetzt & getestet** |
 | **P3 — Trade-Schiffe** (Port→Port, OpenFront-Gold-Sigmoid `75000/(1+e^…)+50·dist`, **beide** Häfen kassieren, Flotten-Cap; Snapshot + Client-Punkte) | ✅ **umgesetzt & getestet** · Warships/Nukes/Boote-`floor(troops/5)` noch offen |
-| **P4 — Bot/Nation-Split, Spawn-Immunität, Radial-UI/Hotkeys, Visualisierung** | ⏳ offen (UI-/Render-lastig) |
+| **P4 — Spawn-Immunität** (geschütztes Eröffnungsfenster `SPAWN_IMMUNITY_SECONDS`, Angriffe/Boote auf immune Nationen abgewiesen) | ✅ **umgesetzt & getestet** · Bot/Nation-Split, Radial-UI/Hotkeys, Visualisierung noch offen (UI-/Render-lastig) |
 
 Der **Balancing-Kern** (Truppen/Population, Land-Kampf, Wirtschaft/Gebäude) ist
 damit wertgenau auf OpenFront umgestellt; 238 Unit-Tests grün. P3/P4 sind als

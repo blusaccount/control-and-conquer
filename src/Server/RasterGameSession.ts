@@ -19,7 +19,7 @@ import type {
   RasterTrade,
   RasterTrain,
 } from "../Core/types.js";
-import { LAND_ATTACK_REACH, RASTER_MATCH_DURATION_SECONDS } from "../Core/rasterCombatConfig.js";
+import { LAND_ATTACK_REACH, RASTER_MATCH_DURATION_SECONDS, SPAWN_IMMUNITY_SECONDS } from "../Core/rasterCombatConfig.js";
 import { BUILDING_DEFS, buildingCost, STRUCTURE_MIN_DIST } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import type { RasterMatchPhase } from "../Core/types.js";
@@ -478,6 +478,11 @@ export class RasterGameSession {
       const spawn = this.spawnTiles[subscriber.playerId - 1] ?? this.firstFreeSpawn();
       if (spawn !== undefined) this.seatPlayer(subscriber.playerId, spawn);
     }
+    // Grant every seated nation a post-spawn immunity window so the opening of
+    // the live game is a protected land-grab — nobody can be attacked until it
+    // elapses, so a fresh spawn establishes a border before combat opens.
+    const immunityTicks = Math.round(SPAWN_IMMUNITY_SECONDS * SIMULATION_TICK_RATE);
+    for (const id of this.grid.players()) this.conflict.grantImmunity(id, immunityTicks);
     this.phase = "playing";
     this.recentEvents = ["The start phase is over — seize territory!", ...this.recentEvents].slice(0, MAX_EVENTS);
   }
