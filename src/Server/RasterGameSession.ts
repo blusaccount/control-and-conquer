@@ -20,7 +20,7 @@ import type {
   RasterTrain,
 } from "../Core/types.js";
 import { LAND_ATTACK_REACH, RASTER_MATCH_DURATION_SECONDS, SPAWN_IMMUNITY_SECONDS } from "../Core/rasterCombatConfig.js";
-import { BUILDING_DEFS, buildingCost, COASTAL_BUILDING_TYPES, CONQUER_GOLD_FRACTION_AI, CONQUER_GOLD_FRACTION_HUMAN, STRUCTURE_MIN_DIST } from "../Core/buildings.js";
+import { BUILDING_DEFS, buildingCost, COASTAL_BUILDING_TYPES, CONQUER_GOLD_FRACTION_AI, CONQUER_GOLD_FRACTION_HUMAN, costCounterTypes, STRUCTURE_MIN_DIST } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import type { RasterDifficulty } from "../Core/messages.js";
 import { IDENTITY_MODIFIERS } from "../Core/playerModifiers.js";
@@ -1069,7 +1069,13 @@ export class RasterGameSession {
       }
     }
 
-    const cost = buildingCost(intent.building, this.grid.buildingCountOf(attacker, intent.building));
+    // Ports and Factories share a cost counter, so sum the owned counts across
+    // the building's cost group (just itself for the others).
+    const owned = costCounterTypes(intent.building).reduce(
+      (sum, t) => sum + this.grid.buildingCountOf(attacker, t),
+      0,
+    );
+    const cost = buildingCost(intent.building, owned);
     if (this.grid.goldOf(attacker) < cost) {
       return {
         kind: "rejected",

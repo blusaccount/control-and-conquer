@@ -8,6 +8,7 @@ import type { PlayerId } from "../src/Core/TerritoryGrid.js";
 import type { RasterServerMessage, RasterSnapshot } from "../src/Core/types.js";
 import {
   buildingCost,
+  costCounterTypes,
   goldPerSecond,
   BUILDING_DEFS,
   GOLD_BASE_PER_TICK,
@@ -53,6 +54,15 @@ test("buildingCost follows OpenFront's capped ramps (geometric ×2, linear fort)
   assert.equal(buildingCost("fort", 1), 100_000);
   assert.equal(buildingCost("fort", 9), 250_000); // capped (would be 500,000)
   assert.ok(buildingCost("port", 3) > buildingCost("port", 0));
+});
+
+test("ports and factories share a cost counter (OpenFront)", () => {
+  assert.deepEqual([...costCounterTypes("port")].sort(), ["factory", "port"]);
+  assert.deepEqual([...costCounterTypes("factory")].sort(), ["factory", "port"]);
+  assert.deepEqual(costCounterTypes("city"), ["city"], "a city counts only itself");
+  assert.deepEqual(costCounterTypes("fort"), ["fort"], "a fort counts only itself");
+  // So once one of the group is built (owned = 1), the next costs the 2nd step.
+  assert.equal(buildingCost("port", 1), 250_000, "a port after a factory costs the 2nd-of-group price");
 });
 
 test("goldPerSecond is the flat base rate, independent of territory or buildings (OpenFront)", () => {

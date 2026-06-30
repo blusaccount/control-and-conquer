@@ -28,6 +28,7 @@ import {
   BUILDING_DEFS,
   BUILDING_TYPES,
   buildingCost,
+  costCounterTypes,
   type BuildingType,
 } from "../Core/buildings.js";
 import type { RasterDifficulty } from "../Core/messages.js";
@@ -481,7 +482,9 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const canBuild = runtime.spawned && runtime.phase === "playing" && !runtime.matchEnded && !runtime.myEliminated;
     for (const btn of ui.buildMenu.querySelectorAll<HTMLButtonElement>("[data-building]")) {
       const type = btn.getAttribute("data-building") as BuildingType;
-      const cost = buildingCost(type, myBuildingCount(type));
+      // Ports and Factories share a cost counter — sum the group's owned counts.
+      const owned = costCounterTypes(type).reduce((s, t) => s + myBuildingCount(t), 0);
+      const cost = buildingCost(type, owned);
       const affordable = runtime.gold >= cost;
       btn.classList.toggle("selected", runtime.buildMode === type);
       btn.disabled = !canBuild;

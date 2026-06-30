@@ -35,6 +35,20 @@ export const WARSHIP_INTERCEPT_RANGE = 12;
 export const isBuildingType = (value: unknown): value is BuildingType =>
   typeof value === "string" && (BUILDING_TYPES as readonly string[]).includes(value);
 
+/**
+ * Groups of building types that **share a cost counter**: each building in the
+ * group raises the next cost of every type in the group, mirroring OpenFront,
+ * where Ports and Factories share one counter (building a factory makes your next
+ * port dearer and vice versa). Types not listed here count only themselves.
+ */
+export const SHARED_COST_GROUPS: readonly (readonly BuildingType[])[] = [["port", "factory"]];
+
+/** The building types whose owned counts combine into `type`'s cost ramp (itself if it shares with none). */
+export const costCounterTypes = (type: BuildingType): readonly BuildingType[] => {
+  for (const group of SHARED_COST_GROUPS) if (group.includes(type)) return group;
+  return [type];
+};
+
 /** Static description of one building type for menus and cost maths. */
 export interface BuildingDef {
   readonly type: BuildingType;
