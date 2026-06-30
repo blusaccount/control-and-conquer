@@ -38,40 +38,71 @@ test("the default map is largely connected under land + sea adjacency", () => {
   const map = buildRealMap(getRealMap(DEFAULT_REAL_MAP_ID)!);
   const grid = new TerritoryGrid(map);
 
-  const seen = new Set<number>();
-  let largest = 0;
-  let crossLandmassSeaLinks = 0;
-  for (let i = 0; i < map.size; i += 1) {
-    if (!grid.isCapturable(i) || seen.has(i)) continue;
-    let count = 0;
-    const stack = [i];
-    seen.add(i);
-    while (stack.length > 0) {
-      const ref = stack.pop() as number;
-      count += 1;
-      for (const n of [...map.neighbors(ref), ...grid.seaLinks.neighborsOf(ref)]) {
-        if (grid.isCapturable(n) && !seen.has(n)) {
-          seen.add(n);
-          stack.push(n);
-        }
+  // Union-find over landmasses (by land-component id). Two landmasses are
+  // amphibiously connected when they touch the same body of water — a boat can
+  // sail between them — so we union every land component bordering a given water
+  // component. The largest union is the reach of an amphibious empire.
+  const parent = new Map<number, number>();
+  const ensure = (x: number): void => {
+    if (!parent.has(x)) parent.set(x, x);
+  };
+  const find = (x: number): number => {
+    ensure(x);
+    let r = x;
+    while (parent.get(r) !== r) r = parent.get(r)!;
+    return r;
+  };
+  const union = (a: number, b: number): void => {
+    ensure(a);
+    ensure(b);
+    parent.set(find(a), find(b));
+  };
+
+  // Per landmass: its tile count, so we can size unions later.
+  const compTiles = new Map<number, number>();
+  for (let ref = 0; ref < map.size; ref += 1) {
+    const lc = grid.landComponentId(ref);
+    if (lc < 0) continue;
+    ensure(lc);
+    compTiles.set(lc, (compTiles.get(lc) ?? 0) + 1);
+  }
+
+  // Per water body: the land components it touches. Union them, and flag any
+  // water that bridges two distinct landmasses (amphibious play has a target).
+  const waterToLand = new Map<number, number>();
+  let crossLandmassWater = 0;
+  for (let ref = 0; ref < map.size; ref += 1) {
+    const wc = grid.waterComponentId(ref);
+    if (wc < 0) continue;
+    for (const n of map.neighbors(ref)) {
+      const lc = grid.landComponentId(n);
+      if (lc < 0) continue;
+      const seen = waterToLand.get(wc);
+      if (seen === undefined) {
+        waterToLand.set(wc, lc);
+      } else if (find(seen) !== find(lc)) {
+        crossLandmassWater += 1;
+        union(seen, lc);
       }
     }
-    if (count > largest) largest = count;
   }
-  for (let a = 0; a < map.size; a += 1) {
-    const compA = grid.landComponentId(a);
-    if (compA < 0) continue;
-    for (const b of grid.seaLinks.neighborsOf(a)) {
-      if (grid.landComponentId(b) >= 0 && grid.landComponentId(b) !== compA) crossLandmassSeaLinks += 1;
-    }
+
+  // Largest amphibiously-connected group, by total tiles.
+  const groupTiles = new Map<number, number>();
+  let largest = 0;
+  for (const [lc, tiles] of compTiles) {
+    const root = find(lc);
+    const total = (groupTiles.get(root) ?? 0) + tiles;
+    groupTiles.set(root, total);
+    if (total > largest) largest = total;
   }
 
   assert.ok(grid.capturableCount > 0, "map should have capturable tiles");
   assert.ok(
     largest >= grid.capturableCount * 0.8,
-    `largest reachable component (${largest}) should cover most of ${grid.capturableCount} capturable tiles`,
+    `largest amphibious group (${largest}) should cover most of ${grid.capturableCount} capturable tiles`,
   );
-  assert.ok(crossLandmassSeaLinks > 0, "map should have cross-landmass sea links for amphibious play");
+  assert.ok(crossLandmassWater > 0, "map should have water bridging landmasses for amphibious play");
 });
 
 test("the World map has impassable mountains and crossable inland water", () => {

@@ -304,17 +304,6 @@ export const EXPANSION_SPEND_FRACTION = 0.12;
 export const CLICK_SNAP_RADIUS = 4;
 
 /**
- * Maximum width of open water (in tiles) a transport ship can cross. A coastal
- * tile can reach an enemy/neutral coast on the far bank of a strait, lake or
- * channel no wider than this — the openfront-style "transport ship" mechanic.
- * It bounds two things that must agree: the precomputed {@link seaLinks}
- * reachability graph (which surfaces sea-reachable targets) and the per-launch
- * shortest-water-path search a ship actually follows. Set to 0 to disable all
- * water crossing (water becomes a hard barrier).
- */
-export const MAX_SEA_CROSSING_TILES = 6;
-
-/**
  * Troops a transport ship must spend to establish its beachhead — the cost of
  * landing on and capturing the destination tile. Whatever the ship still
  * carries after paying this seeds a normal land attack from the landing tile.
@@ -323,12 +312,14 @@ export const MAX_SEA_CROSSING_TILES = 6;
 export const SEA_CROSSING_SURCHARGE = 8;
 
 /**
- * Largest factor any perk/class can scale a player's sea-crossing range by. The
- * crossing graph is precomputed once at `MAX_SEA_CROSSING_TILES` times this, so
- * a Sea God player's extended reach is already in the graph and just gets
- * un-filtered; base players are filtered back down to {@link MAX_SEA_CROSSING_TILES}.
+ * How many water tiles a bot's amphibious-target scan explores before stopping.
+ * A player can boat anywhere within a connected body of water (no distance cap),
+ * but a bot autonomously *discovering* targets must bound its search, so it only
+ * considers landings reachable within roughly this many tiles of open water of
+ * its coast — generous (whole nearby seas and islands), not the entire globe.
+ * Only limits bot target discovery; an ordered boat still sails unbounded.
  */
-export const MAX_SEA_RANGE_MULTIPLIER = 2;
+export const SEA_TARGET_SCAN_BUDGET = 3000;
 
 /**
  * How many transport ships a single player may have at sea simultaneously.

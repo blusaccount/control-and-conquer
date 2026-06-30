@@ -77,14 +77,14 @@ export const DEFAULT_RASTER_BOT_CONFIG: RasterBotConfig = {
  * same data the snapshot already carries to every client — each player's exact
  * troop pool and tile count is public — so the bot gains no hidden information;
  * it simply skips a redundant base64 decode. Crucially, reading the grid lets the
- * bot consult precomputed **sea links**, so it can plan amphibious assaults
- * across narrow straits instead of stranding itself on its home landmass (the
- * old land-only frontier scan's fatal flaw on water-heavy maps).
+ * bot consult **water-component reachability**, so it can plan amphibious boat
+ * assaults onto coasts across the sea instead of stranding itself on its home
+ * landmass (the old land-only frontier scan's fatal flaw on water-heavy maps).
  *
  * ## Strategy
  * Every `decisionCooldownTicks`, once it has banked `minPool` troops, the bot:
  *  1. Enumerates the owners its border touches — neutral land and each rival —
- *     via {@link TerritoryGrid.frontierTargets} (one pass, sea crossings included).
+ *     via {@link TerritoryGrid.frontierTargets} (land borders plus boat targets).
  *  2. Finds the weakest rival it can currently beat on troops
  *     (`myPool >= theirPool * attackPoolRatio`).
  *  3. Picks a move by personality:
@@ -183,19 +183,17 @@ export class RasterBotController {
   }
 
   /**
-   * Reinvest banked gold into one structure this decision. A coastal bot that has
-   * not yet opened a sea lane buys a **port** first — amphibious reach is what
-   * keeps it from stranding on its home landmass on water-heavy maps (the same
-   * lever a human gets from the build menu) — then it compounds its economy with
-   * **cities**. At most one structure per call so the bot doesn't dump its whole
-   * treasury at once. Deterministic throughout (lowest-`TileRef` eligible tile).
+   * Reinvest banked gold into one structure this decision. A coastal bot opens a
+   * **port** first — a steady trade dividend that compounds its economy — then
+   * pours the rest into **cities**. At most one structure per call so the bot
+   * doesn't dump its whole treasury at once. Deterministic throughout
+   * (lowest-`TileRef` eligible tile).
    */
   private maybeBuild(grid: TerritoryGrid, map: GameMap): void {
     const me = this.myPlayerId;
     if (me === null || !this.session) return;
     if (grid.tileCountOf(me) < RasterBotController.MIN_TILES_TO_BUILD) return;
-    // One port opens the sea; further reach is a human/perk play, so the bot caps
-    // itself there and pours the rest into cities.
+    // One port for the coastal gold dividend, then compound into cities.
     if (this.tryQueueBuild(grid, map, "port", (ref) => map.isShore(ref), 1)) return;
     this.tryQueueBuild(grid, map, "city", () => true);
   }

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildTerrainFromMask } from "../src/Core/terrainBuilder.js";
-import { TerritoryGrid } from "../src/Core/TerritoryGrid.js";
+import { NEUTRAL_PLAYER, TerritoryGrid } from "../src/Core/TerritoryGrid.js";
 import { RasterConflict } from "../src/Core/RasterConflict.js";
 import { RasterGameSession } from "../src/Server/RasterGameSession.js";
 import type { PlayerId } from "../src/Core/TerritoryGrid.js";
@@ -12,6 +12,7 @@ import {
   BUILDING_DEFS,
   GOLD_PER_TILE_PER_TICK,
   CITY_GOLD_PER_TICK,
+  PORT_GOLD_PER_TICK,
   FORT_DEFENSE_STRENGTH,
 } from "../src/Core/buildings.js";
 import { MAX_POOL_PER_TILE } from "../src/Core/rasterCombatConfig.js";
@@ -51,9 +52,16 @@ test("buildingCost ramps geometrically with how many you already own", () => {
   assert.ok(buildingCost("port", 3) > buildingCost("port", 0));
 });
 
-test("goldPerSecond folds in territory and city dividends", () => {
-  assert.equal(goldPerSecond(10, 0, 20), 10 * GOLD_PER_TILE_PER_TICK * 20);
-  assert.equal(goldPerSecond(10, 2, 20), (10 * GOLD_PER_TILE_PER_TICK + 2 * CITY_GOLD_PER_TICK) * 20);
+test("goldPerSecond folds in territory, city and port dividends", () => {
+  assert.equal(goldPerSecond(10, 0, 0, 20), 10 * GOLD_PER_TILE_PER_TICK * 20);
+  assert.equal(
+    goldPerSecond(10, 2, 0, 20),
+    (10 * GOLD_PER_TILE_PER_TICK + 2 * CITY_GOLD_PER_TICK) * 20,
+  );
+  assert.equal(
+    goldPerSecond(10, 2, 3, 20),
+    (10 * GOLD_PER_TILE_PER_TICK + 2 * CITY_GOLD_PER_TICK + 3 * PORT_GOLD_PER_TICK) * 20,
+  );
 });
 
 // --- TerritoryGrid: gold + buildings ---------------------------------------
@@ -119,58 +127,30 @@ test("a fort raises a defense aura that vanishes when the fort is lost", () => {
   assert.equal(grid.defenseFactorAt(fortRef), 1);
 });
 
-test("ports widen a player's sea-crossing range, bounded by the cap", () => {
-  const grid = landStrip(8);
+test("a port pays a steady gold dividend each tick", () => {
+  // Two single-tile players so neither expands; one builds a port. After a fixed
+  // run of ticks the port owner has earned exactly the extra port dividend.
+  const grid = landStrip(2);
   grid.addPlayer(1, 0);
-  const refs = claimRun(grid, 1, 6);
-  const base = grid.seaRangeOf(1);
-  grid.placeBuilding(refs[0], "port");
-  assert.ok(grid.seaRangeOf(1) > base, "one port extends reach beyond the baseline");
-  // Stacking ports keeps growing reach but never past the hard cap (2x base).
-  grid.placeBuilding(refs[1], "port");
-  grid.placeBuilding(refs[2], "port");
-  grid.placeBuilding(refs[3], "port");
-  assert.ok(grid.seaRangeOf(1) <= base * 2, "reach is bounded even with many ports");
-});
-
-test("a port actually surfaces a shore the baseline reach can't target", () => {
-  // Two banks separated by 9 open-water tiles — wider than the base crossing
-  // range (6) but inside the port-extended cap (12). land 0,1 ; water 2..10 ;
-  // land 11,12. Tile 11 is the far shore (tile 12 is interior, no water neighbour).
-  const map = buildTerrainFromMask({
-    width: 13,
-    height: 1,
-    land: Uint8Array.from([1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1]),
-    elevation: new Uint8Array(13),
-  });
-  const grid = new TerritoryGrid(map);
-  grid.addPlayer(1, 0);
+  grid.addPlayer(2, 0);
   grid.claim(0, 1);
-  grid.claim(1, 1);
-  const farShore = 11;
-
-  // Baseline (no port): the 9-tile crossing is out of reach, so a click on the
-  // far bank resolves to no landing — the boat assault is silently impossible.
-  assert.equal(
-    grid.resolveSeaLanding(1, farShore, grid.seaRangeOf(1)),
-    null,
-    "baseline reach (6) can't target a 9-tile crossing",
-  );
-
-  // Two ports push the reach past 9; now the same click finds the far shore and
-  // a transport ship can actually be dispatched there.
+  grid.claim(1, 2);
   grid.placeBuilding(0, "port");
-  grid.placeBuilding(1, "port");
-  assert.ok(grid.seaRangeOf(1) >= 9, "two ports extend reach to at least 9 tiles");
-  assert.equal(
-    grid.resolveSeaLanding(1, farShore, grid.seaRangeOf(1)),
-    farShore,
-    "port-extended reach surfaces the far shore the baseline couldn't",
-  );
+  const conflict = new RasterConflict(grid);
+
+  const ticks = 200;
+  for (let i = 0; i < ticks; i += 1) conflict.processTick();
+
+  // Both own one tile, so their per-tile income matches; the port owner banks the
+  // extra port dividend on top. Income accrues fractionally and is paid in whole
+  // gold, so the difference equals the port dividend to within a rounding unit.
+  const portExtra = grid.goldOf(1) - grid.goldOf(2);
+  const expected = ticks * PORT_GOLD_PER_TICK;
   assert.ok(
-    grid.findSeaPath(1, farShore, grid.seaRangeOf(1)) !== null,
-    "and a ship can sail the route the extended reach opened up",
+    portExtra >= expected - 1 && portExtra <= expected + 1,
+    `port dividend ${portExtra} ≈ ${expected}`,
   );
+  assert.ok(PORT_GOLD_PER_TICK > 0, "a port is worth building");
 });
 
 // --- RasterConflict: gold + city income ------------------------------------

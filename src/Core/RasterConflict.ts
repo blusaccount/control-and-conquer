@@ -5,6 +5,7 @@ import {
   CITY_GOLD_PER_TICK,
   CITY_TROOP_INCOME_PER_TICK,
   GOLD_PER_TILE_PER_TICK,
+  PORT_GOLD_PER_TICK,
 } from "./buildings.js";
 import { RailSystem, type RailView, type TrainView } from "./railSystem.js";
 import {
@@ -305,7 +306,7 @@ export class RasterConflict {
     if (troops > this.grid.troopsOf(attacker)) return "INSUFFICIENT_TROOPS";
     if (this.shipCountOf(attacker) >= this.grid.maxShipsOf(attacker)) return "TOO_MANY_SHIPS";
 
-    const path = this.grid.findSeaPath(attacker, dest, this.grid.seaRangeOf(attacker));
+    const path = this.grid.findSeaPath(attacker, dest);
     if (!path) return "NO_FRONTIER";
 
     this.grid.addTroops(attacker, -troops);
@@ -519,7 +520,9 @@ export class RasterConflict {
     for (const id of this.grid.players()) {
       const tiles = this.grid.tileCountOf(id);
       const cities = this.grid.buildingCountOf(id, "city");
-      const rate = tiles * GOLD_PER_TILE_PER_TICK + cities * CITY_GOLD_PER_TICK;
+      const ports = this.grid.buildingCountOf(id, "port");
+      const rate =
+        tiles * GOLD_PER_TILE_PER_TICK + cities * CITY_GOLD_PER_TICK + ports * PORT_GOLD_PER_TICK;
       const accumulated = (this.goldAccumulator.get(id) ?? 0) + rate;
       const whole = Math.floor(accumulated);
       if (whole > 0) this.grid.addGold(id, whole);
