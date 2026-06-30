@@ -7,6 +7,7 @@ import { RasterGameSession, type RasterMessageHandler, type RasterGameSessionOpt
 import { RasterBuildIntent, RasterExpandIntent } from "../Core/types.js";
 import type { RasterDifficulty } from "../Core/messages.js";
 import { SIMULATION_TICK_RATE, SPAWN_PHASE_SECONDS } from "./simulationConfig.js";
+import { AiGameSession } from "./aiApi.js";
 
 /**
  * Most opponents a solo match can seat (the session caps total nations at 32, so
@@ -81,6 +82,8 @@ export class MatchRegistry {
   private readonly activeMatches = new Map<string, RasterGameSession>();
   private readonly clientToSession = new Map<string, RasterGameSession>();
   private matchSequence = 0;
+  /** Headless AI sessions — keyed by gameId, ticked alongside normal matches. */
+  public readonly aiSessions = new Map<string, AiGameSession>();
 
   /**
    * Start a SOLO raster match immediately: the human versus a field of
@@ -159,6 +162,15 @@ export class MatchRegistry {
   public tickAll(): void {
     for (const session of this.activeMatches.values()) {
       session.tick();
+    }
+    // Tick AI sessions; remove ones that have ended or been abandoned.
+    for (const [gameId, aiSession] of this.aiSessions) {
+      aiSession.getSession().tick();
+      // Clean up sessions idle for more than 30 minutes
+      if (Date.now() - aiSession.createdAt > 30 * 60 * 1000) {
+        aiSession.destroy();
+        this.aiSessions.delete(gameId);
+      }
     }
   }
 

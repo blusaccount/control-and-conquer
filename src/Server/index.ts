@@ -21,6 +21,7 @@ import {
   TICK_DURATION_WARN_MS,
   TICK_INTERVAL_MS,
 } from "./simulationConfig.js";
+import { handleAiApiRequest } from "./aiApi.js";
 
 const rootDir = fileURLToPath(new URL("../../", import.meta.url));
 const publicDir = join(rootDir, "public");
@@ -89,8 +90,14 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === "/health") {
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ ok: true }));
+      response.end(JSON.stringify({ ok: true, activeSessions: registry.aiSessions.size }));
       return;
+    }
+
+    // AI REST API — headless HTTP interface for AI agents
+    if (requestUrl.pathname.startsWith("/api/games")) {
+      const handled = await handleAiApiRequest(request, response, registry.aiSessions);
+      if (handled) return;
     }
 
     if (requestUrl.pathname.startsWith("/assets/")) {
