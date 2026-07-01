@@ -16,6 +16,7 @@ export interface UiElements {
   goldInfo: HTMLDivElement;
   buildMenu: HTMLDivElement;
   buildHint: HTMLDivElement;
+  weaponsMenu: HTMLDivElement;
   eventsPanel: HTMLDivElement;
   leaderboard: HTMLDivElement;
   menuOverlay: HTMLDivElement;
@@ -39,6 +40,7 @@ export const getUiElements = (): UiElements => {
   const goldInfo = document.querySelector<HTMLDivElement>("#goldInfo");
   const buildMenu = document.querySelector<HTMLDivElement>("#buildMenu");
   const buildHint = document.querySelector<HTMLDivElement>("#buildHint");
+  const weaponsMenu = document.querySelector<HTMLDivElement>("#weaponsMenu");
   const eventsPanel = document.querySelector<HTMLDivElement>("#events");
   const leaderboard = document.querySelector<HTMLDivElement>("#leaderboard");
   const menuOverlay = document.querySelector<HTMLDivElement>("#menuOverlay");
@@ -57,6 +59,7 @@ export const getUiElements = (): UiElements => {
     !goldInfo ||
     !buildMenu ||
     !buildHint ||
+    !weaponsMenu ||
     !eventsPanel ||
     !leaderboard ||
     !menuOverlay ||
@@ -86,6 +89,7 @@ export const getUiElements = (): UiElements => {
     goldInfo,
     buildMenu,
     buildHint,
+    weaponsMenu,
     eventsPanel,
     leaderboard,
     menuOverlay,

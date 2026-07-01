@@ -11,6 +11,9 @@ import type {
   RasterCrossing,
   RasterExpandIntent,
   RasterMatchEndReason,
+  RasterNuke,
+  RasterNukeDetonation,
+  RasterNukeIntent,
   RasterRejectReason,
   RasterRail,
   RasterRunStats,
@@ -20,6 +23,7 @@ import type {
   RasterTrain,
 } from "../Core/types.js";
 import { LAND_ATTACK_REACH, RASTER_MATCH_DURATION_SECONDS, SPAWN_IMMUNITY_SECONDS } from "../Core/rasterCombatConfig.js";
+import { ATOM_BOMB_COST, SILO_RELOAD_TICKS } from "../Core/nukes.js";
 import { BUILDING_CONSTRUCTION_TICKS, BUILDING_DEFS, buildingCost, COASTAL_BUILDING_TYPES, COASTAL_SNAP_RADIUS, CONQUER_GOLD_FRACTION_AI, CONQUER_GOLD_FRACTION_HUMAN, costCounterTypes, STRUCTURE_MIN_DIST } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import type { RasterDifficulty } from "../Core/messages.js";
@@ -73,6 +77,11 @@ interface PendingExpand {
 interface PendingBuild {
   clientId: string;
   intent: RasterBuildIntent;
+}
+
+interface PendingNuke {
+  clientId: string;
+  intent: RasterNukeIntent;
 }
 
 const MAX_EVENTS = 10;
@@ -254,6 +263,9 @@ export class RasterGameSession {
   private readonly subscribers = new Map<string, RasterSubscriber>();
   private readonly pendingExpands: PendingExpand[] = [];
   private readonly pendingBuilds: PendingBuild[] = [];
+  private readonly pendingNukes: PendingNuke[] = [];
+  /** Tick (exclusive) each Missile Silo, keyed by tile, is ready to fire again. */
+  private readonly siloReadyAt = new Map<TileRef, number>();
   private recentEvents: string[] = ["Match started."];
   /** Transport-ship landings from the most recent tick, broadcast for animation. */
   private lastCrossings: RasterCrossing[] = [];
@@ -267,6 +279,10 @@ export class RasterGameSession {
   private lastTrains: RasterTrain[] = [];
   /** Trade ships sailing between ports as of the most recent tick. */
   private lastTradeShips: RasterTrade[] = [];
+  /** Atom Bombs in flight as of the most recent tick, broadcast for animation. */
+  private lastNukes: RasterNuke[] = [];
+  /** Atom Bomb detonations from the most recent tick, for the explosion flash. */
+  private lastNukeDetonations: RasterNukeDetonation[] = [];
   /** Determines spawn placement: each new subscriber takes the next slot. */
   private nextPlayerId: PlayerId = 1;
   private matchEndedBroadcast = false;
@@ -602,6 +618,13 @@ export class RasterGameSession {
     this.pendingBuilds.push({ clientId, intent });
   }
 
+  public queueNuke(clientId: string, intent: RasterNukeIntent): void {
+    if (!this.subscribers.has(clientId)) return;
+    const pending = this.pendingNukes.reduce((n, p) => (p.clientId === clientId ? n + 1 : n), 0);
+    if (pending >= MAX_PENDING_PER_CLIENT) return;
+    this.pendingNukes.push({ clientId, intent });
+  }
+
   /** Prepend a line to the shared event log, trimmed to the most recent few. */
   private pushEvent(line: string): void {
     this.recentEvents = [line, ...this.recentEvents].slice(0, MAX_EVENTS);
@@ -684,6 +707,7 @@ export class RasterGameSession {
       this.spawnTicksElapsed += 1;
       this.pendingExpands.length = 0;
       this.pendingBuilds.length = 0;
+      this.pendingNukes.length = 0;
       if (this.spawnTicksElapsed < this.spawnPhaseTicks) {
         this.broadcastSnapshots();
         return;
@@ -743,6 +767,23 @@ export class RasterGameSession {
     }
     this.pendingBuilds.length = 0;
 
+    // Resolve queued nuke launches the same way as builds: each spends gold and
+    // reloads its silo, or is rejected (unaffordable, no ready silo, bad target).
+    for (const pending of this.pendingNukes) {
+      const subscriber = this.subscribers.get(pending.clientId);
+      if (!subscriber) continue;
+      const result = this.processNuke(subscriber.playerId, pending.intent);
+      if (result.kind === "rejected") {
+        rejections.push({
+          clientId: pending.clientId,
+          rejection: { reason: result.reason, message: result.message, intent: pending.intent },
+        });
+      } else {
+        eventLines.push(result.line);
+      }
+    }
+    this.pendingNukes.length = 0;
+
     // Sample one tile of each living player just before combat resolves, so the
     // conqueror who takes their last ground can be credited with the kill. O(players),
     // so it stays cheap even on million-tile maps.
@@ -777,6 +818,34 @@ export class RasterGameSession {
       y: this.map.y(s.tile),
       troops: s.troops,
     }));
+    this.lastNukes = this.conflict.activeNukes().map((n) => ({
+      nukeId: n.id,
+      playerId: n.attacker,
+      x: n.x,
+      y: n.y,
+      toX: n.toX,
+      toY: n.toY,
+    }));
+    this.lastNukeDetonations = tickResult.nukeDetonations.map((d) => ({
+      playerId: d.attacker,
+      x: d.targetX,
+      y: d.targetY,
+    }));
+    // A nuke that hits an ally severs the pact and marks the attacker a traitor,
+    // exactly like breaking it from the diplomacy menu — nuking a friend is a
+    // betrayal whichever button triggered it.
+    for (const detonation of tickResult.nukeDetonations) {
+      for (const victim of detonation.victims) {
+        if (victim === detonation.attacker) continue;
+        if (this.alliances.areAllied(detonation.attacker, victim)) {
+          this.alliances.breakAlliance(detonation.attacker, victim);
+          this.conflict.markTraitor(detonation.attacker);
+          this.pushEvent(`${this.nameOf(detonation.attacker)} nuked their ally ${this.nameOf(victim)} — the pact is broken!`);
+        } else {
+          this.pushEvent(`${this.nameOf(detonation.attacker)} detonated an Atom Bomb on ${this.nameOf(victim)}'s territory.`);
+        }
+      }
+    }
     // Active land-attack fronts → wire coordinates for the on-map troop labels,
     // so each contested border shows how many troops are fighting there.
     this.lastFronts = this.conflict.activeFronts().map((f) => ({
@@ -1178,6 +1247,56 @@ export class RasterGameSession {
   }
 
   /**
+   * Validate and dispatch an Atom Bomb launch: the target must be land, the
+   * attacker must own a Missile Silo that isn't under construction or
+   * reloading, and afford {@link ATOM_BOMB_COST}. On success the gold is spent,
+   * that silo starts reloading, and the flight is handed to
+   * {@link RasterConflict.launchNuke}; the blast itself lands on arrival.
+   */
+  private processNuke(
+    attacker: PlayerId,
+    intent: RasterNukeIntent,
+  ): { kind: "ok"; line: string } | { kind: "rejected"; reason: RasterRejectReason; message: string } {
+    if (this.conflict.winner !== null || this.matchEndedBroadcast) {
+      return { kind: "rejected", reason: "MATCH_ENDED", message: "The match has already ended." };
+    }
+    if (!this.grid.hasPlayer(attacker)) {
+      return { kind: "rejected", reason: "INVALID_TILE", message: "Choose a starting position first." };
+    }
+    if (!Number.isInteger(intent.targetX) || !Number.isInteger(intent.targetY) ||
+        !this.map.inBounds(intent.targetX, intent.targetY)) {
+      return { kind: "rejected", reason: "INVALID_TILE", message: "Target tile is out of bounds." };
+    }
+    const targetRef = this.map.ref(intent.targetX, intent.targetY);
+    if (!this.map.isLand(targetRef)) {
+      return { kind: "rejected", reason: "INVALID_TILE", message: "An Atom Bomb can only target land." };
+    }
+
+    let siloRef: TileRef | null = null;
+    for (const [ref, type] of this.grid.buildingEntries()) {
+      if (type !== "silo" || this.grid.ownerOf(ref) !== attacker || this.grid.isUnderConstruction(ref)) continue;
+      if ((this.siloReadyAt.get(ref) ?? 0) > this.conflict.tick) continue;
+      siloRef = ref;
+      break;
+    }
+    if (siloRef === null) {
+      return { kind: "rejected", reason: "NO_SILO_READY", message: "No Missile Silo is ready — build one or wait for it to reload." };
+    }
+    if (this.grid.goldOf(attacker) < ATOM_BOMB_COST) {
+      return { kind: "rejected", reason: "INSUFFICIENT_GOLD", message: `Not enough gold — an Atom Bomb costs ${ATOM_BOMB_COST}.` };
+    }
+
+    this.grid.addGold(attacker, -ATOM_BOMB_COST);
+    this.siloReadyAt.set(siloRef, this.conflict.tick + SILO_RELOAD_TICKS);
+    this.conflict.launchNuke(attacker, this.map.x(siloRef), this.map.y(siloRef), intent.targetX, intent.targetY);
+
+    return {
+      kind: "ok",
+      line: `${this.nameOf(attacker)} launched an Atom Bomb at (${intent.targetX}, ${intent.targetY}).`,
+    };
+  }
+
+  /**
    * Nearest tile the player owns that sits on a coastline, searched outward from
    * (`cx`,`cy`) in growing Chebyshev rings up to {@link COASTAL_SNAP_RADIUS}.
    * Returns the closest owned, capturable shore tile (so a port/warship can stand
@@ -1275,6 +1394,8 @@ export class RasterGameSession {
       recentEvents: this.recentEvents,
       crossings: this.lastCrossings,
       ships: this.lastShips,
+      nukes: this.lastNukes,
+      nukeDetonations: this.lastNukeDetonations,
       fronts: this.lastFronts,
       rails: this.lastRails,
       trains: this.lastTrains,
