@@ -26,6 +26,7 @@ import { paintRaster, paintTileInto } from "./rasterPaint.js";
 import { borderColor, playerColor, playerEmoji } from "./rasterPalette.js";
 import { loadRunHistory, recordRun, type RunRecord, type StorageLike } from "./runHistory.js";
 import { computeNameAnchors, type NameAnchor } from "./nameLayout.js";
+import { layoutFrontLabels, type FrontLabelInput } from "./frontLabelLayout.js";
 import {
   BUILDING_DEFS,
   BUILDING_TYPES,
@@ -1690,6 +1691,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.font = `700 ${px}px Inter, system-ui, sans-serif`;
+
+    // Two fronts pushing adjacent borders can land close enough on screen
+    // that their pills overlap and the troop counts become unreadable — de-
+    // overlap on-screen before drawing so every count stays visible.
+    const visible: Array<{ front: RasterAttackFront; text: string; sx: number; sy: number; w: number; h: number }> = [];
     for (const front of runtime.fronts) {
       if (front.troops <= 0) continue;
       const { x: sx, y: sy } = worldToScreen(front.x + 0.5, front.y + 0.5);
@@ -1697,6 +1703,22 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       const text = `⚔ ${formatCount(front.troops)}`;
       const w = ctx.measureText(text).width + px;
       const h = px * 1.5;
+      visible.push({ front, text, sx, sy, w, h });
+    }
+
+    const labels: FrontLabelInput[] = visible.map((v, id) => ({
+      id,
+      x: v.sx,
+      y: v.sy,
+      width: v.w,
+      height: v.h,
+      priority: v.front.troops,
+    }));
+    const placements = layoutFrontLabels(labels);
+
+    for (let i = 0; i < visible.length; i += 1) {
+      const { front, text, w, h } = visible[i];
+      const { x: sx, y: sy } = placements[i];
       const rx = sx - w / 2;
       const ry = sy - h / 2;
       ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
