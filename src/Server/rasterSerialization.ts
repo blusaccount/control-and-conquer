@@ -96,6 +96,18 @@ export const encodeOwnerDelta = (
   return { deltaBase64: bytesToBase64(bytes), changed };
 };
 
+/**
+ * Serialize a list of tile indices (e.g. active fallout tiles) to base64 as a
+ * packed little-endian `Uint32Array`, so the client can decode them independent
+ * of host byte order — same convention as {@link encodeOwners}.
+ */
+export const encodeTileList = (refs: readonly number[]): string => {
+  const bytes = new Uint8Array(refs.length * 4);
+  const view = new DataView(bytes.buffer);
+  for (let i = 0; i < refs.length; i += 1) view.setUint32(i * 4, refs[i], true);
+  return bytesToBase64(bytes);
+};
+
 /** Per-player metadata needed to build a `RasterPlayerInfo`. */
 export interface PlayerMeta {
   name: string;
@@ -130,6 +142,8 @@ export interface BuildSnapshotInput {
   nukes: RasterNuke[];
   /** Atom Bomb detonations resolved this tick (for the explosion flash). */
   nukeDetonations: RasterNukeDetonation[];
+  /** Tile indices currently under fallout (for the lingering radioactive tint). */
+  falloutTiles?: number[];
   /** Active land-attack fronts this tick (for the on-map troop-count labels). */
   fronts: RasterAttackFront[];
   /** Auto-routed railroads this snapshot (for the client to draw track). */
@@ -172,7 +186,7 @@ export interface BuildSnapshotInput {
  * since they never read the ownership raster at all.
  */
 export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot => {
-  const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, terrainHash, winnerPlayerId, recentEvents, crossings, ships, nukes, nukeDetonations, fronts, rails = [], trains = [], tradeShips = [], eliminated, alliances = [], allianceRequests = [] } = input;
+  const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, terrainHash, winnerPlayerId, recentEvents, crossings, ships, nukes, nukeDetonations, falloutTiles = [], fronts, rails = [], trains = [], tradeShips = [], eliminated, alliances = [], allianceRequests = [] } = input;
 
   const players: RasterPlayerInfo[] = [];
   for (const id of grid.players()) {
@@ -226,6 +240,7 @@ export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
     ships,
     nukes,
     nukeDetonations,
+    ...(falloutTiles.length > 0 ? { falloutBase64: encodeTileList(falloutTiles) } : { falloutBase64: "" }),
     buildings,
     rails,
     trains,

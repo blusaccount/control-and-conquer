@@ -1396,6 +1396,7 @@ export class RasterGameSession {
       ships: this.lastShips,
       nukes: this.lastNukes,
       nukeDetonations: this.lastNukeDetonations,
+      falloutTiles: this.grid.falloutTiles(),
       fronts: this.lastFronts,
       rails: this.lastRails,
       trains: this.lastTrains,

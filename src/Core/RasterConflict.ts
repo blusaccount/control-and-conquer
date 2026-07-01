@@ -6,6 +6,7 @@ import {
   ATOM_BOMB_INNER_RADIUS,
   ATOM_BOMB_OUTER_DESTROY_CHANCE,
   ATOM_BOMB_OUTER_RADIUS,
+  FALLOUT_DURATION_TICKS,
   NUKE_TILES_PER_TICK,
 } from "./nukes.js";
 import { RailSystem, type RailView, type TrainView } from "./railSystem.js";
@@ -502,7 +503,10 @@ export class RasterConflict {
           if (!tilesBefore.has(owner)) tilesBefore.set(owner, this.grid.tileCountOf(owner));
           tilesCleared.set(owner, (tilesCleared.get(owner) ?? 0) + 1);
         }
+        // Clear to neutral, then leave the ground radioactive: it can't be
+        // recaptured and renders as fallout until it decays (see tickFallout).
         this.grid.claim(ref, NEUTRAL_PLAYER);
+        this.grid.setFallout(ref, FALLOUT_DURATION_TICKS);
       }
     }
 
@@ -570,6 +574,9 @@ export class RasterConflict {
     this.interceptTransports();
     this.advanceShips();
     this.advanceNukes();
+    // Decay fallout before attacks advance, so ground that recovered this tick
+    // is immediately available to the frontier again.
+    this.grid.tickFallout();
     this.advanceAttacks();
     this.checkVictory();
 

@@ -48,3 +48,37 @@ test("the solo worker import graph is free of Node built-ins", () => {
     `solo worker reaches Node built-ins (breaks in the browser):\n${nodeHits.join("\n")}`,
   );
 });
+
+/**
+ * Every `CLIENT_RASTER_*` message the client can send must be handled by the
+ * solo worker, or that action silently no-ops in offline play (exactly how the
+ * nuke launch was dropped once). Guards against the networked path and the
+ * worker path drifting: extract the message-type literals from the
+ * `RasterClientMessage` union and assert the worker has a `case` for each.
+ */
+test("the solo worker handles every client message type", () => {
+  const root = fileURLToPath(new URL("../", import.meta.url));
+  // Client message types live across types.ts (inline union members) and
+  // messages.ts (the JOIN/SPAWN/ALLY payload messages).
+  const declared =
+    readFileSync(resolve(root, "src/Core/types.ts"), "utf8") +
+    readFileSync(resolve(root, "src/Core/messages.ts"), "utf8");
+  const worker = readFileSync(resolve(root, "src/Client/solo/soloWorker.ts"), "utf8");
+
+  const wanted = new Set<string>();
+  const re = /"(CLIENT_RASTER_[A-Z_]+)"/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(declared)) !== null) wanted.add(m[1]);
+  assert.ok(wanted.size >= 6, "found the client message types to check");
+
+  // The worker either dispatches a type in its action `switch` (`case "X"`) or
+  // handles it inline at connection time (`message.type === "X"`, e.g. JOIN).
+  const missing = [...wanted].filter(
+    (t) => !worker.includes(`case "${t}"`) && !worker.includes(`=== "${t}"`),
+  );
+  assert.deepEqual(
+    missing,
+    [],
+    `solo worker is missing a handler for: ${missing.join(", ")} — these actions no-op offline.`,
+  );
+});

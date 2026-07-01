@@ -175,6 +175,8 @@ interface RasterRuntime {
   buildings: RasterBuilding[];
   /** Atom Bombs in flight this snapshot, drawn as travelling icons. */
   nukes: RasterNuke[];
+  /** Tile refs currently under radioactive fallout, drawn as a lingering tint. */
+  fallout: Set<number>;
   /** Auto-routed railroads this snapshot, drawn as track polylines. */
   rails: RasterRail[];
   /** Trains riding the rails this snapshot, drawn as moving dots. */
@@ -330,6 +332,17 @@ const decodeOwnerArray = (b64: string, expectedLength: number): Uint16Array => {
   return owner;
 };
 
+/** Decode a base64-packed little-endian `Uint32Array` of tile indices (fallout). */
+const decodeTileList = (b64: string): number[] => {
+  if (b64.length === 0) return [];
+  const bytes = decodeBase64ToBytes(b64);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const count = Math.floor(bytes.length / 4);
+  const refs: number[] = new Array(count);
+  for (let i = 0; i < count; i += 1) refs[i] = view.getUint32(i * 4, true);
+  return refs;
+};
+
 const rgbaToCss = (c: { r: number; g: number; b: number }): string => `rgb(${c.r}, ${c.g}, ${c.b})`;
 
 /**
@@ -399,6 +412,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     hoverTileY: null,
     buildings: [],
     nukes: [],
+    fallout: new Set<number>(),
     rails: [],
     trains: [],
     tradeShips: [],
@@ -839,6 +853,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.myFactories = me?.factories ?? 0;
     runtime.buildings = snapshot.buildings ?? [];
     runtime.nukes = snapshot.nukes ?? [];
+    // Fallout is sent whole each snapshot (empty string = nowhere irradiated),
+    // so replace the set outright rather than diffing.
+    if (snapshot.falloutBase64 !== undefined) {
+      runtime.fallout = new Set(decodeTileList(snapshot.falloutBase64));
+    }
     runtime.rails = snapshot.rails ?? [];
     runtime.trains = snapshot.trains ?? [];
     runtime.tradeShips = snapshot.tradeShips ?? [];
@@ -1064,6 +1083,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       drawCaptureFlashes(now, ctx);
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.imageSmoothingEnabled = true;
+      drawFallout(ctx, scale);
       drawBorders(ctx, scale);
       recomputeNames(now);
       drawNames(ctx, scale);
@@ -1811,39 +1831,73 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   /**
-   * A blooming-then-fading ring at each Atom Bomb's impact point, sized to the
-   * actual blast radii — a bright inner disc for the fully-irradiated zone, a
-   * translucent outer ring for the partial-destruction band.
+   * The bright flash at each Atom Bomb impact: a bloomed fireball + expanding
+   * shockwave ring over ~900ms, sized to the real blast radii. The *lasting*
+   * mark on the ground is the server-authoritative fallout tint (see
+   * {@link drawFallout}), not this transient flash.
    */
   const drawNukeExplosions = (now: number, ctx: CanvasRenderingContext2D, scale: number): void => {
     if (runtime.nukeExplosions.length === 0) return;
     const survivors: NukeExplosion[] = [];
+    const innerPx = ATOM_BOMB_INNER_RADIUS * scale;
+    const outerPx = ATOM_BOMB_OUTER_RADIUS * scale;
     for (const exp of runtime.nukeExplosions) {
       const t = (now - exp.start) / NUKE_EXPLOSION_DURATION_MS;
       if (t >= 1) continue;
       survivors.push(exp);
       const ease = 1 - (1 - t) * (1 - t);
       const c = worldToScreen(exp.x + 0.5, exp.y + 0.5);
-      const innerPx = ATOM_BOMB_INNER_RADIUS * scale * ease;
-      const outerPx = ATOM_BOMB_OUTER_RADIUS * scale * ease;
       ctx.save();
       ctx.globalAlpha = 1 - t;
-      ctx.fillStyle = "rgba(255, 190, 70, 0.3)";
+      ctx.fillStyle = "rgba(255, 200, 90, 0.45)";
       ctx.beginPath();
-      ctx.arc(c.x, c.y, outerPx, 0, Math.PI * 2);
+      ctx.arc(c.x, c.y, outerPx * ease, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = "rgba(255, 255, 255, 0.55)";
+      ctx.fillStyle = "rgba(255, 255, 245, 0.8)";
       ctx.beginPath();
-      ctx.arc(c.x, c.y, innerPx, 0, Math.PI * 2);
+      ctx.arc(c.x, c.y, innerPx * ease, 0, Math.PI * 2);
       ctx.fill();
-      ctx.strokeStyle = "rgba(255, 110, 30, 0.9)";
-      ctx.lineWidth = Math.max(1.5, scale * 0.15);
+      ctx.strokeStyle = "rgba(255, 120, 30, 0.95)";
+      ctx.lineWidth = Math.max(2, scale * 0.2);
       ctx.beginPath();
-      ctx.arc(c.x, c.y, outerPx, 0, Math.PI * 2);
+      ctx.arc(c.x, c.y, outerPx * ease, 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
     }
     runtime.nukeExplosions = survivors;
+  };
+
+  /**
+   * Paint the lingering radioactive fallout: every tile the server currently
+   * reports as irradiated (nuked ground that can't be recaptured until it
+   * decays) gets a sickly yellow-green wash plus a faint flickering speckle, so
+   * a struck region stays visibly scorched on the map — OpenFront's fallout
+   * ground tint. Viewport-culled; drawn in screen space over the base raster.
+   */
+  const drawFallout = (ctx: CanvasRenderingContext2D, scale: number): void => {
+    const map = runtime.map;
+    if (!map || runtime.fallout.size === 0 || scale < BORDER_DETAIL_SCALE) return;
+    const view = runtime.view;
+    const cw = ui.mapCanvas.width;
+    const ch = ui.mapCanvas.height;
+    const x0 = Math.floor(view.x);
+    const y0 = Math.floor(view.y);
+    const x1 = Math.ceil(view.x + cw / scale);
+    const y1 = Math.ceil(view.y + ch / scale);
+    ctx.save();
+    for (const ref of runtime.fallout) {
+      const tx = ref % map.width;
+      const ty = (ref / map.width) | 0;
+      if (tx < x0 || tx > x1 || ty < y0 || ty > y1) continue;
+      const sx = (tx - view.x) * scale;
+      const sy = (ty - view.y) * scale;
+      // Deterministic per-tile speckle so the wash reads as radioactive grime,
+      // not a flat fill; cheap integer hash keeps it stable frame-to-frame.
+      const h = ((ref * 2654435761) >>> 0) / 0x100000000;
+      ctx.fillStyle = h < 0.4 ? "rgba(150, 200, 40, 0.55)" : "rgba(120, 160, 30, 0.4)";
+      ctx.fillRect(sx, sy, scale + 1, scale + 1);
+    }
+    ctx.restore();
   };
 
   /**

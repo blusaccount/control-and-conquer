@@ -260,6 +260,14 @@ export interface RasterSnapshot {
   nukes: RasterNuke[];
   /** Atom Bomb detonations resolved this tick (empty on most ticks). */
   nukeDetonations: RasterNukeDetonation[];
+  /**
+   * Base64-packed little-endian `Uint32Array` of tile indices currently under
+   * radioactive fallout (nuked ground that recolours and can't be captured
+   * until it decays). Omitted when nothing is irradiated; an empty string
+   * clears the client's last set. Sent whole each snapshot while any exist —
+   * a blast is a few thousand tiles that decay within seconds, so it's bounded.
+   */
+  falloutBase64?: string;
   /** Structures placed on the map (empty when none have been built). */
   buildings: RasterBuilding[];
   /** Auto-routed railroads (empty until a factory wires up a city/port). */

@@ -115,6 +115,52 @@ test("a nuke that hits nobody (neutral land) reports no victims", () => {
   assert.deepEqual(result!.nukeDetonations[0].victims, []);
 });
 
+test("a real Atom Bomb blast marks its cleared ground as fallout", () => {
+  const grid = landSquare(120);
+  grid.addPlayer(1, 1);
+  grid.addPlayer(2, 1);
+  claimBlock(grid, 2, 60, 50, 20);
+  const conflict = new RasterConflict(grid);
+
+  conflict.launchNuke(1, 0, 0, 60, 50);
+  let detonated = false;
+  for (let i = 0; i < 60 && !detonated; i += 1) {
+    detonated = conflict.processTick().nukeDetonations.length > 0;
+  }
+  assert.ok(detonated, "the nuke detonates");
+  const groundZero = grid.map.ref(60, 50);
+  assert.equal(grid.hasFallout(groundZero), true, "ground zero is radioactive fallout");
+  assert.equal(grid.ownerOf(groundZero), NEUTRAL_PLAYER, "and cleared to neutral");
+  assert.ok(grid.falloutTiles().length > 0, "fallout tiles are exposed for the snapshot");
+});
+
+test("fallout blocks an advance onto the tile until it decays, then reopens", () => {
+  // Focused grid-level test of the fallout gate + decay, independent of blast
+  // geometry: player 1 owns a tile directly left of a hand-set fallout tile.
+  const grid = landSquare(20);
+  grid.addPlayer(1, 5_000);
+  const owned = grid.map.ref(5, 5);
+  const target = grid.map.ref(6, 5); // eastern neighbour of the owned tile
+  grid.claim(owned, 1);
+  grid.setFallout(target, 3);
+
+  assert.ok(
+    !grid.landFrontierOf(1, NEUTRAL_PLAYER).includes(target),
+    "a radioactive neighbour is excluded from the land frontier",
+  );
+
+  const conflict = new RasterConflict(grid);
+  conflict.processTick(); // fallout 3 → 2
+  conflict.processTick(); // 2 → 1
+  assert.equal(grid.hasFallout(target), true, "still radioactive mid-decay");
+  conflict.processTick(); // 1 → 0, cleared
+  assert.equal(grid.hasFallout(target), false, "fallout has decayed");
+  assert.ok(
+    grid.landFrontierOf(1, NEUTRAL_PLAYER).includes(target),
+    "the recovered tile is back on the frontier",
+  );
+});
+
 // --- RasterGameSession: end-to-end silo + launch flow ----------------------
 
 const lastSnapshot = (messages: RasterServerMessage[]): RasterSnapshot => {

@@ -128,6 +128,15 @@ export class TerritoryGrid {
    * {@link activateDue}. Empty = nothing building.
    */
   private readonly construction = new Map<TileRef, { start: number; ready: number }>();
+  /**
+   * Radioactive fallout: tile → ticks of fallout remaining. A nuked tile is
+   * cleared to neutral and marked here; while present it cannot be (re)captured
+   * (see {@link landFrontierOf}/{@link hasLandBorderWith}) and the client tints
+   * it. {@link tickFallout} counts every entry down and drops it at zero, so the
+   * ground recovers after the blast — OpenFront's decaying fallout. Empty =
+   * nowhere is irradiated (the common case, so lookups stay O(1)-ish).
+   */
+  private readonly fallout = new Map<TileRef, number>();
 
   // Lazily-allocated, generation-stamped scratch buffers reused by every
   // {@link findSeaPath} call so per-launch pathfinding stays allocation-free.
@@ -333,6 +342,33 @@ export class TerritoryGrid {
   /** True when a tile can be owned (passable land). */
   isCapturable(ref: TileRef): boolean {
     return this.map.isLand(ref) && !this.map.isImpassable(ref);
+  }
+
+  /** Mark `ref` radioactive for `ticks` ticks (a nuke blast). Refreshes if already fallout. */
+  setFallout(ref: TileRef, ticks: number): void {
+    if (ticks > 0) this.fallout.set(ref, ticks);
+  }
+
+  /** Whether `ref` is currently radioactive fallout (temporarily un-capturable). */
+  hasFallout(ref: TileRef): boolean {
+    return this.fallout.has(ref);
+  }
+
+  /** Active fallout tiles, ascending — for the snapshot's fallout overlay. */
+  falloutTiles(): TileRef[] {
+    return [...this.fallout.keys()].sort((a, b) => a - b);
+  }
+
+  /**
+   * Count every fallout tile down one tick, dropping any that reach zero so the
+   * ground recovers. Called once per engine tick from {@link RasterConflict}.
+   */
+  tickFallout(): void {
+    if (this.fallout.size === 0) return;
+    for (const [ref, remaining] of this.fallout) {
+      if (remaining <= 1) this.fallout.delete(ref);
+      else this.fallout.set(ref, remaining - 1);
+    }
   }
 
   /**
@@ -727,7 +763,8 @@ export class TerritoryGrid {
     const found = new Set<TileRef>();
     for (const ref of this.standing(attacker).tiles) {
       for (const n of this.map.neighbors(ref)) {
-        if (this.owner[n] === target && this.isCapturable(n)) found.add(n);
+        // Radioactive ground can't be advanced onto until its fallout decays.
+        if (this.owner[n] === target && this.isCapturable(n) && !this.hasFallout(n)) found.add(n);
       }
     }
     return [...found].sort((a, b) => a - b);
@@ -741,7 +778,7 @@ export class TerritoryGrid {
   hasLandBorderWith(attacker: PlayerId, target: PlayerId): boolean {
     for (const ref of this.standing(attacker).tiles) {
       for (const n of this.map.neighbors(ref)) {
-        if (this.owner[n] === target && this.isCapturable(n)) return true;
+        if (this.owner[n] === target && this.isCapturable(n) && !this.hasFallout(n)) return true;
       }
     }
     return false;
@@ -762,7 +799,8 @@ export class TerritoryGrid {
    * within that one water body. Deterministic via the map's fixed neighbour order.
    */
   findSeaPath(attacker: PlayerId, dest: TileRef): TileRef[] | null {
-    if (!this.isCapturable(dest) || this.owner[dest] === attacker) return null;
+    // A boat can't storm radioactive ground either — no landing until it decays.
+    if (!this.isCapturable(dest) || this.owner[dest] === attacker || this.hasFallout(dest)) return null;
     const launch = this.launchComponentsOf(attacker);
     if (launch.size === 0) return null;
 
