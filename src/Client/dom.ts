@@ -22,6 +22,8 @@ export interface UiElements {
   statsOverlay: HTMLDivElement;
   /** Countdown banner shown over the map during the opening start phase. */
   startBanner: HTMLDivElement;
+  /** Elapsed-match-time readout in the top-right frame bar. */
+  matchTimer: HTMLSpanElement;
 }
 
 export type StatusKind = "info" | "error" | "victory";
@@ -42,6 +44,7 @@ export const getUiElements = (): UiElements => {
   const menuOverlay = document.querySelector<HTMLDivElement>("#menuOverlay");
   const statsOverlay = document.querySelector<HTMLDivElement>("#statsOverlay");
   const startBanner = document.querySelector<HTMLDivElement>("#startBanner");
+  const matchTimer = document.querySelector<HTMLSpanElement>("#matchTimer");
 
   if (
     !mapCanvas ||
@@ -58,7 +61,8 @@ export const getUiElements = (): UiElements => {
     !leaderboard ||
     !menuOverlay ||
     !statsOverlay ||
-    !startBanner
+    !startBanner ||
+    !matchTimer
   ) {
     throw new Error("UI failed to initialize.");
   }
@@ -87,6 +91,7 @@ export const getUiElements = (): UiElements => {
     menuOverlay,
     statsOverlay,
     startBanner,
+    matchTimer,
   };
 };
 

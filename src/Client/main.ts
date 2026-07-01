@@ -2,12 +2,14 @@ import { DEFAULT_MAP_CHOICE_ID, MAP_CHOICES } from "../Core/mapCatalog.js";
 import { RASTER_DIFFICULTIES, type RasterDifficulty } from "../Core/messages.js";
 import { getUiElements } from "./dom.js";
 import { startRasterClient } from "./rasterClient.js";
-import { initSettings } from "./settings.js";
+import { initSettings, initFrameControls } from "./settings.js";
 
 const ui = getUiElements();
 
-// Wire the settings gear (event-log toggle, etc.) before the menu interactions.
+// Wire the settings gear (event-log toggle, etc.) and the frame controls
+// (fullscreen, leave) before the menu interactions.
 initSettings();
+initFrameControls();
 
 // The player picks a map + difficulty in the main menu, then presses Start. Each
 // card group is single-select (one stays highlighted); Start launches the run
