@@ -38,6 +38,23 @@ test("a match ends on the time limit and crowns the territory leader", () => {
   assert.equal(ended!.payload.stats.won, true);
 });
 
+test("a timeLimit finish is reflected in the snapshot's winnerPlayerId (spectator poll path)", () => {
+  // Eliminated players never receive the final SERVER_RASTER_MATCH_ENDED
+  // broadcast (they already got their own defeat summary) — the client instead
+  // polls the snapshot's winnerPlayerId to detect the match ending while
+  // spectating. That field must reflect a timeLimit finish, not just conquest.
+  const session = new RasterGameSession({ width: 24, height: 16, seed: 3, maxDurationTicks: 3 });
+  const messages = collect(session, "human");
+  session.tick();
+  session.tick();
+  session.tick(); // timeLimit reached; conflict.winner stays null (no conquest)
+
+  const ended = endedOf(messages);
+  assert.equal(ended!.payload.reason, "timeLimit");
+  assert.equal(lastSnapshot(messages).winnerPlayerId, ended!.payload.winnerPlayerId,
+    "the snapshot's winnerPlayerId must match the timeLimit winner, not stay null");
+});
+
 test("the simulation freezes after a match ends (no further broadcasts)", () => {
   const session = new RasterGameSession({ width: 24, height: 16, seed: 3, maxDurationTicks: 2 });
   const messages = collect(session, "human");

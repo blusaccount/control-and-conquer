@@ -686,6 +686,13 @@ export class RasterConflict {
         this.grid.addTroops(ship.attacker, ship.troops);
         continue;
       }
+      if (this.isImmune(owner)) {
+        // The destination's owner gained spawn immunity mid-voyage — the landing
+        // is called off, same as an ally's shore, rather than storming a nation
+        // that can't currently be attacked.
+        this.grid.addTroops(ship.attacker, ship.troops);
+        continue;
+      }
 
       const cost = this.beachheadCost(dest, ship.attacker, owner, ship.troops);
       if (ship.troops < cost) {

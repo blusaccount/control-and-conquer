@@ -19,6 +19,15 @@ test("every player joins with identity modifiers (no classes or perks)", () => {
   assert.deepEqual(session.peekGrid().modifiersOf(1), IDENTITY_MODIFIERS);
 });
 
+test("a full session rejects a further subscribe without throwing", () => {
+  const session = new RasterGameSession({ width: 48, height: 32, seed: 9 });
+  const MAX_PLAYERS = 48;
+  for (let i = 0; i < MAX_PLAYERS; i += 1) {
+    assert.notEqual(session.subscribe(`p${i}`, () => {}), null, `seat ${i + 1} is free`);
+  }
+  assert.equal(session.subscribe("overflow", () => {}), null, "the 49th subscriber finds no seat");
+});
+
 test("validateCommand accepts a CLIENT_RASTER_JOIN with no fields", () => {
   const ok = validateCommand({ type: "CLIENT_RASTER_JOIN", payload: {} });
   assert.equal(ok.type, "CLIENT_RASTER_JOIN");

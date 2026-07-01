@@ -127,6 +127,21 @@ test("queueExpand with invalid tile is rejected on tick", () => {
   }
 });
 
+test("queued expands from one client are capped between ticks (flood protection)", () => {
+  const session = new RasterGameSession({ width: 32, height: 24, seed: 3 });
+  const messages = collect(session, "human");
+  // Flood far more intents than any human could click in one ~100ms tick
+  // window; each uses an out-of-bounds tile so every drained one rejects,
+  // making the queue depth observable via the rejection count.
+  for (let i = 0; i < 200; i += 1) {
+    session.queueExpand("human", { targetX: 1000, targetY: 1000, percent: 50 });
+  }
+  session.tick();
+  const rejections = messages.filter((m) => m.type === "SERVER_RASTER_ACTION_REJECTED");
+  assert.ok(rejections.length < 200, "the flood must not all be queued and drained in one tick");
+  assert.ok(rejections.length > 0, "some intents still get through up to the cap");
+});
+
 test("ticks broadcast a snapshot every tick", () => {
   const session = new RasterGameSession({ width: 16, height: 12, seed: 2 });
   const messages = collect(session, "human");

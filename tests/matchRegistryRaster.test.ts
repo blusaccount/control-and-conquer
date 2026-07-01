@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { MatchRegistry } from "../src/Server/MatchRegistry.js";
+import { AiGameSession } from "../src/Server/aiApi.js";
 import type { RasterServerMessage } from "../src/Core/types.js";
 
 test("joinRasterSolo starts immediately and assigns a player", () => {
@@ -38,6 +39,32 @@ test("joinRasterSolo unsubscribe cleans the match up", () => {
   assert.equal(registry.getActiveRasterMatchCount(), 1);
   off();
   assert.equal(registry.getActiveRasterMatchCount(), 0);
+});
+
+test("an AI session with recent activity survives past its creation-time age", () => {
+  const registry = new MatchRegistry();
+  const session = new AiGameSession("game-old-active", { width: 24, height: 16, seed: 1 }, 0, true);
+  registry.aiSessions.set("game-old-active", session);
+
+  // The session was created 31 minutes ago, but the agent polled it 1 minute
+  // ago — an actively-played long match must not be force-destroyed just for
+  // being old.
+  (session as { createdAt: number }).createdAt = Date.now() - 31 * 60 * 1000;
+  session.lastActivityAt = Date.now() - 60 * 1000;
+
+  registry.tickAll();
+  assert.equal(registry.aiSessions.has("game-old-active"), true, "activity within the TTL window keeps the session alive");
+});
+
+test("an AI session idle for over 30 minutes is cleaned up", () => {
+  const registry = new MatchRegistry();
+  const session = new AiGameSession("game-idle", { width: 24, height: 16, seed: 1 }, 0, true);
+  registry.aiSessions.set("game-idle", session);
+
+  session.lastActivityAt = Date.now() - 31 * 60 * 1000;
+
+  registry.tickAll();
+  assert.equal(registry.aiSessions.has("game-idle"), false, "no activity for 31 minutes is cleaned up");
 });
 
 test("tickAll drives raster snapshots too", () => {

@@ -142,8 +142,14 @@ export class AiGameSession {
   private matchEnded = false;
   private readonly unsubBots: Array<() => void> = [];
   private readonly unsub: () => void;
-  /** When the session was created — for TTL cleanup. */
+  /** When the session was created. */
   public readonly createdAt: number;
+  /**
+   * When the agent last polled or acted on this session — the TTL cleanup uses
+   * this, not {@link createdAt}, so a long-running match an agent is actively
+   * playing isn't force-destroyed just because it's old.
+   */
+  public lastActivityAt: number;
 
   constructor(
     gameId: string,
@@ -154,17 +160,20 @@ export class AiGameSession {
   ) {
     this.gameId = gameId;
     this.createdAt = Date.now();
+    this.lastActivityAt = this.createdAt;
     this.session = new RasterGameSession(options);
     this.clientId = `ai-agent-${gameId}`;
 
-    // Subscribe the AI agent as a player (autoSpawn=false: agent picks spawn via API)
+    // Subscribe the AI agent as a player (autoSpawn=false: agent picks spawn via API).
+    // A brand-new session always has a free seat for its first subscriber, so
+    // the null case is unreachable — guarded defensively rather than trusting it.
     this.unsub = this.session.subscribe(
       this.clientId,
       (msg: RasterServerMessage) => this.onMessage(msg),
       autoSpawn,
       true,
       playerName,
-    );
+    ) ?? (() => {});
 
     // Seat bots as opponents
     const botSlots = Math.max(0, Math.min(botCount, 31));
@@ -449,6 +458,7 @@ export const handleAiApiRequest = async (
   const action = parts[4] ?? "";
 
   const session = sessions.get(gameId);
+  if (session) session.lastActivityAt = Date.now();
 
   // GET /api/games/:id — current game state
   if (!action && method === "GET") {

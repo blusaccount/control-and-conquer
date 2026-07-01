@@ -126,6 +126,36 @@ test("a landing repelled off a player-held shore loses the retreat malus", () =>
   assert.equal(grid.troopsOf(1), 0.75, "1 troop returns as 0.75 (25% malus off a player shore)");
 });
 
+test("a beachhead's owner gaining immunity mid-voyage calls off the landing", () => {
+  // owned 0,1 | water 2,3,4 | far bank 5 (neutral at launch),6 (player 2). Player 1
+  // ships troops at neutral tile 5; before the ship arrives, immune player 2
+  // expands onto 5 by land. The landing must stand down like an ally's shore,
+  // not storm a nation that can't currently be attacked.
+  const grid = new TerritoryGrid(rowMap("##   ##"));
+  grid.addPlayer(1, 50);
+  grid.addPlayer(2, 50);
+  grid.claim(0, 1);
+  grid.claim(1, 1);
+  grid.claim(6, 2);
+  freezeIncome(grid);
+  const conflict = new RasterConflict(grid);
+  conflict.grantImmunity(2, 100);
+
+  // Legal at launch: tile 5 is neutral, so isImmune(NEUTRAL_PLAYER) is false.
+  assert.equal(conflict.launchShip({ attacker: 1, dest: 5, troops: 50 }), null);
+  // Player 2 (immune) is still free to expand into neutral land.
+  assert.equal(conflict.launchAttack({ attacker: 2, target: NEUTRAL_PLAYER, troops: 30 }), null);
+
+  for (let i = 0; i < 5; i += 1) conflict.processTick();
+  assert.equal(grid.ownerOf(5), 2, "player 2 claimed the beachhead by land first");
+
+  for (let i = 0; i < 20; i += 1) conflict.processTick();
+
+  assert.equal(grid.ownerOf(5), 2, "the immune owner keeps the tile — the landing was called off");
+  assert.equal(conflict.shipCountOf(1), 0, "the ship is still consumed on arrival");
+  assert.equal(grid.troopsOf(1), 50, "the troops disembark home in full, not spent attacking");
+});
+
 test("a player may have at most three transport ships at sea", () => {
   // owned 0,1 | water 2,3,4 | islet 5 | water 6,7,8 | islet 9. Tile 5 is a lone
   // islet (no land neighbours), so a landing there can't spread inland — keeping
