@@ -224,6 +224,8 @@ wss.on("connection", (socket) => {
         registry.queueRasterExpand(clientId, message.payload);
       } else if (message.type === "CLIENT_RASTER_BUILD") {
         registry.queueRasterBuild(clientId, message.payload);
+      } else if (message.type === "CLIENT_RASTER_NUKE") {
+        registry.queueRasterNuke(clientId, message.payload);
       } else if (message.type === "CLIENT_RASTER_ALLY_PROPOSE") {
         registry.proposeRasterAlliance(clientId, message.payload.targetId);
       } else if (message.type === "CLIENT_RASTER_ALLY_RESPOND") {

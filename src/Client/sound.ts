@@ -69,4 +69,14 @@ export const sfx = {
     tone(311.13, 0, 0.22, 0.12);
     tone(233.08, 0.16, 0.35, 0.12);
   },
+  /** An Atom Bomb launch — a rising whoosh as the missile clears the silo. */
+  nukeLaunch: (): void => {
+    tone(180, 0, 0.05, 0.05);
+    tone(420, 0.03, 0.12, 0.1);
+  },
+  /** An Atom Bomb detonation — a low, heavy boom. */
+  nukeDetonate: (): void => {
+    tone(55, 0, 0.5, 0.22);
+    tone(90, 0, 0.35, 0.16);
+  },
 };

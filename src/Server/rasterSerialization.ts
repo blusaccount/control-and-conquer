@@ -3,7 +3,7 @@ import type { TerritoryGrid } from "../Core/TerritoryGrid.js";
 import { maxTroops, troopsPerSecond } from "../Core/rasterCombatConfig.js";
 import { goldPerSecond } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
-import type { RasterAlliancePair, RasterAllianceRequest, RasterAttackFront, RasterBuilding, RasterCrossing, RasterMatchPhase, RasterPlayerInfo, RasterRail, RasterShip, RasterSnapshot, RasterTrade, RasterTrain } from "../Core/types.js";
+import type { RasterAlliancePair, RasterAllianceRequest, RasterAttackFront, RasterBuilding, RasterCrossing, RasterMatchPhase, RasterNuke, RasterNukeDetonation, RasterPlayerInfo, RasterRail, RasterShip, RasterSnapshot, RasterTrade, RasterTrain } from "../Core/types.js";
 
 /**
  * Stable 12-hex-char fingerprint of the terrain bytes, used purely as a
@@ -126,6 +126,10 @@ export interface BuildSnapshotInput {
   crossings: RasterCrossing[];
   /** Transport ships in flight this snapshot (for client ship animation). */
   ships: RasterShip[];
+  /** Atom Bombs in flight this snapshot (for client nuke animation). */
+  nukes: RasterNuke[];
+  /** Atom Bomb detonations resolved this tick (for the explosion flash). */
+  nukeDetonations: RasterNukeDetonation[];
   /** Active land-attack fronts this tick (for the on-map troop-count labels). */
   fronts: RasterAttackFront[];
   /** Auto-routed railroads this snapshot (for the client to draw track). */
@@ -168,7 +172,7 @@ export interface BuildSnapshotInput {
  * since they never read the ownership raster at all.
  */
 export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot => {
-  const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, terrainHash, winnerPlayerId, recentEvents, crossings, ships, fronts, rails = [], trains = [], tradeShips = [], eliminated, alliances = [], allianceRequests = [] } = input;
+  const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, terrainHash, winnerPlayerId, recentEvents, crossings, ships, nukes, nukeDetonations, fronts, rails = [], trains = [], tradeShips = [], eliminated, alliances = [], allianceRequests = [] } = input;
 
   const players: RasterPlayerInfo[] = [];
   for (const id of grid.players()) {
@@ -220,6 +224,8 @@ export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
     recentEvents,
     crossings,
     ships,
+    nukes,
+    nukeDetonations,
     buildings,
     rails,
     trains,
