@@ -33,6 +33,7 @@ import {
 } from "../Core/buildings.js";
 import type { RasterDifficulty } from "../Core/messages.js";
 import { SIMULATION_TICK_RATE } from "../Server/simulationConfig.js";
+import { sfx } from "./sound.js";
 
 /** Options for starting a raster match: the chosen map and difficulty. */
 export interface RasterClientOptions {
@@ -562,6 +563,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       runtime.winnerPlayerId = payload.winnerPlayerId;
     }
 
+    if (payload.stats.won) sfx.victory();
+    else sfx.defeat();
     setStatus(ui, payload.stats.won ? "You won the run!" : isEliminatedMidMatch ? "Eliminated — spectating." : "Run over.", "victory");
 
     const storage = safeStorage();
@@ -710,7 +713,23 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.capturableTotal = snapshot.capturableCount;
     runtime.recentEvents = snapshot.recentEvents;
     runtime.players = snapshot.players;
-    runtime.alliances = snapshot.alliances ?? [];
+    const nextAlliances = snapshot.alliances ?? [];
+    // A new pact involving us — whichever side accepted — gets the chime. Diffed
+    // against the snapshot (rather than fired from the accept click) so both "I
+    // accepted their offer" and "they accepted mine" play the same cue exactly
+    // once, off the confirmed server state instead of an optimistic guess.
+    if (runtime.myPlayerId !== null) {
+      const had = new Set(
+        runtime.alliances
+          .filter(([a, b]) => a === runtime.myPlayerId || b === runtime.myPlayerId)
+          .map(([a, b]) => `${a}-${b}`),
+      );
+      const gainedMine = nextAlliances.some(
+        ([a, b]) => (a === runtime.myPlayerId || b === runtime.myPlayerId) && !had.has(`${a}-${b}`),
+      );
+      if (gainedMine) sfx.allyAccepted();
+    }
+    runtime.alliances = nextAlliances;
     runtime.allianceRequests = snapshot.allianceRequests ?? [];
     runtime.phase = snapshot.phase;
     runtime.spawnRemainingSeconds = snapshot.spawnRemainingSeconds;
@@ -1968,6 +1987,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     if (runtime.phase === "spawn") {
       sendSelectSpawn(tileX, tileY);
       runtime.clickRipples.push({ x: tileX, y: tileY, color: "rgba(255,255,255,0.9)", start: performance.now() });
+      sfx.click();
       setStatus(ui, runtime.spawned ? `Moving spawn to (${tileX}, ${tileY})…` : `Founding at (${tileX}, ${tileY})…`);
       return;
     }
@@ -1977,6 +1997,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     if (!runtime.spawned) {
       sendSelectSpawn(tileX, tileY);
       runtime.clickRipples.push({ x: tileX, y: tileY, color: "rgba(255,255,255,0.9)", start: performance.now() });
+      sfx.click();
       setStatus(ui, `Founding at (${tileX}, ${tileY})…`);
       return;
     }
@@ -1986,6 +2007,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       const def = BUILDING_DEFS[runtime.buildMode];
       sendBuild(tileX, tileY, runtime.buildMode);
       runtime.clickRipples.push({ x: tileX, y: tileY, color: runtime.myColor, start: performance.now() });
+      sfx.click();
       setStatus(ui, `Building ${def.name} at (${tileX}, ${tileY})…`);
       return;
     }
@@ -1993,6 +2015,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const percent = Number(ui.attackPercentInput.value);
     sendExpand(tileX, tileY, percent);
     runtime.clickRipples.push({ x: tileX, y: tileY, color: runtime.myColor, start: performance.now() });
+    sfx.click();
     setStatus(ui, `Expanding toward (${tileX}, ${tileY}) with ${percent}% of pool.`);
   };
 
