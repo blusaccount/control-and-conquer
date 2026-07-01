@@ -30,12 +30,12 @@ const mapFromRows = (rows: string[]) => {
   return buildTerrainFromMask({ width, height, land, elevation });
 };
 
-// Regression for the reported bug: an enemy nation wedged between two coasts of
-// the SAME landmass made `canReachByLand` report the far coast as land-reachable
-// (its BFS walks any owner's ground), so the router committed to a land attack —
-// found no shared border to push into — and rejected the click outright, even
-// though a transport could simply sail across the bay. The router must fall
-// through to a boat instead of stranding the order.
+// Regression for the reported bug, now covered by OpenFront's routing model: an
+// enemy nation wedged between two coasts of the SAME landmass. Under OpenFront's
+// `canAttack`, a march onto a *player's* tile needs a shared border — which we
+// don't have here — and the neutral-corridor march can't thread through a third
+// party's ground, so both land tests fail and the click correctly becomes a
+// transport ship across the bay instead of a rejection.
 test("an enemy wedged between two coasts: a click across the bay sends a boat, not a rejection", () => {
   //   # . #      col0 = attacker, col2 = target, col1 = a bay (water)
   //   # . #      the bottom row joins the two arms into ONE landmass, but the

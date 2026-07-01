@@ -2,8 +2,21 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { RasterGameSession } from "../src/Server/RasterGameSession.js";
 import { resolveHeightmapSessionMap } from "../src/Server/sessionMap.js";
+import { buildTerrainFromMask } from "../src/Core/terrainBuilder.js";
 import { NEUTRAL_PLAYER } from "../src/Core/TerritoryGrid.js";
 import type { RasterServerMessage, RasterSnapshot } from "../src/Core/types.js";
+
+/** Build a GameMap from rows of '#' (land) / '.' (water) for hand-authored scenarios. */
+const mapFromRows = (rows: string[]) => {
+  const height = rows.length;
+  const width = rows[0].length;
+  const land = new Uint8Array(width * height);
+  const elevation = new Uint8Array(width * height);
+  for (let y = 0; y < height; y += 1)
+    for (let x = 0; x < width; x += 1)
+      if (rows[y][x] !== ".") land[y * width + x] = 1;
+  return buildTerrainFromMask({ width, height, land, elevation });
+};
 
 const collect = (session: RasterGameSession, clientId: string): RasterServerMessage[] => {
   const messages: RasterServerMessage[] = [];
@@ -154,51 +167,35 @@ test("clicking a sea-only target dispatches a transport ship that lands", () => 
   assert.equal(lastSnapshot(messages).ships.filter((s) => s.playerId === 1).length, 0, "the ship is gone once it has landed");
 });
 
-test("clicking an unbordered rival on the same landmass heads there instead of rejecting", () => {
-  const session = new RasterGameSession({ width: 48, height: 32, seed: 5 });
-  const messages = collect(session, "human"); // player 1, auto-spawned
+test("OpenFront routing: an unbordered rival can't be land-attacked, but neutral land still marches", () => {
+  // A landlocked strip — p1 | neutral | neutral | neutral | rival — with no water
+  // at all, so a boat is impossible and the only routes are by land. OpenFront
+  // gates a march onto a *player's* tile purely by a shared border, so clicking
+  // the rival we don't touch is rejected; a neutral tile we border still marches.
+  const map = mapFromRows(["#####"]);
+  const session = new RasterGameSession({ prebuiltMap: map, startingTroops: 200, spawnPhaseTicks: 0 });
+  const messages = collect(session, "human"); // seats player 1 somewhere
   const grid = session.peekGrid();
-  const map = session.peekMap();
 
-  // Give player 1 an interior foothold so it borders neutral land all around.
-  let interior = -1;
-  for (let ref = 0; ref < map.size && interior < 0; ref += 1) {
-    if (!grid.isCapturable(ref) || grid.ownerOf(ref) !== NEUTRAL_PLAYER) continue;
-    const ns = map.neighbors(ref);
-    if (ns.length === 4 && ns.every((n) => grid.isCapturable(n) && grid.ownerOf(n) === NEUTRAL_PLAYER)) {
-      interior = ref;
-    }
-  }
-  assert.ok(interior >= 0, "found an interior neutral tile to stand on");
-  grid.claim(interior, 1);
-  const comp = grid.landComponentId(interior);
+  for (let ref = 0; ref < map.size; ref += 1) if (grid.ownerOf(ref) !== NEUTRAL_PLAYER) grid.claim(ref, NEUTRAL_PLAYER);
+  if (!grid.hasPlayer(2)) grid.addPlayer(2, 50);
+  grid.claim(map.ref(0, 0), 1); // our foothold
+  grid.claim(map.ref(4, 0), 2); // rival, three neutral tiles away
+  assert.equal(grid.hasLandBorderWith(1, 2), false, "player 1 does not border the rival");
 
-  // Seat a rival far away on the *same* landmass — reachable by land, but not yet
-  // bordered by player 1 (neutral ground lies between them).
-  grid.addPlayer(2, 50);
-  let rival = -1;
-  for (let ref = map.size - 1; ref >= 0 && rival < 0; ref -= 1) {
-    if (!grid.isCapturable(ref) || grid.ownerOf(ref) !== NEUTRAL_PLAYER) continue;
-    if (grid.landComponentId(ref) !== comp) continue;
-    if (map.neighbors(ref).some((n) => grid.ownerOf(n) === 1)) continue; // must not be adjacent
-    rival = ref;
-  }
-  assert.ok(rival >= 0, "found a far same-landmass tile for the rival");
-  grid.claim(rival, 2);
-
-  assert.ok(grid.ownsLandComponentOf(1, rival), "the rival sits on player 1's landmass");
-  assert.equal(grid.hasLandBorderWith(1, 2), false, "player 1 does not yet border the rival");
-
-  const before = grid.tileCountOf(1);
-  session.queueExpand("human", { targetX: map.x(rival), targetY: map.y(rival), percent: 80 });
+  // Click the unbordered rival: no shared border, no water → OpenFront rejects it.
+  session.queueExpand("human", { targetX: 4, targetY: 0, percent: 50 });
   session.tick();
-
-  assert.equal(
-    messages.find((m) => m.type === "SERVER_RASTER_ACTION_REJECTED"),
-    undefined,
-    "the click toward the unbordered rival is not rejected",
+  assert.ok(
+    messages.some((m) => m.type === "SERVER_RASTER_ACTION_REJECTED"),
+    "an unbordered rival can't be land-attacked (OpenFront needs a shared border)",
   );
-  assert.ok(grid.tileCountOf(1) > before, "player 1 marched toward the rival through neutral land");
+
+  // Click a neutral tile we do border: a normal land march grows our territory.
+  const before = grid.tileCountOf(1);
+  session.queueExpand("human", { targetX: 1, targetY: 0, percent: 50 });
+  session.tick();
+  assert.ok(grid.tileCountOf(1) > before, "neutral land within reach is still marched into");
 });
 
 test("a far coast across water on the SAME continent dispatches a boat, not a silent land creep", () => {

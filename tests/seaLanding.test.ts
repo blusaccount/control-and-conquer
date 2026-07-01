@@ -88,6 +88,23 @@ test("a target across water is frontier (a boat target), never a land hop", () =
   );
 });
 
+test("canReachByLand marches only through neutral land, never a third party's ground", () => {
+  // A landlocked strip: p1 | neutral | enemy | dest(neutral). The one land path
+  // from dest back to p1 threads through the enemy tile, so under OpenFront's
+  // neutral-only corridor rule it is NOT land-reachable — it must become a boat
+  // (or, landlocked as here, be unreachable). Clearing the enemy reopens the march.
+  const grid = gridFromRows(["####"]);
+  grid.addPlayer(1, 50);
+  grid.addPlayer(2, 50);
+  grid.claim(grid.map.ref(0, 0), 1);
+  grid.claim(grid.map.ref(2, 0), 2); // enemy blocks the corridor
+  const dest = grid.map.ref(3, 0);
+
+  assert.equal(grid.canReachByLand(1, dest, 20), false, "an enemy-blocked corridor is not land-reachable");
+  grid.claim(grid.map.ref(2, 0), NEUTRAL_PLAYER); // remove the enemy
+  assert.equal(grid.canReachByLand(1, dest, 20), true, "a pure neutral corridor reaches");
+});
+
 test("a fully landlocked player can launch no boats", () => {
   // A 3x3 block of land with no water at all: no launch component exists.
   const grid = gridFromRows(["###", "###", "###"]);
