@@ -1035,17 +1035,17 @@ export class RasterGameSession {
       if (target !== NEUTRAL_PLAYER && this.grid.hasLandBorderWith(attacker, NEUTRAL_PLAYER)) {
         return { kind: "land", intent: { attacker, target: NEUTRAL_PLAYER, troops, toward: ref } };
       }
-      return {
-        kind: "rejected",
-        reason: "NO_FRONTIER",
-        message: target === NEUTRAL_PLAYER
-          ? "Your border doesn't touch any neutral land there yet."
-          : "There's no land route toward that opponent yet.",
-      };
+      // Land-reachable only on paper: the one land connection threads through a
+      // third party we neither border nor can march through — an enemy wedged
+      // between our two coasts. `canReachByLand` counts any owner's ground as
+      // walkable, so it reports "reachable", but a land front can't actually form.
+      // Don't strand the order here: fall through and let a boat take it if the
+      // water reaches the click, exactly as it would for a separate landmass.
     }
-    // The click is on a different landmass. Rather than demanding the player hit
-    // an exact in-range coastal tile, land the boat on the reachable shore
-    // nearest the click (its own tile wins when that tile is itself reachable).
+    // A different landmass, or a same-landmass coast the land front can't reach
+    // (across water, or blocked by an enemy in between): rather than demanding the
+    // player hit an exact in-range coastal tile, land the boat on the reachable
+    // shore nearest the click (its own tile wins when that tile is itself reachable).
     const landing = this.grid.resolveSeaLanding(attacker, ref);
     if (landing !== null) {
       return { kind: "sea", intent: { attacker, dest: landing, troops } };
@@ -1053,7 +1053,7 @@ export class RasterGameSession {
     return {
       kind: "rejected",
       reason: "NO_FRONTIER",
-      message: "No water route reaches that area (it may be too far across open water).",
+      message: "No route reaches that area — no land border, and no water crossing to it.",
     };
   }
 
