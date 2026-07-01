@@ -138,6 +138,10 @@ export class TerritoryGrid {
   private waterRouteParent?: Int32Array;
   private waterRouteStamp?: Int32Array;
   private waterRouteGeneration?: number;
+  // Reused, generation-stamped scratch for the {@link nextWaterStep} BFS.
+  private waterStepParent?: Int32Array;
+  private waterStepStamp?: Int32Array;
+  private waterStepGeneration?: number;
   // Reused, generation-stamped scratch for the {@link resolveSeaLanding} BFS.
   private landingDepth?: Int32Array;
   private landingStamp?: Int32Array;
@@ -857,6 +861,51 @@ export class TerritoryGrid {
       }
     }
     return null;
+  }
+
+  /**
+   * The next water tile a unit at `from` should move to so it heads along the
+   * shortest water route toward `to` — one step of {@link findWaterRoute} for a
+   * unit that itself sits on water (a warship), where both endpoints are water
+   * rather than coasts. Returns `to` when already adjacent, or `-1` when no
+   * connected water joins them (a different sea). A BFS runs outward from `to`;
+   * parent pointers lead back toward it, so the tile after `from` is the step.
+   */
+  nextWaterStep(from: TileRef, to: TileRef): TileRef {
+    if (from === to) return to;
+    if (!this.map.isWater(from) || !this.map.isWater(to)) return -1;
+    const size = this.map.size;
+    const parent = (this.waterStepParent ??= new Int32Array(size));
+    const stamp = (this.waterStepStamp ??= new Int32Array(size).fill(-1));
+    const generation = (this.waterStepGeneration = (this.waterStepGeneration ?? 0) + 1);
+    const queue: TileRef[] = [to];
+    stamp[to] = generation;
+    parent[to] = to;
+    for (let head = 0; head < queue.length; head += 1) {
+      const water = queue[head];
+      if (water === from) return parent[water]; // the tile one step closer to `to`
+      for (const n of this.map.neighbors(water)) {
+        if (this.map.isWater(n) && stamp[n] !== generation) {
+          stamp[n] = generation;
+          parent[n] = water;
+          queue.push(n);
+        }
+      }
+    }
+    return -1;
+  }
+
+  /**
+   * A water tile bordering `ref` (lowest {@link TileRef} for determinism), or
+   * `-1` when none touches it. Used to launch a warship from its coastal home
+   * port onto the sea and to steer a retreating one back to dock.
+   */
+  waterNeighborOf(ref: TileRef): TileRef {
+    let best = -1;
+    for (const n of this.map.neighbors(ref)) {
+      if (this.map.isWater(n) && (best === -1 || n < best)) best = n;
+    }
+    return best;
   }
 
   /**

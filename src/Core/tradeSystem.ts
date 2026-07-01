@@ -94,6 +94,33 @@ export class TradeSystem {
     return this.ships.length;
   }
 
+  /**
+   * Live trade ships as integer-tile positions for a warship to hunt: each ship's
+   * id, owner, and the tile it currently occupies. Rounded from the fractional
+   * position, which is enough for a Chebyshev range check.
+   */
+  raidableShips(): Array<{ id: number; owner: PlayerId; tile: TileRef }> {
+    const map = this.grid.map;
+    return this.ships.map((ship) => {
+      const { x, y } = this.shipPosition(ship);
+      return { id: ship.id, owner: ship.owner, tile: map.ref(Math.round(x), Math.round(y)) };
+    });
+  }
+
+  /**
+   * A warship captures trade ship `id`: it never reaches port, and the raider
+   * pockets the cargo — OpenFront pays the captor the trip's gold. Returns the
+   * gold awarded, or 0 if the ship was already gone (e.g. captured this tick).
+   */
+  capture(id: number, capturer: PlayerId): number {
+    const i = this.ships.findIndex((s) => s.id === id);
+    if (i < 0) return 0;
+    const [ship] = this.ships.splice(i, 1);
+    const gold = tradeShipGold(ship.dist);
+    this.grid.addGold(capturer, gold);
+    return gold;
+  }
+
   /** Rebuild the port roster only when the port set actually changed. */
   private sync(): void {
     const ports = this.collectPorts();

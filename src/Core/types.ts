@@ -170,6 +170,20 @@ export interface RasterTrade {
 }
 
 /**
+ * A mobile warship at sea this snapshot, belonging to `playerId` at tile
+ * (`x`,`y`). `health`/`maxHealth` drive its hull bar — the only ship type the
+ * client draws a health bar for, matching OpenFront. It hunts hostile shipping.
+ */
+export interface RasterWarship {
+  shipId: number;
+  playerId: number;
+  x: number;
+  y: number;
+  health: number;
+  maxHealth: number;
+}
+
+/**
  * The phase a raster match is in.
  *  - `spawn`: the opening start phase — every player picks where their nation is
  *    founded and nobody can take territory yet. A countdown runs.
@@ -240,6 +254,8 @@ export interface RasterSnapshot {
   trains: RasterTrain[];
   /** Trade ships sailing between ports this snapshot (empty when none are at sea). */
   tradeShips: RasterTrade[];
+  /** Mobile warships at sea this snapshot (empty until a warship building stands). */
+  warships: RasterWarship[];
   /**
    * Active land-attack fronts this tick (empty when nobody is pushing a border).
    * Drives the on-map troop-count labels so contested borders read at a glance.

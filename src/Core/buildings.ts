@@ -23,13 +23,25 @@ export const BUILDING_TYPES: readonly BuildingType[] = ["city", "port", "fort", 
 export const COASTAL_BUILDING_TYPES: readonly BuildingType[] = ["port", "warship"];
 
 /**
- * How far (Chebyshev tiles) a warship's guns reach: an enemy transport ship
- * passing within this range of a warship is sunk. A coast-defence rendition of
- * OpenFront's warship, which patrols and engages hostile shipping — here it holds
- * its harbour and interdicts amphibious assaults rather than roaming (mobile
- * patrol + trade-raiding is a documented follow-up).
+ * Mobile warship, mirroring OpenFront's roaming navy. A warship *building* is a
+ * shipyard/home port: while it stands it keeps one warship **unit** at sea that
+ * patrols nearby, hunts hostile shipping, and docks home to repair. All values
+ * are OpenFront's (Config.ts): the unit is not a static coast battery.
  */
-export const WARSHIP_INTERCEPT_RANGE = 12;
+/** Hull points a fresh warship carries; shells whittle this down. */
+export const WARSHIP_MAX_HEALTH = 1000;
+/** Chebyshev range (tiles) within which a warship acquires and shells a target. */
+export const WARSHIP_TARGET_RANGE = 130;
+/** How far (tiles) from home a patrolling warship wanders when it has no target. */
+export const WARSHIP_PATROL_RANGE = 100;
+/** Damage one shell deals to an enemy warship (transports/trade are one-shot). */
+export const WARSHIP_SHELL_DAMAGE = 250;
+/** Ticks between shells — OpenFront's `shellAttackRate`. */
+export const WARSHIP_SHELL_COOLDOWN = 20;
+/** Below this hull the warship breaks off and retreats home to repair. */
+export const WARSHIP_RETREAT_HEALTH = 750;
+/** Hull points regained per tick while docked at (adjacent to) its home port. */
+export const WARSHIP_HEAL_PER_TICK = 1;
 
 /** Runtime guard: is `value` a known building type id? */
 export const isBuildingType = (value: unknown): value is BuildingType =>
@@ -277,7 +289,7 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
   warship: {
     type: "warship",
     name: "Warship",
-    description: "Guards the coast: sinks enemy transport ships in range (must sit on a shore).",
+    description: "A shipyard: keeps a mobile warship at sea that hunts enemy transports, warships and trade ships (must sit on a shore).",
     icon: "\u{1F6A2}", // 🚢
     baseCost: 250_000,
     costGrowth: 1,

@@ -17,6 +17,7 @@ import type {
   RasterSnapshot,
   RasterTrade,
   RasterTrain,
+  RasterWarship,
 } from "../Core/types.js";
 import { hideMenu, setStatus, type UiElements } from "./dom.js";
 import { createWebSocketTransport, createWorkerTransport, type RasterTransport } from "./transport.js";
@@ -158,6 +159,8 @@ interface RasterRuntime {
   trains: RasterTrain[];
   /** Trade ships sailing between ports this snapshot, drawn as moving sea dots. */
   tradeShips: RasterTrade[];
+  /** Mobile warships this snapshot, drawn as sea markers with hull bars. */
+  warships: RasterWarship[];
   capturableTotal: number;
   /** Full player standings from the latest snapshot, for the leaderboard. */
   players: RasterPlayerInfo[];
@@ -366,6 +369,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     rails: [],
     trains: [],
     tradeShips: [],
+    warships: [],
     capturableTotal: 0,
     players: [],
     recentEvents: [],
@@ -707,6 +711,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.rails = snapshot.rails ?? [];
     runtime.trains = snapshot.trains ?? [];
     runtime.tradeShips = snapshot.tradeShips ?? [];
+    runtime.warships = snapshot.warships ?? [];
 
     // The first snapshot in which we hold land marks the end of the spawn phase:
     // zoom the camera in on the tile we founded on so the run starts at home.
@@ -936,6 +941,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       drawTrains(ctx, scale);
       drawTradeShips(ctx, scale);
       drawShips(ctx, scale);
+      drawWarships(ctx, scale);
       drawLandings(now, ctx, scale);
       drawClickRipples(now, ctx, scale);
       drawFronts(ctx, scale);
@@ -1523,6 +1529,51 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ctx.fill();
       ctx.restore();
     }
+  };
+
+  // Draw each mobile warship as an owner-coloured diamond (distinct from the round
+  // transport/trade dots) with a white outline, plus a hull bar above it while
+  // damaged — the one ship type OpenFront shows health for.
+  const drawWarships = (ctx: CanvasRenderingContext2D, scale: number): void => {
+    if (runtime.warships.length === 0 || scale < 2) return;
+    const cw = ui.mapCanvas.width;
+    const ch = ui.mapCanvas.height;
+    const r = Math.max(2.6, scale * 0.5);
+    ctx.save();
+    for (const w of runtime.warships) {
+      const p = worldToScreen(w.x + 0.5, w.y + 0.5);
+      if (p.x < -r || p.y < -r || p.x > cw + r || p.y > ch + r) continue;
+      // Diamond silhouette (a square rotated 45°).
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y - r - 1.4);
+      ctx.lineTo(p.x + r + 1.4, p.y);
+      ctx.lineTo(p.x, p.y + r + 1.4);
+      ctx.lineTo(p.x - r - 1.4, p.y);
+      ctx.closePath();
+      ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y - r);
+      ctx.lineTo(p.x + r, p.y);
+      ctx.lineTo(p.x, p.y + r);
+      ctx.lineTo(p.x - r, p.y);
+      ctx.closePath();
+      ctx.fillStyle = rgbaToCss(playerColor(w.playerId));
+      ctx.fill();
+      // Hull bar (only when hurt), so a healthy fleet stays uncluttered.
+      const frac = w.maxHealth > 0 ? Math.max(0, Math.min(1, w.health / w.maxHealth)) : 1;
+      if (frac < 1) {
+        const bw = r * 2.4;
+        const bh = Math.max(1.2, scale * 0.14);
+        const bx = p.x - bw / 2;
+        const by = p.y - r - 3 - bh;
+        ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+        ctx.fillRect(bx - 0.6, by - 0.6, bw + 1.2, bh + 1.2);
+        ctx.fillStyle = frac > 0.5 ? "rgb(74, 222, 128)" : frac > 0.25 ? "rgb(250, 204, 21)" : "rgb(248, 113, 113)";
+        ctx.fillRect(bx, by, bw * frac, bh);
+      }
+    }
+    ctx.restore();
   };
 
   /**

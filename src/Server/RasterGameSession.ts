@@ -17,6 +17,7 @@ import type {
   RasterServerMessage,
   RasterShip,
   RasterTrade,
+  RasterWarship,
   RasterTrain,
 } from "../Core/types.js";
 import { LAND_ATTACK_REACH, RASTER_MATCH_DURATION_SECONDS, SPAWN_IMMUNITY_SECONDS } from "../Core/rasterCombatConfig.js";
@@ -258,6 +259,8 @@ export class RasterGameSession {
   private lastTrains: RasterTrain[] = [];
   /** Trade ships sailing between ports as of the most recent tick. */
   private lastTradeShips: RasterTrade[] = [];
+  /** Mobile warships at sea as of the most recent tick, for the client to draw. */
+  private lastWarships: RasterWarship[] = [];
   /** Determines spawn placement: each new subscriber takes the next slot. */
   private nextPlayerId: PlayerId = 1;
   private matchEndedBroadcast = false;
@@ -762,6 +765,16 @@ export class RasterGameSession {
     this.lastRails = this.conflict.railLinks().map((r) => ({ playerId: r.owner, points: r.points }));
     this.lastTrains = this.conflict.activeTrains().map((t) => ({ playerId: t.owner, x: t.x, y: t.y }));
     this.lastTradeShips = this.conflict.tradeShips().map((t) => ({ playerId: t.owner, x: t.x, y: t.y }));
+    // Mobile warships → wire records with hull, so the client can draw each moving
+    // warship and its health bar (the one ship type OpenFront gives a hull bar).
+    this.lastWarships = this.conflict.warshipStates().map((w) => ({
+      shipId: w.id,
+      playerId: w.owner,
+      x: this.map.x(w.tile),
+      y: this.map.y(w.tile),
+      health: w.health,
+      maxHealth: w.maxHealth,
+    }));
 
     // Append a single event line per command issued this tick, newest first.
     if (eventLines.length > 0) {
@@ -1196,6 +1209,7 @@ export class RasterGameSession {
       rails: this.lastRails,
       trains: this.lastTrains,
       tradeShips: this.lastTradeShips,
+      warships: this.lastWarships,
       eliminated: this.eliminated,
       alliances: this.alliances.pairs(),
       allianceRequests: this.alliances.proposals(),

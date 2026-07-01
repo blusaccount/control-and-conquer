@@ -3,7 +3,7 @@ import type { TerritoryGrid } from "../Core/TerritoryGrid.js";
 import { maxTroops, troopsPerSecond } from "../Core/rasterCombatConfig.js";
 import { goldPerSecond } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
-import type { RasterAlliancePair, RasterAllianceRequest, RasterAttackFront, RasterBuilding, RasterCrossing, RasterMatchPhase, RasterPlayerInfo, RasterRail, RasterShip, RasterSnapshot, RasterTrade, RasterTrain } from "../Core/types.js";
+import type { RasterAlliancePair, RasterAllianceRequest, RasterAttackFront, RasterBuilding, RasterCrossing, RasterMatchPhase, RasterPlayerInfo, RasterRail, RasterShip, RasterSnapshot, RasterTrade, RasterTrain, RasterWarship } from "../Core/types.js";
 
 /**
  * Stable 12-hex-char fingerprint of the terrain bytes, used purely as a
@@ -134,6 +134,8 @@ export interface BuildSnapshotInput {
   trains?: RasterTrain[];
   /** Trade ships sailing between ports this snapshot (for the client to draw dots). */
   tradeShips?: RasterTrade[];
+  /** Mobile warships at sea this snapshot (for the client to draw ships + hull bars). */
+  warships?: RasterWarship[];
   /**
    * When set, the snapshot carries this incremental ownership update instead of
    * the full owner raster. When omitted, the full raster is encoded and sent.
@@ -168,7 +170,7 @@ export interface BuildSnapshotInput {
  * since they never read the ownership raster at all.
  */
 export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot => {
-  const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, terrainHash, winnerPlayerId, recentEvents, crossings, ships, fronts, rails = [], trains = [], tradeShips = [], eliminated, alliances = [], allianceRequests = [] } = input;
+  const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, terrainHash, winnerPlayerId, recentEvents, crossings, ships, fronts, rails = [], trains = [], tradeShips = [], warships = [], eliminated, alliances = [], allianceRequests = [] } = input;
 
   const players: RasterPlayerInfo[] = [];
   for (const id of grid.players()) {
@@ -224,6 +226,7 @@ export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
     rails,
     trains,
     tradeShips,
+    warships,
     fronts,
     alliances,
     allianceRequests,
