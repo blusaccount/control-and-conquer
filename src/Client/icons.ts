@@ -132,10 +132,15 @@ const factoryDef = (): Group[] => {
   return [{ rule: "evenodd", segs: [...outline, { op: "CIRCLE", cx: 0, cy: 0, r: holeR }] }];
 };
 
-/** Shield: flat top, curved sides tapering to a point. */
+/**
+ * Shield: flat top, curved sides tapering to a point, with a cross-shaped
+ * cutout — like the city's door, an evenodd hole that reveals the
+ * owner-coloured badge behind it, giving the shield an emblem without
+ * needing a second colour.
+ */
 const fortDef = (): Group[] => [
   {
-    rule: "nonzero",
+    rule: "evenodd",
     segs: [
       { op: "M", x: -0.7, y: -0.7 },
       { op: "L", x: 0.7, y: -0.7 },
@@ -143,6 +148,8 @@ const fortDef = (): Group[] => [
       { op: "Q", cx: 0.7, cy: 0.55, x: 0, y: 0.9 },
       { op: "Q", cx: -0.7, cy: 0.55, x: -0.7, y: 0.05 },
       { op: "Z" },
+      ...rectSegs(-0.12, -0.46, 0.12, 0.42),
+      ...rectSegs(-0.34, -0.14, 0.34, 0.1),
     ],
   },
 ];
@@ -170,8 +177,9 @@ const warshipDef = (): Group[] => [
       ...rectSegs(-0.29, -0.46, -0.21, -0.18),
       // Forward gun turret.
       ...rectSegs(0.02, 0.02, 0.32, 0.32),
-      // Cannon barrel, pointing toward the bow.
-      ...rectSegs(0.26, -0.05, 0.78, 0.05),
+      // Cannon barrel: emerges from the turret's front face at mid-height
+      // (not floating above it) and points toward the bow.
+      ...rectSegs(0.18, 0.11, 0.68, 0.19),
     ],
   },
 ];
