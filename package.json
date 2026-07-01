@@ -15,8 +15,9 @@
     "url": "git+https://github.com/blusaccount/control-and-conquer.git"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "Lukas Becker",
+  "license": "UNLICENSED",
+  "private": true,
   "bugs": {
     "url": "https://github.com/blusaccount/control-and-conquer/issues"
   },

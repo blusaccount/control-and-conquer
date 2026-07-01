@@ -186,12 +186,46 @@
       }
       .hud-resources .res-muted { color: var(--text-dim); font-weight: 600; }
 
-      /* ---- Top-right: leaderboard ---------------------------------------- */
-      .hud-leaderboard {
+      /* ---- Top-right: frame controls (timer, fullscreen, leave) ---------- */
+      .hud-frame {
         top: 12px;
         right: 12px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+      }
+      .hud-frame .frame-timer {
+        font-size: 14px;
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        color: var(--text);
+        padding: 0 4px;
+      }
+      .frame-btn {
+        width: 30px;
+        height: 30px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 15px;
+        line-height: 1;
+        border: 1px solid var(--panel-border);
+        border-radius: 8px;
+        background: transparent;
+        color: var(--text-dim);
+        cursor: pointer;
+        transition: color 0.12s, border-color 0.12s;
+      }
+      .frame-btn:hover { color: var(--text); border-color: var(--accent); }
+      .frame-btn.frame-btn-leave:hover { color: #f87171; border-color: #f87171; }
+
+      /* ---- Top-right: leaderboard (sits below the frame-controls bar) ----- */
+      .hud-leaderboard {
+        top: 58px;
+        right: 12px;
         width: 336px;
-        max-height: 42vh;
+        max-height: 38vh;
         display: flex;
         flex-direction: column;
         padding: 12px 12px 8px;
@@ -729,6 +763,12 @@
         <span class="res res-muted">Connecting…</span>
       </div>
 
+      <div class="panel hud-frame">
+        <span id="matchTimer" class="frame-timer">0:00</span>
+        <button id="fullscreenButton" class="frame-btn" type="button" title="Toggle fullscreen" aria-label="Toggle fullscreen">⛶</button>
+        <button id="leaveButton" class="frame-btn frame-btn-leave" type="button" title="Leave match" aria-label="Leave match">⏻</button>
+      </div>
+
       <div class="panel hud-leaderboard">
         <div class="panel-head">Leaderboard</div>
         <div id="leaderboard"><div class="lb-empty">Waiting for the match…</div></div>
@@ -741,6 +781,9 @@
         <div class="panel-head">Build</div>
         <div id="buildMenu" class="build-menu"></div>
         <div id="buildHint" class="hint"></div>
+        <div class="panel-divider"></div>
+        <div class="panel-head">Weapons</div>
+        <div id="weaponsMenu" class="build-menu"></div>
       </div>
 
       <div class="panel hud-attack">
@@ -771,6 +814,10 @@
           <label class="settings-row">
             <input id="toggleEvents" type="checkbox" />
             <span>Show event log<span class="settings-sub">The bottom-right feed of captures and eliminations.</span></span>
+          </label>
+          <label class="settings-row">
+            <input id="toggleSound" type="checkbox" />
+            <span>Sound effects<span class="settings-sub">Short cues for expanding, alliances, and match end.</span></span>
           </label>
         </div>
       </div>

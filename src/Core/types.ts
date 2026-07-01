@@ -107,6 +107,30 @@ export interface RasterShip {
 }
 
 /**
+ * An Atom Bomb in flight this snapshot: launched by `playerId`, currently at
+ * (`x`,`y`) en route to (`toX`,`toY`). Sent every snapshot while airborne so
+ * the client can draw it travelling toward its target.
+ */
+export interface RasterNuke {
+  nukeId: number;
+  playerId: number;
+  x: number;
+  y: number;
+  toX: number;
+  toY: number;
+}
+
+/**
+ * An Atom Bomb detonation resolved this tick, at (`x`,`y`) — the client flashes
+ * an explosion there, same idea as {@link RasterCrossing}'s landing flash.
+ */
+export interface RasterNukeDetonation {
+  playerId: number;
+  x: number;
+  y: number;
+}
+
+/**
  * An active land attack this snapshot: `troops` of `playerId` are pushing the
  * front against `targetId` (0 = neutral land), centred on tile (`x`,`y`). The
  * client draws the troop count at this point so it is visible at which border
@@ -232,6 +256,18 @@ export interface RasterSnapshot {
   crossings: RasterCrossing[];
   /** Transport ships currently in flight (empty when none are at sea). */
   ships: RasterShip[];
+  /** Atom Bombs currently in flight (empty when none are airborne). */
+  nukes: RasterNuke[];
+  /** Atom Bomb detonations resolved this tick (empty on most ticks). */
+  nukeDetonations: RasterNukeDetonation[];
+  /**
+   * Base64-packed little-endian `Uint32Array` of tile indices currently under
+   * radioactive fallout (nuked ground that recolours and can't be captured
+   * until it decays). Omitted when nothing is irradiated; an empty string
+   * clears the client's last set. Sent whole each snapshot while any exist —
+   * a blast is a few thousand tiles that decay within seconds, so it's bounded.
+   */
+  falloutBase64?: string;
   /** Structures placed on the map (empty when none have been built). */
   buildings: RasterBuilding[];
   /** Auto-routed railroads (empty until a factory wires up a city/port). */
@@ -275,7 +311,9 @@ export type RasterRejectReason =
   /** The requested building type is unknown. */
   | "INVALID_BUILDING"
   /** The targeted tile belongs to a current ally — allies can't be attacked. */
-  | "ALLIED";
+  | "ALLIED"
+  /** No owned Missile Silo is off cooldown to launch from. */
+  | "NO_SILO_READY";
 
 /** Sent by the client to expand its border toward a clicked tile. */
 export interface RasterExpandIntent {
@@ -297,11 +335,19 @@ export interface RasterBuildIntent {
   building: BuildingType;
 }
 
+/** Sent by the client to launch an Atom Bomb from a ready Missile Silo. */
+export interface RasterNukeIntent {
+  /** Tile column (0..width-1) of the target. */
+  targetX: number;
+  /** Tile row (0..height-1) of the target. */
+  targetY: number;
+}
+
 export interface RasterActionRejectedEvent {
   reason: RasterRejectReason;
   message: string;
-  /** The intent that was rejected — an expand/sea click or a build request. */
-  intent: RasterExpandIntent | RasterBuildIntent;
+  /** The intent that was rejected — an expand/sea click, build, or nuke request. */
+  intent: RasterExpandIntent | RasterBuildIntent | RasterNukeIntent;
 }
 
 /** Assignment payload for raster mode. */
@@ -355,6 +401,7 @@ export interface RasterMatchEndedPayload {
 export type RasterClientMessage =
   | { type: "CLIENT_RASTER_EXPAND"; payload: RasterExpandIntent }
   | { type: "CLIENT_RASTER_BUILD"; payload: RasterBuildIntent }
+  | { type: "CLIENT_RASTER_NUKE"; payload: RasterNukeIntent }
   | RasterJoinClientMessage
   | RasterSpawnClientMessage
   | RasterAllyProposeClientMessage

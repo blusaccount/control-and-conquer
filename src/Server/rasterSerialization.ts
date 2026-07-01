@@ -3,7 +3,7 @@ import type { TerritoryGrid } from "../Core/TerritoryGrid.js";
 import { maxTroops, troopsPerSecond } from "../Core/rasterCombatConfig.js";
 import { goldPerSecond } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
-import type { RasterAlliancePair, RasterAllianceRequest, RasterAttackFront, RasterBuilding, RasterCrossing, RasterMatchPhase, RasterPlayerInfo, RasterRail, RasterShip, RasterSnapshot, RasterTrade, RasterTrain } from "../Core/types.js";
+import type { RasterAlliancePair, RasterAllianceRequest, RasterAttackFront, RasterBuilding, RasterCrossing, RasterMatchPhase, RasterNuke, RasterNukeDetonation, RasterPlayerInfo, RasterRail, RasterShip, RasterSnapshot, RasterTrade, RasterTrain } from "../Core/types.js";
 
 /**
  * Stable 12-hex-char fingerprint of the terrain bytes, used purely as a
@@ -96,6 +96,18 @@ export const encodeOwnerDelta = (
   return { deltaBase64: bytesToBase64(bytes), changed };
 };
 
+/**
+ * Serialize a list of tile indices (e.g. active fallout tiles) to base64 as a
+ * packed little-endian `Uint32Array`, so the client can decode them independent
+ * of host byte order — same convention as {@link encodeOwners}.
+ */
+export const encodeTileList = (refs: readonly number[]): string => {
+  const bytes = new Uint8Array(refs.length * 4);
+  const view = new DataView(bytes.buffer);
+  for (let i = 0; i < refs.length; i += 1) view.setUint32(i * 4, refs[i], true);
+  return bytesToBase64(bytes);
+};
+
 /** Per-player metadata needed to build a `RasterPlayerInfo`. */
 export interface PlayerMeta {
   name: string;
@@ -126,6 +138,12 @@ export interface BuildSnapshotInput {
   crossings: RasterCrossing[];
   /** Transport ships in flight this snapshot (for client ship animation). */
   ships: RasterShip[];
+  /** Atom Bombs in flight this snapshot (for client nuke animation). */
+  nukes: RasterNuke[];
+  /** Atom Bomb detonations resolved this tick (for the explosion flash). */
+  nukeDetonations: RasterNukeDetonation[];
+  /** Tile indices currently under fallout (for the lingering radioactive tint). */
+  falloutTiles?: number[];
   /** Active land-attack fronts this tick (for the on-map troop-count labels). */
   fronts: RasterAttackFront[];
   /** Auto-routed railroads this snapshot (for the client to draw track). */
@@ -168,7 +186,7 @@ export interface BuildSnapshotInput {
  * since they never read the ownership raster at all.
  */
 export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot => {
-  const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, terrainHash, winnerPlayerId, recentEvents, crossings, ships, fronts, rails = [], trains = [], tradeShips = [], eliminated, alliances = [], allianceRequests = [] } = input;
+  const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, terrainHash, winnerPlayerId, recentEvents, crossings, ships, nukes, nukeDetonations, falloutTiles = [], fronts, rails = [], trains = [], tradeShips = [], eliminated, alliances = [], allianceRequests = [] } = input;
 
   const players: RasterPlayerInfo[] = [];
   for (const id of grid.players()) {
@@ -220,6 +238,9 @@ export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
     recentEvents,
     crossings,
     ships,
+    nukes,
+    nukeDetonations,
+    ...(falloutTiles.length > 0 ? { falloutBase64: encodeTileList(falloutTiles) } : { falloutBase64: "" }),
     buildings,
     rails,
     trains,
