@@ -348,34 +348,42 @@ export const defenderLossPerTile = (troops: number, tiles: number): number => {
 };
 
 /**
- * Frontier ordering weights. A land attack captures the tiles of its frontier
- * in *priority* order rather than raw tile order, so fronts grow organically —
- * filling pockets and eating the easy ground first the way OpenFront's conquest
- * queue does. Each frontier tile gets a priority (lower = captured sooner):
+ * Frontier ordering, mirroring OpenFront's tile-capture priority. A land attack
+ * captures its frontier in *priority* order (lower = captured sooner), matching
+ * OpenFront's `addNeighbors` heap key:
  *
- *   priority = max(FRONTIER_PRIORITY_FLOOR,
- *                  1 + magnitude * FRONTIER_MAGNITUDE_WEIGHT
- *                    - ownedNeighbours * FRONTIER_SURROUND_WEIGHT) * jitter
+ *   priority = jitter · (1 − ownedNeighbours · 0.5 + terrainPriorityWeight/2)
  *
- * The **surround** term must dominate so a front spreads as an even, radial ring
- * rather than a thin tendril. A frontier tile has 1–4 owned neighbours, so the
- * surround term spans at most ~2.4; land elevation (`magnitude`) spans 1–30, so
- * if its weight were comparable the front would simply chase the lowest ground
- * across the whole map — snaking single-file along a coast or valley instead of
- * bulging outward, and extending that thread rather than back-filling the
- * concavities behind it. `FRONTIER_MAGNITUDE_WEIGHT` is therefore kept small: a
- * tile hugged by more of the attacker's own land (a pocket/bay) is always pulled
- * in before the perimeter pushes further out, so borders smooth into a blob;
- * elevation only gently biases *which* perimeter tile goes next (and high ground
- * already costs more troops to take — see {@link terrainLossMultiplier}).
- * `jitter` is a deterministic per-tile/-tick wobble (no RNG, so replays stay
- * stable) that scatters captures among otherwise-equal perimeter tiles, keeping
- * the ring from advancing lopsidedly along one edge.
+ * — the exact structural terms of OpenFront's formula: the **surround** term
+ * (`ownedNeighbours · 0.5`) pulls a tile hugged by more of the attacker's own
+ * land (a pocket/bay) in first, so the front back-fills concavities and grows as
+ * a smooth radial blob rather than a thin tendril; the **terrain** term biases
+ * higher ground *later* (plains weight 1, highland 1.5, mountain 2 → +0.5/+0.75/+1),
+ * so easy low ground is eaten before dear peaks. A fully-surrounded pocket goes
+ * negative and is always taken before any perimeter tile.
+ *
+ * `jitter` scatters captures among otherwise-equal perimeter tiles so the ring
+ * doesn't advance lopsidedly. OpenFront draws it from an RNG in the range 10–17;
+ * we cannot — a deterministic engine must keep replays identical — so we use a
+ * **small** deterministic per-tile/-tick wobble instead. Kept tight on purpose:
+ * OpenFront's wide random jitter can occasionally reorder a low-ground tile after
+ * a high-ground one, but a deterministic port needs the structural terms to stay
+ * dominant, so the surround/terrain ordering is a firm guarantee here rather than
+ * a probabilistic tendency. This is the one place a faithful port must diverge.
  */
-export const FRONTIER_MAGNITUDE_WEIGHT = 0.02;
-export const FRONTIER_SURROUND_WEIGHT = 0.6;
-export const FRONTIER_PRIORITY_FLOOR = 0.05;
+export const FRONTIER_SURROUND_WEIGHT = 0.5;
 export const FRONTIER_JITTER_SPAN = 0.15;
+
+/**
+ * OpenFront's per-band tile-priority weight (plains 1, highland 1.5, mountain 2),
+ * which enters the capture-priority key as `weight / 2` — so higher ground sorts
+ * *later*. Bucketed by the same elevation thresholds as {@link terrainCombat}.
+ */
+export const terrainPriorityWeight = (elevation: number): number => {
+  if (elevation <= TERRAIN_PLAINS_MAX_ELEVATION) return 1;
+  if (elevation <= TERRAIN_HIGHLAND_MAX_ELEVATION) return 1.5;
+  return 2;
+};
 
 /**
  * Directional pull toward the tile a player actually clicked. When an attack

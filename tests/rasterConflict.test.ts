@@ -24,6 +24,7 @@ import {
   defenderStrengthFactor,
   neutralLossPerTile,
   terrainCombat,
+  terrainPriorityWeight,
   TRAITOR_DURATION_TICKS,
 } from "../src/Core/rasterCombatConfig.js";
 
@@ -429,6 +430,15 @@ test("frontier priority captures easy low ground before high ground", () => {
 
   assert.equal(grid.ownerOf(2), 1, "flat low ground is taken first");
   assert.equal(grid.ownerOf(0), NEUTRAL_PLAYER, "dear mountain ground is left for last");
+});
+
+test("terrainPriorityWeight buckets elevation into OpenFront's 1 / 1.5 / 2 bands", () => {
+  assert.equal(terrainPriorityWeight(0), 1, "plains");
+  assert.equal(terrainPriorityWeight(9), 1, "top of the plains band");
+  assert.equal(terrainPriorityWeight(10), 1.5, "highland");
+  assert.equal(terrainPriorityWeight(19), 1.5, "top of the highland band");
+  assert.equal(terrainPriorityWeight(20), 2, "mountain");
+  assert.equal(terrainPriorityWeight(30), 2, "top of the mountain band");
 });
 
 test("expansion spreads as an even blob, not a contour-hugging tendril", () => {

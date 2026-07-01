@@ -10,10 +10,9 @@ import {
   defenderLossPerTile,
   defenderStrengthFactor,
   FRONTIER_JITTER_SPAN,
-  FRONTIER_MAGNITUDE_WEIGHT,
-  FRONTIER_PRIORITY_FLOOR,
   FRONTIER_SURROUND_WEIGHT,
   FRONTIER_TOWARD_WEIGHT,
+  terrainPriorityWeight,
   largeAttackerLossFactor,
   largeDefenderLossFactor,
   maxTroops,
@@ -470,28 +469,25 @@ export class RasterConflict {
   }
 
   /**
-   * Capture priority of a single frontier tile (lower = taken sooner). Tiles
-   * enclosed by more of the attacker's own territory are grabbed first so a front
-   * fills its concavities and advances as a smooth, radial bulge rather than
-   * snaking outward as a thin tendril — the organic feel of OpenFront's conquest
-   * queue. Elevation only gently biases ties between equally-enclosed tiles (the
-   * surround term dominates; see the weights in `rasterCombatConfig`). The
-   * `jitter` is a deterministic hash of tile and tick (no RNG, so replays stay
-   * identical) that scatters captures across otherwise-equal perimeter tiles so
-   * the ring grows evenly instead of advancing lopsidedly along one edge.
+   * Capture priority of a single frontier tile (lower = taken sooner), mirroring
+   * OpenFront's structural key: `jitter · (1 − ownedNeighbours·0.5 + magWeight/2)`.
+   * Tiles enclosed by more of the attacker's own territory (pockets) score lower —
+   * even negative — so the front back-fills concavities and grows as a smooth
+   * radial blob rather than a tendril; higher ground scores higher, so easy low
+   * ground is eaten first. The `jitter` is a small deterministic hash of tile and
+   * tick (OpenFront uses a wide RNG range we can't, so replays stay identical)
+   * that scatters otherwise-equal perimeter tiles; see `rasterCombatConfig`.
    */
   private tilePriority(attacker: PlayerId, ref: TileRef): number {
     let ownedNeighbours = 0;
     for (const n of this.grid.map.neighbors(ref)) {
       if (this.grid.ownerOf(n) === attacker) ownedNeighbours += 1;
     }
-    const base = Math.max(
-      FRONTIER_PRIORITY_FLOOR,
-      1 + this.grid.map.magnitude(ref) * FRONTIER_MAGNITUDE_WEIGHT - ownedNeighbours * FRONTIER_SURROUND_WEIGHT,
-    );
+    const structural =
+      1 - ownedNeighbours * FRONTIER_SURROUND_WEIGHT + terrainPriorityWeight(this.grid.map.magnitude(ref)) / 2;
     // Deterministic [0,1) wobble from a cheap integer hash of (ref, tick).
     const hash = ((ref * 2654435761 + this.tickCount * 40503) >>> 0) / 0x100000000;
-    return base * (1 + hash * FRONTIER_JITTER_SPAN);
+    return structural * (1 + hash * FRONTIER_JITTER_SPAN);
   }
 
   /**
