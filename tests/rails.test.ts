@@ -114,10 +114,13 @@ test("links respect OpenFront's station range (min and max)", () => {
   assert.equal(inRange.edges.length, 1, "within the max range they link");
 });
 
-test("a factory links every in-range station (no artificial fan-out cap)", () => {
+test("the network is a spanning forest, not a dense every-pair mesh", () => {
   const grid = landGrid(120, 120, 1);
-  // A factory hub ringed by cities all >=15 and <=110 tiles away: OpenFront links
-  // every one (no per-station cap of our own).
+  // A factory hub ringed by 8 cities, all within range of the hub AND of their
+  // ring neighbours. A full mesh would lay a link for every in-range pair (well
+  // over a dozen criss-crossing tracks); OpenFront instead skips any link whose
+  // endpoints are already reachable, so all 9 stations wire up with exactly 8
+  // links (a spanning tree: stations − 1) — clean, no redundant track.
   const stations: RailStation[] = [stationAt(grid, 60, 60, 1, "factory")];
   const ring: Array<[number, number]> = [
     [60, 40], [60, 80], [40, 60], [80, 60], [42, 42], [78, 78], [42, 78], [78, 42],
@@ -125,9 +128,23 @@ test("a factory links every in-range station (no artificial fan-out cap)", () =>
   for (const [x, y] of ring) stations.push(stationAt(grid, x, y, 1, "city"));
 
   const network = computeRailNetwork(grid.map, stations);
+  assert.equal(network.edges.length, stations.length - 1, "a spanning tree: N−1 links");
+
+  // Every station is still reachable from the hub through the network (fully
+  // connected), even though no redundant links were laid.
   const hub = grid.map.ref(60, 60);
-  const hubLinks = network.adjacency.get(hub)?.length ?? 0;
-  assert.equal(hubLinks, ring.length, "the hub links all in-range ring stations");
+  const seen = new Set<number>([hub]);
+  const queue: number[] = [hub];
+  while (queue.length > 0) {
+    const cur = queue.pop()!;
+    for (const nb of network.adjacency.get(cur) ?? []) {
+      if (!seen.has(nb)) {
+        seen.add(nb);
+        queue.push(nb);
+      }
+    }
+  }
+  assert.equal(seen.size, stations.length, "all stations reachable from the hub");
 });
 
 test("rails never link stations of different owners", () => {
