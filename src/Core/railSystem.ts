@@ -164,14 +164,19 @@ export class RailSystem {
         continue;
       }
 
-      // Arrived. A city/port still owned by the train's owner pays out, with
-      // OpenFront's per-stop decay: the payout eases the longer the train runs.
+      // Arrived at a node. A **junction** (a mid-track tap, not in stationType)
+      // is pure pass-through: no payout, and it doesn't count as a visited stop —
+      // the train just rolls on through it toward the next station.
       const arrivedType = this.stationType.get(train.to);
-      if (arrivedType && RAIL_PAYOUT_TYPES.includes(arrivedType) && this.grid.ownerOf(train.to) === train.owner) {
-        this.grid.addGold(train.owner, trainGold(train.visits));
+      if (arrivedType) {
+        // A city/port still owned by the train's owner pays out, with OpenFront's
+        // per-stop decay: the payout eases the longer the train runs.
+        if (RAIL_PAYOUT_TYPES.includes(arrivedType) && this.grid.ownerOf(train.to) === train.owner) {
+          this.grid.addGold(train.owner, trainGold(train.visits));
+        }
+        train.visits += 1;
+        if (train.visits >= TRAIN_MAX_VISITS) continue;
       }
-      train.visits += 1;
-      if (train.visits >= TRAIN_MAX_VISITS) continue;
 
       const next = this.nextHop(train.to, train.from);
       if (next === null) continue; // Isolated station; retire.
