@@ -5,8 +5,10 @@ import { TerritoryGrid } from "../src/Core/TerritoryGrid.js";
 import { TradeSystem } from "../src/Core/tradeSystem.js";
 import {
   tradeShipGold,
+  tradeFleetCap,
+  tradePayoutDistance,
   TRADE_SHIP_SPAWN_INTERVAL_TICKS,
-  TRADE_MAX_PER_PLAYER,
+  TRADE_REFERENCE_SPAN,
 } from "../src/Core/buildings.js";
 
 /** Single-row map from a mask: '#' = land, ' ' = water. */
@@ -75,5 +77,35 @@ test("a player's trade fleet is capped", () => {
   for (const ref of [3, 5]) grid.placeBuilding(ref, "port"); // both border water tile 4
   const trade = new TradeSystem(grid);
   for (let tick = 0; tick <= TRADE_SHIP_SPAWN_INTERVAL_TICKS * 3; tick += 1) trade.advance(tick);
-  assert.ok(trade.shipCount <= TRADE_MAX_PER_PLAYER, "the fleet never exceeds the per-player cap");
+  // Two ports → the cap is the floor (tradeFleetCap(2)); the fleet never exceeds it.
+  assert.ok(trade.shipCount <= tradeFleetCap(2), "the fleet never exceeds the per-player cap");
+});
+
+test("the trade-fleet cap scales with owned ports (income tracks the coastal empire)", () => {
+  // More ports must lift the cap, so a bigger coastal empire sustains more trade.
+  assert.equal(tradeFleetCap(1), 4, "a lone port floats the base fleet");
+  assert.equal(tradeFleetCap(4), 4, "the base is the floor");
+  assert.equal(tradeFleetCap(10), 10, "each extra port beyond the floor adds a ship");
+  assert.equal(tradeFleetCap(1000), 40, "a huge navy is ceilinged");
+  assert.ok(tradeFleetCap(20) > tradeFleetCap(5), "more ports → a larger cap");
+});
+
+test("trade is priced by a map-relative distance so a port pays back on small maps", () => {
+  // The same physical trip pays far more on a small map than on an OpenFront-scale
+  // one, because a short-map distance is scaled up toward the reference span before
+  // pricing — otherwise every hop would sit in the sigmoid's penalised tail.
+  const dist = 60;
+  const smallSpan = 120; // e.g. a ~60×60 sketch map
+  const largeSpan = TRADE_REFERENCE_SPAN * 2; // an Earth-scale map, priced verbatim
+  assert.ok(
+    tradePayoutDistance(dist, smallSpan) > tradePayoutDistance(dist, largeSpan),
+    "a short-map trip is priced at a longer effective distance",
+  );
+  // A map at/above the reference span is unchanged (factor 1) — large maps keep
+  // OpenFront's exact numbers.
+  assert.equal(tradePayoutDistance(dist, largeSpan), dist, "large maps are priced verbatim");
+  assert.ok(
+    tradeShipGold(tradePayoutDistance(dist, smallSpan)) > tradeShipGold(dist),
+    "so the small-map port earns meaningfully more per trip",
+  );
 });

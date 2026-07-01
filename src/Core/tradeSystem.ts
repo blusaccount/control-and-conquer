@@ -20,9 +20,10 @@
 import type { TileRef } from "./GameMap.js";
 import { type PlayerId, type TerritoryGrid } from "./TerritoryGrid.js";
 import {
-  TRADE_MAX_PER_PLAYER,
   TRADE_SHIP_SPAWN_INTERVAL_TICKS,
   TRADE_SHIP_TILES_PER_TICK,
+  tradeFleetCap,
+  tradePayoutDistance,
   tradeShipGold,
 } from "./buildings.js";
 
@@ -133,7 +134,10 @@ export class TradeSystem {
       }
       // Arrived: pay both ports their gold, provided each still exists. The
       // owners are read live so a port captured mid-voyage pays its new owner.
-      const gold = tradeShipGold(ship.dist);
+      // The trip is *priced* at a map-relative distance so trade pays back a port
+      // on small maps too, not just OpenFront-scale ones (see tradePayoutDistance).
+      const span = this.grid.map.width + this.grid.map.height;
+      const gold = tradeShipGold(tradePayoutDistance(ship.dist, span));
       if (this.grid.buildingAt(ship.from) === "port") this.grid.addGold(this.grid.ownerOf(ship.from), gold);
       if (this.grid.buildingAt(ship.to) === "port") this.grid.addGold(this.grid.ownerOf(ship.to), gold);
     }
@@ -151,11 +155,15 @@ export class TradeSystem {
     const epoch = Math.floor(tick / TRADE_SHIP_SPAWN_INTERVAL_TICKS);
     const liveByOwner = new Map<PlayerId, number>();
     for (const ship of this.ships) liveByOwner.set(ship.owner, (liveByOwner.get(ship.owner) ?? 0) + 1);
+    // Ports each owner holds — the fleet cap scales with this so more ports means
+    // more simultaneous trade (income tracks the coastal empire, as in OpenFront).
+    const portsByOwner = new Map<PlayerId, number>();
+    for (const p of this.ports) portsByOwner.set(p.owner, (portsByOwner.get(p.owner) ?? 0) + 1);
 
     const sorted = [...this.ports].sort((a, b) => a.ref - b.ref);
     for (const src of sorted) {
       if (src.sea < 0) continue;
-      if ((liveByOwner.get(src.owner) ?? 0) >= TRADE_MAX_PER_PLAYER) continue;
+      if ((liveByOwner.get(src.owner) ?? 0) >= tradeFleetCap(portsByOwner.get(src.owner) ?? 0)) continue;
       // Partners: any other port on the same sea body (any owner — trade flows
       // even between rivals, as in OpenFront, enriching both ends).
       const partners = sorted.filter((p) => p.ref !== src.ref && p.sea === src.sea);

@@ -225,8 +225,20 @@ export const TRADE_SHIP_SPAWN_INTERVAL_TICKS = 40;
 /** Tiles a trade ship advances per tick along its (straight) sea lane. */
 export const TRADE_SHIP_TILES_PER_TICK = 1;
 
-/** Most trade ships any one player may have at sea simultaneously. */
-export const TRADE_MAX_PER_PLAYER = 6;
+/**
+ * Trade-fleet cap for a player, as a function of how many ports they own. It
+ * **scales with the coastal empire** so building more ports keeps raising gold
+ * income instead of plateauing: OpenFront soft-caps the fleet far out of a normal
+ * player's reach (a sigmoid near ~400 ships), so in practice each port sustains
+ * its own ship. We mirror that feel with a per-port cap between a small floor
+ * ({@link TRADE_FLEET_BASE}, so even a lone trading port floats a couple of ships)
+ * and a hard ceiling ({@link TRADE_FLEET_MAX}, so a coast blanketed in ports still
+ * can't swarm the sea). One in-flight ship per owned port in between.
+ */
+export const TRADE_FLEET_BASE = 4;
+export const TRADE_FLEET_MAX = 40;
+export const tradeFleetCap = (ports: number): number =>
+  Math.min(TRADE_FLEET_MAX, Math.max(TRADE_FLEET_BASE, Math.max(0, ports)));
 
 /**
  * Distance (tiles) below which trade is heavily penalised by the payout sigmoid,
@@ -234,6 +246,27 @@ export const TRADE_MAX_PER_PLAYER = 6;
  * more than short hops, so spreading ports out is rewarded.
  */
 export const TRADE_SHIP_SHORT_RANGE_DEBUFF = 300;
+
+/**
+ * Reference map span (width + height, in tiles) at which trade distances are
+ * priced at face value. OpenFront's {@link tradeShipGold} constants (the 300-tile
+ * short-range debuff, the ~500-tile ceiling) assume a very large map; our
+ * catalogue runs from a ~100-tile sketch to a ~3000-tile Earth, and building
+ * costs are at OpenFront's *absolute* scale (a port is 125 000 everywhere). On a
+ * map smaller than this reference, every port-to-port hop would fall in the
+ * sigmoid's penalised tail, so a port could never pay back its cost — the income
+ * scale would not track the cost scale. The trade system therefore scales a
+ * short-map trip distance UP toward this reference before pricing it, so a
+ * mid-length haul is rewarded on every map; a map already at/above the reference
+ * is priced verbatim (factor 1), leaving the large Earth maps exactly as before.
+ */
+export const TRADE_REFERENCE_SPAN = 1400;
+
+/** Distance used to *price* a trade trip of `dist` tiles on a map of `span` (=w+h). */
+export const tradePayoutDistance = (dist: number, span: number): number => {
+  const factor = span > 0 ? Math.max(1, TRADE_REFERENCE_SPAN / span) : 1;
+  return Math.max(0, dist) * factor;
+};
 
 /**
  * Gold paid to *each* of the two ports when a trade ship completes a trip of
