@@ -59,59 +59,77 @@ const portDef = (): Group[] => {
   // Bowl centre sits at the shaft's bottom, so 0deg/180deg (its horizontal
   // ends) line up with the shaft and 90deg (screen-down, since y grows
   // downward) is the deepest point of the curve — a connected U, not two
-  // separate diagonal legs.
-  const bowlCy = 0.32;
-  const outerR = 0.45;
-  const innerR = 0.26;
+  // separate diagonal legs. A short hooked spur at each end (poking out and
+  // *up*, past horizontal) reads unmistakably as an anchor fluke, something
+  // a leg silhouette never does.
+  const bowlCy = 0.3;
+  const outerR = 0.44;
+  const innerR = 0.24;
   const startDeg = 180;
   const endDeg = 0;
-  const steps = 10;
+  const steps = 9;
+  const spur = 0.16;
   const toRad = (d: number): number => (d * Math.PI) / 180;
+  const arcPoint = (deg: number, r: number): { x: number; y: number } => {
+    const a = toRad(deg);
+    return { x: Math.cos(a) * r, y: bowlCy + Math.sin(a) * r };
+  };
   const bowl: Seg[] = [];
-  for (let i = 0; i <= steps; i += 1) {
-    const a = toRad(startDeg + ((endDeg - startDeg) * i) / steps);
-    bowl.push({ op: i === 0 ? "M" : "L", x: Math.cos(a) * outerR, y: bowlCy + Math.sin(a) * outerR });
+  const start = arcPoint(startDeg, outerR);
+  bowl.push({ op: "M", x: start.x, y: start.y });
+  for (let i = 1; i <= steps; i += 1) {
+    const p = arcPoint(startDeg + ((endDeg - startDeg) * i) / steps, outerR);
+    bowl.push({ op: "L", x: p.x, y: p.y });
   }
-  for (let i = steps; i >= 0; i -= 1) {
-    const a = toRad(startDeg + ((endDeg - startDeg) * i) / steps);
-    bowl.push({ op: "L", x: Math.cos(a) * innerR, y: bowlCy + Math.sin(a) * innerR });
+  // Right fluke spur: hooks out and up from the outer arc's right end.
+  bowl.push({ op: "L", x: outerR + spur, y: bowlCy - spur * 0.85 });
+  const innerRight = arcPoint(endDeg, innerR);
+  bowl.push({ op: "L", x: innerRight.x, y: innerRight.y });
+  for (let i = steps - 1; i >= 0; i -= 1) {
+    const p = arcPoint(startDeg + ((endDeg - startDeg) * i) / steps, innerR);
+    bowl.push({ op: "L", x: p.x, y: p.y });
   }
+  // Left fluke spur, mirrored.
+  bowl.push({ op: "L", x: -outerR - spur, y: bowlCy - spur * 0.85 });
   bowl.push({ op: "Z" });
   return [
     { rule: "evenodd", segs: [{ op: "CIRCLE", cx: 0, cy: -0.65, r: 0.24 }, { op: "CIRCLE", cx: 0, cy: -0.65, r: 0.12 }] },
     {
       rule: "nonzero",
       // Shaft reaches down into the bowl's curve so the two merge with no gap.
-      segs: [...rectSegs(-0.07, -0.4, 0.07, 0.55), ...rectSegs(-0.32, -0.3, 0.32, -0.18), ...bowl],
+      segs: [...rectSegs(-0.07, -0.4, 0.07, 0.5), ...rectSegs(-0.32, -0.3, 0.32, -0.18), ...bowl],
     },
   ];
 };
 
-/** Cog: 8 teeth around a ringed body. */
+/**
+ * Cog: a single continuous gear-silhouette outline (tooth tips at `outerR`,
+ * valleys at `bodyR`) with a centre hole punched through it via one evenodd
+ * fill. (An earlier version filled a solid body disc *and* a separate
+ * teeth ring, so the "hole" only ever punched through the ring — the solid
+ * disc underneath still showed through solid. A single outline sidesteps
+ * that entirely: there's nothing left under the hole to show through.)
+ */
 const factoryDef = (): Group[] => {
   const teeth = 8;
-  const innerR = 0.7;
-  const outerR = 0.88;
-  const halfAngle = ((Math.PI / teeth) * 0.6) / 2;
+  const outerR = 0.92;
   const bodyR = 0.68;
-  const holeR = 0.3;
-  const teethSegs: Seg[] = [];
+  const holeR = 0.32;
+  const toothHalfAngle = ((Math.PI / teeth) * 0.8) / 2;
+  const outline: Seg[] = [];
   for (let i = 0; i < teeth; i += 1) {
     const a = (i / teeth) * Math.PI * 2;
-    const a0 = a - halfAngle;
-    const a1 = a + halfAngle;
-    teethSegs.push(
-      { op: "M", x: Math.cos(a0) * innerR, y: Math.sin(a0) * innerR },
-      { op: "L", x: Math.cos(a0) * outerR, y: Math.sin(a0) * outerR },
-      { op: "L", x: Math.cos(a1) * outerR, y: Math.sin(a1) * outerR },
-      { op: "L", x: Math.cos(a1) * innerR, y: Math.sin(a1) * innerR },
-      { op: "Z" },
+    const toothA0 = a - toothHalfAngle;
+    const toothA1 = a + toothHalfAngle;
+    const valleyA = a + Math.PI / teeth;
+    outline.push(
+      { op: i === 0 ? "M" : "L", x: Math.cos(toothA0) * outerR, y: Math.sin(toothA0) * outerR },
+      { op: "L", x: Math.cos(toothA1) * outerR, y: Math.sin(toothA1) * outerR },
+      { op: "L", x: Math.cos(valleyA) * bodyR, y: Math.sin(valleyA) * bodyR },
     );
   }
-  return [
-    { rule: "nonzero", segs: [...teethSegs, { op: "CIRCLE", cx: 0, cy: 0, r: bodyR }] },
-    { rule: "evenodd", segs: [{ op: "CIRCLE", cx: 0, cy: 0, r: bodyR }, { op: "CIRCLE", cx: 0, cy: 0, r: holeR }] },
-  ];
+  outline.push({ op: "Z" });
+  return [{ rule: "evenodd", segs: [...outline, { op: "CIRCLE", cx: 0, cy: 0, r: holeR }] }];
 };
 
 /** Shield: flat top, curved sides tapering to a point. */
@@ -129,18 +147,31 @@ const fortDef = (): Group[] => [
   },
 ];
 
-/** Hull + bridge + forward cannon barrel — a coastal warship in side view. */
+/**
+ * Coastal warship in side view: an angular hull with a pointed bow (unlike
+ * the plain ship's flat, symmetric hull), a bridge + gun turret on deck, an
+ * antenna mast and a forward-facing cannon barrel — reads as "armed vessel"
+ * at a glance, distinct from the sail-boat silhouette.
+ */
 const warshipDef = (): Group[] => [
   {
     rule: "nonzero",
     segs: [
-      { op: "M", x: -0.9, y: 0.35 },
-      { op: "L", x: 0.9, y: 0.35 },
-      { op: "L", x: 0.65, y: 0.7 },
-      { op: "L", x: -0.65, y: 0.7 },
+      // Hull: flat stern (left), pointed bow (right).
+      { op: "M", x: -0.88, y: 0.32 },
+      { op: "L", x: 0.55, y: 0.32 },
+      { op: "L", x: 0.88, y: 0.55 },
+      { op: "L", x: 0.5, y: 0.75 },
+      { op: "L", x: -0.65, y: 0.75 },
       { op: "Z" },
-      ...rectSegs(-0.25, -0.2, 0.25, 0.35),
-      ...rectSegs(0.2, -0.06, 0.8, 0.06),
+      // Bridge (aft superstructure).
+      ...rectSegs(-0.42, -0.18, -0.08, 0.32),
+      // Antenna mast on the bridge.
+      ...rectSegs(-0.29, -0.46, -0.21, -0.18),
+      // Forward gun turret.
+      ...rectSegs(0.02, 0.02, 0.32, 0.32),
+      // Cannon barrel, pointing toward the bow.
+      ...rectSegs(0.26, -0.05, 0.78, 0.05),
     ],
   },
 ];
