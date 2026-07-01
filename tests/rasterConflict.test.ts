@@ -16,6 +16,8 @@ import {
   attackTilesPerTick,
   attackerLossPerTile,
   largeDefenderLossFactor,
+  largeAttackerLossFactor,
+  LARGE_ATTACKER_TILES,
   LARGE_DEFENDER_MIDPOINT,
   LARGE_DEFENDER_LOSS_FLOOR,
   defenderLossPerTile,
@@ -199,6 +201,21 @@ test("largeDefenderLossFactor eases a huge empire's tiles cheaper to take (anti-
   );
   // Monotonic: the bigger the defender, the cheaper each of its tiles is to take.
   assert.ok(largeDefenderLossFactor(500_000) < largeDefenderLossFactor(100_000), "bigger = cheaper to chip");
+});
+
+test("largeAttackerLossFactor makes a huge empire's tiles cheaper to take (OpenFront largeAttackBonus)", () => {
+  // At or below the threshold there is no discount (normal games/maps unaffected).
+  assert.equal(largeAttackerLossFactor(0), 1, "a small attacker pays full price");
+  assert.equal(largeAttackerLossFactor(LARGE_ATTACKER_TILES), 1, "no discount right at the threshold");
+  // Past the threshold the factor eases below 1 as sqrt(100000/att)^0.7 = (100000/att)^0.35.
+  const f = largeAttackerLossFactor(LARGE_ATTACKER_TILES * 4);
+  assert.ok(Math.abs(f - Math.pow(0.25, 0.35)) < 1e-9, "matches (100000/att)^0.35");
+  assert.ok(f < 1, "a huge attacker projects force more cheaply");
+  // Monotonic: the bigger the attacker, the cheaper each tile it takes.
+  assert.ok(
+    largeAttackerLossFactor(LARGE_ATTACKER_TILES * 9) < largeAttackerLossFactor(LARGE_ATTACKER_TILES * 4),
+    "bigger attacker = cheaper conquest",
+  );
 });
 
 test("terrainCombat buckets elevation into plains/highland/mountain mag/speed bands", () => {

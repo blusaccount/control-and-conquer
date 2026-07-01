@@ -247,6 +247,24 @@ export const largeDefenderLossFactor = (defenderTiles: number): number => {
 };
 
 /**
+ * Large-attacker discount, mirroring OpenFront's `largeAttackBonus`: once an
+ * attacker's empire passes {@link LARGE_ATTACKER_TILES}, each tile it takes costs
+ * it *less* — `sqrt(LARGE_ATTACKER_TILES / attackerTiles) ^ 0.7`, easing below 1
+ * as the empire grows. This is the attacker-side counterpart to the large-empire
+ * *defence* debuff: a sprawling power projects force cheaply. Returns 1 for any
+ * empire at or below the threshold (no effect on normal-sized games/maps).
+ * OpenFront's companion `largeAttackerSpeedBonus` ((tiles/att)^0.6, which speeds
+ * the front up) is folded in here too — our advance is cost-driven, so cheaper
+ * tiles already roll the front faster, exactly what the speed bonus intends.
+ */
+export const LARGE_ATTACKER_TILES = 100_000;
+export const LARGE_ATTACKER_EXPONENT = 0.7;
+export const largeAttackerLossFactor = (attackerTiles: number): number => {
+  if (attackerTiles <= LARGE_ATTACKER_TILES) return 1;
+  return Math.pow(LARGE_ATTACKER_TILES / attackerTiles, 0.5 * LARGE_ATTACKER_EXPONENT);
+};
+
+/**
  * Tiles a front may capture in a single tick, mirroring OpenFront's
  * `attackTilesPerTick`. Against a player the budget scales with the attacker's
  * troop advantage (clamped into a band) and the contested border width; against
@@ -394,14 +412,6 @@ export const CLICK_SNAP_RADIUS = 4;
  * boat rather than a continent-spanning crawl.
  */
 export const LAND_ATTACK_REACH = 200;
-
-/**
- * Troops a transport ship must spend to establish its beachhead — the cost of
- * landing on and capturing the destination tile. Whatever the ship still
- * carries after paying this seeds a normal land attack from the landing tile.
- * Crossing water is meant to be possible but costlier than a contiguous push.
- */
-export const SEA_CROSSING_SURCHARGE = 8;
 
 /**
  * How many water tiles a bot's amphibious-target scan explores before stopping.

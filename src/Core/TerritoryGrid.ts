@@ -549,9 +549,14 @@ export class TerritoryGrid {
 
   /**
    * Capture-cost multiplier (>= 1) at `ref` from any overlapping defense posts.
-   * Each post contributes `1 + (strength - 1) * (1 - dist/radius)` for Chebyshev
-   * distances within its radius; the strongest covering post wins (auras don't
-   * stack, keeping the factor bounded). Returns 1 where no post reaches.
+   * Mirrors OpenFront's defense post exactly: the bonus is **binary in-range** —
+   * every tile within a post's Chebyshev `radius` costs the full `strength`× (no
+   * linear falloff), and beyond it nothing. The strongest covering post wins
+   * (auras don't stack). Returns 1 where no post reaches. In OpenFront this is
+   * `defensePostDefenseBonus` (5×) inside `defensePostRange` (30); its companion
+   * `defensePostSpeedBonus` (3×, which slows the attack) is folded into this cost
+   * multiplier — our advance is cost-driven, so a 5× dearer tile already grinds a
+   * front to the crawl the speed bonus is meant to impose.
    */
   defenseFactorAt(ref: TileRef): number {
     if (this.defensePosts.size === 0) return 1;
@@ -561,9 +566,7 @@ export class TerritoryGrid {
     for (const [post, { radius, strength }] of this.defensePosts) {
       const dist = Math.max(Math.abs(x - this.map.x(post)), Math.abs(y - this.map.y(post)));
       if (dist > radius) continue;
-      const falloff = radius === 0 ? 1 : 1 - dist / radius;
-      const contribution = 1 + (strength - 1) * falloff;
-      if (contribution > factor) factor = contribution;
+      if (strength > factor) factor = strength;
     }
     return factor;
   }

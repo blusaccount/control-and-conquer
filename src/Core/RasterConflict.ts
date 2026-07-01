@@ -14,6 +14,7 @@ import {
   FRONTIER_PRIORITY_FLOOR,
   FRONTIER_SURROUND_WEIGHT,
   FRONTIER_TOWARD_WEIGHT,
+  largeAttackerLossFactor,
   largeDefenderLossFactor,
   maxTroops,
   troopGrowth,
@@ -21,7 +22,6 @@ import {
   NEUTRAL_CAPTURE_COST,
   neutralLossPerTile,
   RETREAT_MALUS_FRACTION,
-  SEA_CROSSING_SURCHARGE,
   SHIP_TILES_PER_TICK,
   terrainCombat,
 } from "./rasterCombatConfig.js";
@@ -521,20 +521,21 @@ export class RasterConflict {
   }
 
   /**
-   * Troops a transport ship spends to seize its landing tile — the normal
-   * capture cost plus the amphibious {@link SEA_CROSSING_SURCHARGE}, so an
-   * opposed landing is dearer than walking the same tile over land. The
-   * attacker's Sea God perk (seaSpeed) lowers that surcharge.
+   * Troops a transport ship spends to seize its landing tile. Mirrors OpenFront:
+   * a landing pays the **normal** attacker loss for the beachhead tile via the
+   * same `attackLogic` as a land capture — there is **no** flat amphibious
+   * surcharge. The garrison defends a beachhead exactly as it defends an inland
+   * tile (defender strength, density, defense posts, large-empire debuffs all
+   * apply), so an opposed landing is only as dear as the ground itself.
    */
   private beachheadCost(ref: TileRef, attacker: PlayerId, target: PlayerId, attackerForce: number): number {
-    const surcharge = Math.ceil(SEA_CROSSING_SURCHARGE / this.grid.modifiersOf(attacker).seaSpeed);
-    // The garrison defends a beachhead just as it defends an inland tile: pay the
-    // normal OpenFront attacker loss for the landing tile plus the amphibious
-    // surcharge, so an opposed landing is dearer than walking the same tile.
     const defTroops = target === NEUTRAL_PLAYER ? 0 : this.grid.troopsOf(target);
     const defDensity = target === NEUTRAL_PLAYER ? 0 : this.defenderDensityOf(target);
-    const largeFactor = target === NEUTRAL_PLAYER ? 1 : largeDefenderLossFactor(this.grid.tileCountOf(target));
-    return Math.ceil(this.attackerTileLoss(ref, target, attackerForce, defTroops, defDensity) * largeFactor) + surcharge;
+    const largeFactor = target === NEUTRAL_PLAYER
+      ? 1
+      : largeDefenderLossFactor(this.grid.tileCountOf(target)) *
+        largeAttackerLossFactor(this.grid.tileCountOf(attacker));
+    return Math.ceil(this.attackerTileLoss(ref, target, attackerForce, defTroops, defDensity) * largeFactor);
   }
 
   /**
@@ -760,9 +761,13 @@ export class RasterConflict {
       const defenderDensity = vsPlayer ? this.defenderDensityOf(attack.target) : 0;
       const defenderBleed = vsPlayer ? this.defenderLossFor(attack.target) : 0;
       // A sprawling nation defends each tile worse (OpenFront's defenseSig), so
-      // its tiles cost the attacker less — an anti-snowball lever. Snapshotted
-      // once for the tick from the defender's current territory.
-      const largeFactor = vsPlayer ? largeDefenderLossFactor(this.grid.tileCountOf(attack.target)) : 1;
+      // its tiles cost the attacker less — an anti-snowball lever. A huge *attacker*
+      // also projects force cheaply (OpenFront's largeAttackBonus). Both snapshotted
+      // once for the tick, and both fold the OpenFront speed bonuses into cost.
+      const largeFactor = vsPlayer
+        ? largeDefenderLossFactor(this.grid.tileCountOf(attack.target)) *
+          largeAttackerLossFactor(this.grid.tileCountOf(attack.attacker))
+        : 1;
 
       // Tiles this front may take this tick (OpenFront's `attackTilesPerTick`):
       // it scales with the attacker's troop advantage and the contested border
