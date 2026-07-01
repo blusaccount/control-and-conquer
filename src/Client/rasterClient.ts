@@ -225,6 +225,8 @@ interface RasterRuntime {
   nameAnchors: NameAnchor[];
   /** performance.now() of the last name-anchor recompute (throttled). */
   lastNameComputeMs: number;
+  /** Combined tile count across all players as of the last name-anchor recompute. */
+  lastNameTileTotal: number;
   /** Whether we've picked a start position yet (false until we found a nation). */
   spawned: boolean;
   /** Current match phase, mirrored from the latest snapshot. */
@@ -423,6 +425,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     spawnY: -1,
     nameAnchors: [],
     lastNameComputeMs: Number.NEGATIVE_INFINITY,
+    lastNameTileTotal: -1,
     spawned: false,
     phase: "spawn",
     spawnRemainingSeconds: 0,
@@ -1131,6 +1134,20 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const players = runtime.players
       .filter((p) => !p.eliminated && p.tiles > 0)
       .map((p) => ({ playerId: p.playerId, nameLength: p.name.length }));
+
+    // Skip the whole (full-raster) pass when the camera is zoomed out far enough
+    // that no label would clear the minimum on-screen font size AND territory
+    // hasn't grown since the last pass — otherwise an early computation done
+    // while everyone's territory was still tiny (fresh spawns) would freeze
+    // `nameAnchors` at that size forever, since growth alone never re-triggers
+    // the scan. `drawNames` culls per-anchor anyway, so keeping the previous
+    // anchors is harmless; the next zoom-in or territory change recomputes them.
+    const tileTotal = runtime.players.reduce((sum, p) => sum + p.tiles, 0);
+    let maxSize = 0;
+    for (const a of runtime.nameAnchors) if (a.size > maxSize) maxSize = a.size;
+    if (maxSize > 0 && tileTotal === runtime.lastNameTileTotal && maxSize * runtime.view.scale < MIN_NAME_FONT_PX) return;
+    runtime.lastNameTileTotal = tileTotal;
+
     runtime.nameAnchors = computeNameAnchors(map.width, map.height, owner, players);
   };
 
@@ -1381,13 +1398,22 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
    * hidden entirely — detail is *removed*, not shrunk into mush.
    */
   const drawBuildings = (ctx: CanvasRenderingContext2D, scale: number): void => {
-    if (runtime.buildings.length === 0 || scale < 2) return; // too far out — keep it clean
+    if (runtime.buildings.length === 0) return;
     const cw = ui.mapCanvas.width;
     const ch = ui.mapCanvas.height;
-    // Marker radius scales with zoom but clamps to a legible band; below the dot
-    // threshold we draw plain owner dots so the map doesn't clutter.
+    // Radii are in backing-store (device) pixels, so a legible on-screen size has
+    // to be expressed in CSS px × DPR — otherwise the markers vanish on retina
+    // displays. This is why structures used to be "barely visible zoomed out":
+    // the dot floor was a sub-CSS-pixel 1.8 device px, and we bailed entirely
+    // below scale 2 — which is the *fit* zoom for the default Large/Huge maps,
+    // so at full-map view no structures showed at all.
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    // Below this zoom the shaped icon tokens are too big/cluttered, so we draw
+    // plain owner dots — but with a firm minimum screen size so they always read.
     const dotMode = scale < 6;
-    const radius = dotMode ? Math.max(1.8, scale * 0.42) : Math.max(12, Math.min(scale * 0.72, 30));
+    const radius = dotMode
+      ? Math.max(3.2 * dpr, Math.min(scale * 0.7, 6 * dpr))
+      : Math.max(12, Math.min(scale * 0.72, 30));
     // Monochrome glyphs read clearly even when large, so the icon fills most of
     // the disc (OpenFront's white-on-colour markers).
     const iconPx = radius * 1.5;
@@ -1435,13 +1461,16 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
 
       if (dotMode) {
         // Zoomed out: a small owner-coloured dot with a dark halo — shows where
-        // structures stand without drawing unreadable icons.
+        // structures stand without drawing unreadable icons. Cities (the anchor
+        // of an empire) get a slightly fatter dot so they stand out from ports,
+        // forts and the rest at a glance.
+        const r = b.type === "city" ? radius * 1.35 : radius;
         ctx.beginPath();
-        ctx.arc(sx, sy, radius + 1, 0, Math.PI * 2);
+        ctx.arc(sx, sy, r + dpr, 0, Math.PI * 2);
         ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
         ctx.fill();
         ctx.beginPath();
-        ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+        ctx.arc(sx, sy, r, 0, Math.PI * 2);
         ctx.fillStyle = rgbaToCss(col);
         ctx.fill();
         continue;
