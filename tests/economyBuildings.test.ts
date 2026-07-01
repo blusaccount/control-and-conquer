@@ -345,6 +345,69 @@ test("a second building too close to the first is rejected (minimum spacing)", (
   assert.equal(session.peekGrid().buildingCount, 1, "only the first structure stands");
 });
 
+test("a port click on owned non-shore land snaps to the nearest owned coast", () => {
+  // Coastlines are one tile wide, so a port click rarely lands exactly on shore.
+  // The build should snap to the nearest owned shore tile instead of rejecting.
+  const session = new RasterGameSession({ width: 48, height: 32, seed: 31 });
+  const messages: RasterServerMessage[] = [];
+  session.subscribe("human", (m) => messages.push(m));
+  const grid = session.peekGrid();
+  const map = session.peekMap();
+
+  // Find a land shore tile with a non-shore land neighbour; give both to the human.
+  let shoreRef = -1;
+  let inlandRef = -1;
+  outer: for (let ref = 0; ref < grid.owner.length; ref += 1) {
+    if (!map.isLand(ref) || !map.isShore(ref) || !grid.isCapturable(ref)) continue;
+    for (const n of map.neighbors(ref)) {
+      if (map.isLand(n) && !map.isShore(n) && grid.isCapturable(n)) {
+        shoreRef = ref;
+        inlandRef = n;
+        break outer;
+      }
+    }
+  }
+  assert.ok(shoreRef >= 0 && inlandRef >= 0, "the map needs a coast with an inland neighbour");
+  grid.claim(shoreRef, 1);
+  grid.claim(inlandRef, 1);
+  grid.setGold(1, 1_000_000);
+
+  // Click the inland (non-shore) tile — the port must snap onto the shore tile.
+  session.queueBuild("human", { targetX: map.x(inlandRef), targetY: map.y(inlandRef), building: "port" });
+  session.tick();
+
+  assert.ok(!rejections(messages).includes("NOT_BUILDABLE"), "an owned coast is within reach — not rejected");
+  assert.equal(grid.buildingCountOf(1, "port"), 1, "the port is placed");
+  assert.equal(grid.hasBuilding(shoreRef), true, "it snapped onto the shore tile, not the clicked inland tile");
+  assert.equal(grid.hasBuilding(inlandRef), false, "the clicked inland tile stays empty");
+});
+
+test("a port with no coast within reach is rejected (no snap target)", () => {
+  // A fully landlocked map: every tile is land, so no shore tile exists anywhere
+  // and the snap has nothing to find — a port can't be placed.
+  const W = 30;
+  const H = 30;
+  const map = buildTerrainFromMask({
+    width: W,
+    height: H,
+    land: new Uint8Array(W * H).fill(1),
+    elevation: new Uint8Array(W * H),
+  });
+  const session = new RasterGameSession({ prebuiltMap: map, spawnPhaseTicks: 0 });
+  const messages: RasterServerMessage[] = [];
+  session.subscribe("human", (m) => messages.push(m));
+  const grid = session.peekGrid();
+  let owned = -1;
+  for (let ref = 0; ref < grid.owner.length; ref += 1) if (grid.ownerOf(ref) === 1) { owned = ref; break; }
+  assert.ok(owned >= 0, "the human is seated on the all-land map");
+  grid.setGold(1, 1_000_000);
+
+  session.queueBuild("human", { targetX: map.x(owned), targetY: map.y(owned), building: "port" });
+  session.tick();
+  assert.ok(rejections(messages).includes("NOT_BUILDABLE"), "no coast within reach — rejected");
+  assert.equal(grid.buildingCountOf(1, "port"), 0, "no port placed");
+});
+
 test("a second building on the same tile is rejected as occupied", () => {
   const { session, messages, build } = stageBuilder(15);
   session.peekGrid().setGold(1, 1_000_000);

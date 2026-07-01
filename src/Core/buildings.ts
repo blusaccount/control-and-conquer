@@ -133,6 +133,15 @@ export const FORT_DEFENSE_RADIUS = 30;
 export const STRUCTURE_MIN_DIST = 15;
 
 /**
+ * How far (Chebyshev tiles) a coastal structure (port, warship) snaps to find a
+ * shore tile, mirroring OpenFront's `radiusPortSpawn` (20). A coastline is only
+ * one tile wide, so demanding a pixel-perfect click on it makes ports almost
+ * impossible to place; instead the click resolves to the nearest **owned**
+ * shore tile within this radius — clicking your coast "near enough" just works.
+ */
+export const COASTAL_SNAP_RADIUS = 20;
+
+/**
  * Ticks a structure spends **under construction** before its effects switch on,
  * mirroring OpenFront's `constructionDuration` (2/5/10·10-tick windows at 10
  * ticks/s). Until it finishes a building counts toward its cost ramp but pays no
@@ -154,9 +163,9 @@ export const BUILDING_CONSTRUCTION_TICKS: Readonly<Record<BuildingType, number>>
 // wiki). We mirror that here — a factory is the catalyst that wires a player's
 // stations (factory/city/port) into a mesh, and only city/port stops earn gold.
 // Rails are routed automatically (the player never draws them), cardinal-only,
-// over land, with the same distance/length/fan-out caps OpenFront uses (scaled
-// to our smaller grids). Everything is deterministic: spawn cadence is a fixed
-// tick interval, never `Math.random`, so replays stay identical.
+// over land, with OpenFront's exact station ranges and A* routing (cardinal,
+// direction-change + water penalties). Everything is deterministic: spawn cadence
+// is a fixed tick interval, never `Math.random`, so replays stay identical.
 
 /** Station building types that a railroad can link together. */
 export const RAIL_STATION_TYPES: readonly BuildingType[] = ["factory", "city", "port"];
@@ -165,34 +174,87 @@ export const RAIL_STATION_TYPES: readonly BuildingType[] = ["factory", "city", "
 export const RAIL_PAYOUT_TYPES: readonly BuildingType[] = ["city", "port"];
 
 /**
- * Greatest straight-line distance (tiles) between two stations that may be wired
- * by a single railroad. OpenFront uses 80 on its larger maps; scaled down a
- * touch for our grids so a rail links a regional cluster, not the whole map.
+ * Shortest straight-line distance (tiles) between two stations a railroad links,
+ * OpenFront's `trainStationMinRange` (15). Stations closer than this aren't wired
+ * directly (they already sit within {@link STRUCTURE_MIN_DIST} of each other).
  */
-export const RAIL_CONNECT_DISTANCE = 55;
+export const RAIL_STATION_MIN_RANGE = 15;
 
 /**
- * Longest a single railroad connection may run (tiles of track). Cardinal-only
- * L-paths are longer than the straight-line distance, so this is a touch above
- * {@link RAIL_CONNECT_DISTANCE}; a candidate whose routed path exceeds it (e.g.
- * a long detour around water) is dropped.
+ * Greatest straight-line distance (tiles) between two linked stations, OpenFront's
+ * `trainStationMaxRange` (110). A city/port only becomes a rail station at all
+ * when a factory sits within this range of it (the factory is the catalyst).
  */
-export const RAIL_MAX_LENGTH = 90;
-
-/** Most railroads any one station may anchor — caps fan-out into a mesh. */
-export const RAIL_MAX_CONNECTIONS = 4;
+export const RAIL_STATION_MAX_RANGE = 110;
 
 /**
- * Gold a train pays its owner each time it reaches a city or port station,
- * scaled to OpenFront's train economy (its `trainGold` pays ~10 000+ per stop).
+ * Longest a single railroad's routed track may run, OpenFront's `railroadMaxSize`
+ * = `trainStationMaxRange · √2 ≈ 155.56`. A route whose A* path exceeds this
+ * (e.g. a long detour around water) is dropped, so no link is laid.
  */
-export const TRAIN_GOLD_PER_STATION = 10_000;
+export const RAIL_MAX_TRACK_LENGTH = RAIL_STATION_MAX_RANGE * Math.SQRT2;
+
+/**
+ * Extra A* cost for laying track onto a water or shoreline tile, OpenFront's
+ * `waterPenalty` (5) — so a rail hugs dry inland ground and only bridges water on
+ * the shortest shore-to-shore hop when it must.
+ */
+export const RAIL_WATER_PENALTY = 5;
+
+/**
+ * Extra A* cost each time the track changes cardinal direction, OpenFront's
+ * `directionChangePenalty` (3) — so routes prefer long straight runs and bend
+ * only when they have to, giving the clean rail look.
+ */
+export const RAIL_DIRECTION_CHANGE_PENALTY = 3;
+
+/** A* heuristic weight (Manhattan × this), OpenFront's `heuristicWeight` (2). */
+export const RAIL_HEURISTIC_WEIGHT = 2;
+
+/**
+ * Base gold a train pays when it reaches a city/port on its **own** owner's
+ * network — OpenFront's `trainGold` "self" tier (10 000). (OpenFront also pays a
+ * higher tier when a train stops at another player's or an ally's station —
+ * 25 000 / 35 000 — but our rail network only ever links one owner's own
+ * stations, so the self tier is the only reachable one.)
+ */
+export const TRAIN_GOLD_SELF_BASE = 10_000;
+/** Stops a train makes at full pay before the distance penalty starts (OpenFront's `-9`). */
+export const TRAIN_GOLD_FREE_STOPS = 9;
+/** Gold the payout drops per city/port stop beyond {@link TRAIN_GOLD_FREE_STOPS}. */
+export const TRAIN_GOLD_STOP_DECAY = 5_000;
+/** Floor the per-stop train payout never drops below (OpenFront's `max(5000, …)`). */
+export const TRAIN_GOLD_FLOOR = 5_000;
+
+/**
+ * Gold a train pays its owner at a city/port stop, mirroring OpenFront's
+ * `trainGold`: the self-tier base, minus 5 000 for every stop this train has made
+ * beyond the first ~10, floored at 5 000. `stopsVisited` is how many paying stops
+ * the train has already banked, so its payout decays the longer it runs.
+ */
+export const trainGold = (stopsVisited: number): number => {
+  const beyondFree = Math.max(0, Math.max(0, stopsVisited) - TRAIN_GOLD_FREE_STOPS);
+  return Math.max(TRAIN_GOLD_FLOOR, TRAIN_GOLD_SELF_BASE - beyondFree * TRAIN_GOLD_STOP_DECAY);
+};
 
 /** Tiles of track a train advances per tick. */
 export const TRAIN_TILES_PER_TICK = 3;
 
-/** A new train is considered for spawning every this-many ticks. */
-export const TRAIN_SPAWN_INTERVAL_TICKS = 30;
+/**
+ * OpenFront's `trainSpawnRate`: the mean number of per-tick spawn *attempts* a
+ * factory makes between launching trains, `(numFactories + 10) · 15`. More
+ * factories means each launches *less* often (the network shares the spawn
+ * budget). In OpenFront a factory rolls `chance(rate)` each tick; here — with no
+ * RNG — the rail system fires deterministically once a factory's attempt counter
+ * reaches this rate, reproducing the same expected cadence.
+ */
+export const TRAIN_SPAWN_BASE = 10;
+export const TRAIN_SPAWN_RATE_SCALE = 15;
+export const trainSpawnRate = (numFactories: number): number =>
+  (Math.max(0, numFactories) + TRAIN_SPAWN_BASE) * TRAIN_SPAWN_RATE_SCALE;
+
+/** Fewest ticks between two trains from one factory (OpenFront's spawn cooldown). */
+export const TRAIN_SPAWN_MIN_COOLDOWN_TICKS = 10;
 
 /** Stations a train visits before it retires (despawns) and frees its slot. */
 export const TRAIN_MAX_VISITS = 8;
@@ -204,20 +266,51 @@ export const TRAIN_MAX_PER_PLAYER = 8;
 //
 // OpenFront's dominant gold engine: ports auto-dispatch trade ships to other
 // ports across a shared body of water, and on arrival BOTH the source and
-// destination port owners are paid. The payout follows a sigmoid in the distance
-// travelled (short hops are penalised, long hauls approach a ceiling), mirroring
-// OpenFront's `tradeShipGold`. Everything here is deterministic — fixed spawn
-// cadence, straight-line interpolation, no `Math.random` — so it stays replay
-// stable like the rail economy.
-
-/** A new trade ship is considered for dispatch every this-many ticks (per port). */
-export const TRADE_SHIP_SPAWN_INTERVAL_TICKS = 40;
+// destination port owners are paid the FULL amount. The payout follows a sigmoid
+// in the distance actually travelled (short hops penalised, long hauls approach a
+// ceiling), and the dispatch cadence follows OpenFront's `tradeShipSpawnRate`
+// (see below). Everything here is deterministic (no `Math.random`) so it stays
+// replay stable, but the value/rate constants are OpenFront's exact ones.
 
 /** Tiles a trade ship advances per tick along its (straight) sea lane. */
 export const TRADE_SHIP_TILES_PER_TICK = 1;
 
-/** Most trade ships any one player may have at sea simultaneously. */
-export const TRADE_MAX_PER_PLAYER = 6;
+/**
+ * Ticks between a port's trade-ship spawn *attempts*, mirroring OpenFront (its
+ * ports run a spawn check every 10 ticks, per port level). Each attempt either
+ * dispatches a ship or bumps the port's rejection counter (see
+ * {@link tradeShipSpawnRate}).
+ */
+export const TRADE_SPAWN_ATTEMPT_INTERVAL_TICKS = 10;
+
+/** Numerator of OpenFront's `tradeShipSpawnRate` (the `100 · 1/(rejections+1)` term). */
+export const TRADE_SPAWN_BASE = 100;
+/** Sigmoid decay for the trade-fleet soft cap (OpenFront's `Math.LN2 / 50`). */
+export const TRADE_SHIP_SOFTCAP_DECAY = Math.LN2 / 50;
+/** Sigmoid midpoint (global trade-ship count) of OpenFront's fleet soft cap. */
+export const TRADE_SHIP_SOFTCAP_MIDPOINT = 400;
+
+/**
+ * OpenFront's `tradeShipSpawnRate`: the mean number of spawn *attempts* a port
+ * makes between dispatches, given its own `rejections` count and the *global*
+ * number of trade ships already at sea. In OpenFront a port rolls `chance(rate)`
+ * (a 1/rate probability) each attempt; here — with no RNG — the trade system
+ * fires deterministically once a port's rejection counter reaches this rate, which
+ * reproduces the same expected cadence. Two levers, exactly OpenFront's:
+ *
+ *  - `1/(rejections+1)` — the longer a port has gone without dispatching, the
+ *    lower the rate, so a port that keeps failing (e.g. briefly no partner) fires
+ *    sooner once it can. Reset to 0 on a successful dispatch.
+ *  - `1/(1 − sigmoid(numTradeShips, ln2/50, 400))` — a **soft cap**: as the total
+ *    ships at sea approaches ~400 the denominator collapses and the rate diverges,
+ *    throttling new spawns. There is no hard fleet cap (OpenFront has none).
+ */
+export const tradeShipSpawnRate = (rejections: number, numTradeShips: number): number => {
+  const rejectionModifier = 1 / (Math.max(0, rejections) + 1);
+  const sig = 1 / (1 + Math.exp(-TRADE_SHIP_SOFTCAP_DECAY * (Math.max(0, numTradeShips) - TRADE_SHIP_SOFTCAP_MIDPOINT)));
+  const baseSpawnRate = 1 - sig;
+  return Math.floor((TRADE_SPAWN_BASE * rejectionModifier) / baseSpawnRate);
+};
 
 /**
  * Distance (tiles) below which trade is heavily penalised by the payout sigmoid,
@@ -228,9 +321,10 @@ export const TRADE_SHIP_SHORT_RANGE_DEBUFF = 300;
 
 /**
  * Gold paid to *each* of the two ports when a trade ship completes a trip of
- * `dist` tiles, mirroring OpenFront's `tradeShipGold`:
+ * `dist` tiles actually travelled, mirroring OpenFront's `tradeShipGold`:
  * `75 000 / (1 + e^(−0.03·(dist − 300))) + 50·dist`. The sigmoid punishes short
- * routes and approaches ~75 000 + 50·dist for long ones.
+ * routes and approaches ~75 000 + 50·dist for long ones. Priced by the real
+ * travelled distance, exactly as OpenFront — no map-size normalisation.
  */
 export const tradeShipGold = (dist: number): number =>
   Math.floor(75_000 / (1 + Math.exp(-0.03 * (dist - TRADE_SHIP_SHORT_RANGE_DEBUFF))) + 50 * dist);
@@ -241,7 +335,7 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
     type: "city",
     name: "City",
     description: "Raises max population and pays a gold dividend.",
-    icon: "\u{1F3DB}\u{FE0F}", // 🏛️
+    icon: "\u{2302}", // ⌂ house — a monochrome white glyph drawn on the owner-coloured disc
     baseCost: 125_000,
     costGrowth: 2,
     costCap: 1_000_000,
@@ -250,7 +344,7 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
     type: "port",
     name: "Port",
     description: "A coastal trade hub: steady gold income (must sit on a shore).",
-    icon: "\u{2693}", // ⚓
+    icon: "\u{2693}\u{FE0E}", // ⚓ anchor, text-presentation (forced monochrome, not emoji)
     baseCost: 125_000,
     costGrowth: 2,
     costCap: 1_000_000,
@@ -259,7 +353,7 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
     type: "fort",
     name: "Fort",
     description: "Fortifies the surrounding tiles against capture.",
-    icon: "\u{1F6E1}\u{FE0F}", // 🛡️
+    icon: "\u{26E8}\u{FE0E}", // ⛨ cross on shield, text-presentation (monochrome)
     baseCost: 50_000,
     costGrowth: 1,
     costCap: 250_000,
@@ -269,7 +363,7 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
     type: "factory",
     name: "Factory",
     description: "Lays railroads to nearby cities and ports; trains earn gold.",
-    icon: "\u{1F3ED}", // 🏭
+    icon: "\u{2699}\u{FE0E}", // ⚙ gear, text-presentation (monochrome)
     baseCost: 125_000,
     costGrowth: 2,
     costCap: 1_000_000,
@@ -278,7 +372,7 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
     type: "warship",
     name: "Warship",
     description: "Guards the coast: sinks enemy transport ships in range (must sit on a shore).",
-    icon: "\u{1F6A2}", // 🚢
+    icon: "\u{2694}\u{FE0E}", // ⚔ crossed swords, text-presentation (monochrome)
     baseCost: 250_000,
     costGrowth: 1,
     costCap: 1_000_000,

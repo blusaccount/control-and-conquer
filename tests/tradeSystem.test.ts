@@ -5,8 +5,8 @@ import { TerritoryGrid } from "../src/Core/TerritoryGrid.js";
 import { TradeSystem } from "../src/Core/tradeSystem.js";
 import {
   tradeShipGold,
-  TRADE_SHIP_SPAWN_INTERVAL_TICKS,
-  TRADE_MAX_PER_PLAYER,
+  tradeShipSpawnRate,
+  TRADE_SHIP_SOFTCAP_MIDPOINT,
 } from "../src/Core/buildings.js";
 
 /** Single-row map from a mask: '#' = land, ' ' = water. */
@@ -50,11 +50,12 @@ test("two ports across a shared sea trade and pay BOTH owners gold", () => {
   grid.placeBuilding(4, "port");
 
   const trade = new TradeSystem(grid);
-  // Dispatch happens on the fixed cadence (tick % interval === 0), so tick 0
-  // sends ships; the lane is 3 tiles long, so they arrive a few ticks later.
+  // A port fires on OpenFront's spawn cadence (rejection counter reaches the
+  // rate), so the first ship appears after ~100 ticks; run well past that. The
+  // lane is 3 tiles long, so it arrives a few ticks after dispatch.
   const dist = 3;
   let sawShip = false;
-  for (let tick = 0; tick <= TRADE_SHIP_SPAWN_INTERVAL_TICKS; tick += 1) {
+  for (let tick = 0; tick <= 200; tick += 1) {
     trade.advance(tick);
     if (trade.shipCount > 0) sawShip = true;
   }
@@ -94,7 +95,9 @@ test("a trade ship sails the water route and never crosses land", () => {
   const isWaterOrPort = (ref: number) => map.isWater(ref) || ref === A || ref === B;
 
   let sawShip = false;
-  for (let tick = 0; tick <= TRADE_SHIP_SPAWN_INTERVAL_TICKS * 2; tick += 1) {
+  // A port fires on OpenFront's spawn cadence (~100 ticks for the first ship), so
+  // run well past that.
+  for (let tick = 0; tick <= 200; tick += 1) {
     trade.advance(tick);
     for (const ship of trade.tradeViews()) {
       sawShip = true;
@@ -116,21 +119,38 @@ test("a lone port with no partner across the water earns no trade gold", () => {
   grid.claim(1, 1);
   grid.placeBuilding(1, "port"); // the only port — nobody to trade with
   const trade = new TradeSystem(grid);
-  for (let tick = 0; tick <= TRADE_SHIP_SPAWN_INTERVAL_TICKS + 5; tick += 1) trade.advance(tick);
+  for (let tick = 0; tick <= 200; tick += 1) trade.advance(tick);
   assert.equal(trade.shipCount, 0, "no ship is dispatched without a partner port");
   assert.equal(grid.goldOf(1), 0, "a lone port earns nothing from trade");
 });
 
-test("a player's trade fleet is capped", () => {
-  // Many ports for player 1 on one shore, all sharing the sea, so dispatch would
-  // exceed the cap without the limit.
-  const grid = new TerritoryGrid(rowMap("#### ####"));
+test("tradeShipSpawnRate follows OpenFront: rejections speed it up, a full sea throttles it", () => {
+  // With an empty sea the base rate is 100 attempts between dispatches.
+  assert.equal(tradeShipSpawnRate(0, 0), 100, "empty sea, no rejections → rate 100");
+  // A port that keeps failing lowers its own rate, so it fires sooner.
+  assert.equal(tradeShipSpawnRate(9, 0), 10, "rejections drop the rate toward firing");
+  assert.ok(tradeShipSpawnRate(20, 0) < tradeShipSpawnRate(0, 0), "more rejections → lower rate");
+  // The soft cap: at the sigmoid midpoint the rate doubles (spawns throttle), and
+  // it keeps climbing as the sea fills — there is no hard fleet cap.
+  assert.equal(tradeShipSpawnRate(0, TRADE_SHIP_SOFTCAP_MIDPOINT), 200, "midpoint doubles the rate");
+  assert.ok(
+    tradeShipSpawnRate(0, TRADE_SHIP_SOFTCAP_MIDPOINT * 2) > tradeShipSpawnRate(0, TRADE_SHIP_SOFTCAP_MIDPOINT),
+    "the fuller the sea, the harder new spawns are throttled",
+  );
+});
+
+test("a port dispatches on OpenFront's cadence, not instantly", () => {
+  // Two partnered ports: the first ship should NOT appear in the opening ticks
+  // (the rejection counter has to climb to the rate first), but must by ~tick 110.
+  const grid = new TerritoryGrid(rowMap("##  ##"));
   grid.addPlayer(1, 0);
-  // Shore tiles 3 and 4 border the water gap at index 4; claim a run and port
-  // several shore-adjacent tiles. Tiles 0-3 are land, 4 is water, 5-8 land.
-  for (const ref of [0, 1, 2, 3, 5, 6, 7, 8]) grid.claim(ref, 1);
-  for (const ref of [3, 5]) grid.placeBuilding(ref, "port"); // both border water tile 4
+  grid.claim(1, 1);
+  grid.claim(4, 1);
+  grid.placeBuilding(1, "port");
+  grid.placeBuilding(4, "port");
   const trade = new TradeSystem(grid);
-  for (let tick = 0; tick <= TRADE_SHIP_SPAWN_INTERVAL_TICKS * 3; tick += 1) trade.advance(tick);
-  assert.ok(trade.shipCount <= TRADE_MAX_PER_PLAYER, "the fleet never exceeds the per-player cap");
+  for (let tick = 0; tick <= 50; tick += 1) trade.advance(tick);
+  assert.equal(trade.shipCount, 0, "no ship in the opening cadence window");
+  for (let tick = 51; tick <= 120; tick += 1) trade.advance(tick);
+  assert.ok(trade.shipCount > 0 || grid.goldOf(1) > 0, "a ship dispatched (or already arrived) by ~tick 110");
 });

@@ -91,7 +91,7 @@ export const RASTER_MATCH_DURATION_SECONDS = 600;
  * gameplay rule, independent of tick rate); the engine is granted the equivalent
  * tick count when a player is seated.
  */
-export const SPAWN_IMMUNITY_SECONDS = 8;
+export const SPAWN_IMMUNITY_SECONDS = 5;
 
 /**
  * Fraction of leftover committed troops lost when an attack against a *player*
@@ -102,6 +102,31 @@ export const SPAWN_IMMUNITY_SECONDS = 8;
  * so this never applies to neutral targets.
  */
 export const RETREAT_MALUS_FRACTION = 0.25;
+
+/**
+ * How long (ticks) a player stays a **traitor** after betraying an alliance,
+ * mirroring OpenFront's `traitorDuration` (300). Betrayal is powerful but marked:
+ * for this window the traitor is punished in combat (see the two debuffs below),
+ * so backstabbing an ally carries a real, temporary cost.
+ */
+export const TRAITOR_DURATION_TICKS = 300;
+
+/**
+ * Combat penalty on a **traitor defender**, mirroring OpenFront's
+ * `traitorDefenseDebuff` (0.5): while marked, the traitor's tiles cost an attacker
+ * only half the usual magnitude — its defence is halved, so an ally it stabbed (or
+ * anyone) can punish it far more cheaply. Applied to the tile magnitude for a
+ * traitor target.
+ */
+export const TRAITOR_DEFENSE_DEBUFF = 0.5;
+
+/**
+ * Combat penalty on a **traitor attacker**, mirroring OpenFront's
+ * `traitorSpeedDebuff` (0.8): while marked, the traitor's own assaults advance at
+ * 0.8× — its aggression is blunted for the duration. Applied to the traitor's
+ * per-tick tile budget.
+ */
+export const TRAITOR_SPEED_DEBUFF = 0.8;
 
 // ---------------------------------------------------------------------------
 // Combat model
@@ -247,6 +272,24 @@ export const largeDefenderLossFactor = (defenderTiles: number): number => {
 };
 
 /**
+ * Large-attacker discount, mirroring OpenFront's `largeAttackBonus`: once an
+ * attacker's empire passes {@link LARGE_ATTACKER_TILES}, each tile it takes costs
+ * it *less* — `sqrt(LARGE_ATTACKER_TILES / attackerTiles) ^ 0.7`, easing below 1
+ * as the empire grows. This is the attacker-side counterpart to the large-empire
+ * *defence* debuff: a sprawling power projects force cheaply. Returns 1 for any
+ * empire at or below the threshold (no effect on normal-sized games/maps).
+ * OpenFront's companion `largeAttackerSpeedBonus` ((tiles/att)^0.6, which speeds
+ * the front up) is folded in here too — our advance is cost-driven, so cheaper
+ * tiles already roll the front faster, exactly what the speed bonus intends.
+ */
+export const LARGE_ATTACKER_TILES = 100_000;
+export const LARGE_ATTACKER_EXPONENT = 0.7;
+export const largeAttackerLossFactor = (attackerTiles: number): number => {
+  if (attackerTiles <= LARGE_ATTACKER_TILES) return 1;
+  return Math.pow(LARGE_ATTACKER_TILES / attackerTiles, 0.5 * LARGE_ATTACKER_EXPONENT);
+};
+
+/**
  * Tiles a front may capture in a single tick, mirroring OpenFront's
  * `attackTilesPerTick`. Against a player the budget scales with the attacker's
  * troop advantage (clamped into a band) and the contested border width; against
@@ -305,34 +348,42 @@ export const defenderLossPerTile = (troops: number, tiles: number): number => {
 };
 
 /**
- * Frontier ordering weights. A land attack captures the tiles of its frontier
- * in *priority* order rather than raw tile order, so fronts grow organically —
- * filling pockets and eating the easy ground first the way OpenFront's conquest
- * queue does. Each frontier tile gets a priority (lower = captured sooner):
+ * Frontier ordering, mirroring OpenFront's tile-capture priority. A land attack
+ * captures its frontier in *priority* order (lower = captured sooner), matching
+ * OpenFront's `addNeighbors` heap key:
  *
- *   priority = max(FRONTIER_PRIORITY_FLOOR,
- *                  1 + magnitude * FRONTIER_MAGNITUDE_WEIGHT
- *                    - ownedNeighbours * FRONTIER_SURROUND_WEIGHT) * jitter
+ *   priority = jitter · (1 − ownedNeighbours · 0.5 + terrainPriorityWeight/2)
  *
- * The **surround** term must dominate so a front spreads as an even, radial ring
- * rather than a thin tendril. A frontier tile has 1–4 owned neighbours, so the
- * surround term spans at most ~2.4; land elevation (`magnitude`) spans 1–30, so
- * if its weight were comparable the front would simply chase the lowest ground
- * across the whole map — snaking single-file along a coast or valley instead of
- * bulging outward, and extending that thread rather than back-filling the
- * concavities behind it. `FRONTIER_MAGNITUDE_WEIGHT` is therefore kept small: a
- * tile hugged by more of the attacker's own land (a pocket/bay) is always pulled
- * in before the perimeter pushes further out, so borders smooth into a blob;
- * elevation only gently biases *which* perimeter tile goes next (and high ground
- * already costs more troops to take — see {@link terrainLossMultiplier}).
- * `jitter` is a deterministic per-tile/-tick wobble (no RNG, so replays stay
- * stable) that scatters captures among otherwise-equal perimeter tiles, keeping
- * the ring from advancing lopsidedly along one edge.
+ * — the exact structural terms of OpenFront's formula: the **surround** term
+ * (`ownedNeighbours · 0.5`) pulls a tile hugged by more of the attacker's own
+ * land (a pocket/bay) in first, so the front back-fills concavities and grows as
+ * a smooth radial blob rather than a thin tendril; the **terrain** term biases
+ * higher ground *later* (plains weight 1, highland 1.5, mountain 2 → +0.5/+0.75/+1),
+ * so easy low ground is eaten before dear peaks. A fully-surrounded pocket goes
+ * negative and is always taken before any perimeter tile.
+ *
+ * `jitter` scatters captures among otherwise-equal perimeter tiles so the ring
+ * doesn't advance lopsidedly. OpenFront draws it from an RNG in the range 10–17;
+ * we cannot — a deterministic engine must keep replays identical — so we use a
+ * **small** deterministic per-tile/-tick wobble instead. Kept tight on purpose:
+ * OpenFront's wide random jitter can occasionally reorder a low-ground tile after
+ * a high-ground one, but a deterministic port needs the structural terms to stay
+ * dominant, so the surround/terrain ordering is a firm guarantee here rather than
+ * a probabilistic tendency. This is the one place a faithful port must diverge.
  */
-export const FRONTIER_MAGNITUDE_WEIGHT = 0.02;
-export const FRONTIER_SURROUND_WEIGHT = 0.6;
-export const FRONTIER_PRIORITY_FLOOR = 0.05;
+export const FRONTIER_SURROUND_WEIGHT = 0.5;
 export const FRONTIER_JITTER_SPAN = 0.15;
+
+/**
+ * OpenFront's per-band tile-priority weight (plains 1, highland 1.5, mountain 2),
+ * which enters the capture-priority key as `weight / 2` — so higher ground sorts
+ * *later*. Bucketed by the same elevation thresholds as {@link terrainCombat}.
+ */
+export const terrainPriorityWeight = (elevation: number): number => {
+  if (elevation <= TERRAIN_PLAINS_MAX_ELEVATION) return 1;
+  if (elevation <= TERRAIN_HIGHLAND_MAX_ELEVATION) return 1.5;
+  return 2;
+};
 
 /**
  * Directional pull toward the tile a player actually clicked. When an attack

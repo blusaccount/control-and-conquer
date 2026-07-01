@@ -1278,8 +1278,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     // Marker radius scales with zoom but clamps to a legible band; below the dot
     // threshold we draw plain owner dots so the map doesn't clutter.
     const dotMode = scale < 6;
-    const radius = dotMode ? Math.max(1.8, scale * 0.42) : Math.max(10, Math.min(scale * 0.66, 26));
-    const iconPx = radius * 1.2;
+    const radius = dotMode ? Math.max(1.8, scale * 0.42) : Math.max(12, Math.min(scale * 0.72, 30));
+    // Monochrome glyphs read clearly even when large, so the icon fills most of
+    // the disc (OpenFront's white-on-colour markers).
+    const iconPx = radius * 1.5;
 
     type Rgb = { r: number; g: number; b: number };
     const lighten = (c: Rgb, t: number): string =>
@@ -1316,7 +1318,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     ctx.save();
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    if (!dotMode) ctx.font = `${iconPx}px serif`;
+    if (!dotMode) ctx.font = `600 ${iconPx}px "Segoe UI Symbol", "Noto Sans Symbols2", system-ui, sans-serif`;
     for (const b of runtime.buildings) {
       const { x: sx, y: sy } = worldToScreen(b.x + 0.5, b.y + 0.5);
       if (sx < -radius * 2 || sy < -radius * 2 || sx > cw + radius * 2 || sy > ch + radius * 2) continue;
@@ -1376,11 +1378,15 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ctx.fillStyle = "rgba(0, 0, 0, 0.18)";
       ctx.fill();
 
-      // 5. The building icon, dark-outlined for contrast on any owner colour.
-      ctx.lineWidth = Math.max(2, iconPx * 0.12);
-      ctx.strokeStyle = "rgba(0, 0, 0, 0.8)";
-      ctx.strokeText(BUILDING_DEFS[b.type].icon, sx, sy);
-      ctx.fillText(BUILDING_DEFS[b.type].icon, sx, sy);
+      // 5. The building icon: a crisp **white** monochrome glyph, dark-outlined
+      //    so it reads cleanly on any owner colour (OpenFront's white markers).
+      const glyph = BUILDING_DEFS[b.type].icon;
+      ctx.lineJoin = "round";
+      ctx.lineWidth = Math.max(2.5, iconPx * 0.16);
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.85)";
+      ctx.strokeText(glyph, sx, sy);
+      ctx.fillStyle = "rgba(255, 255, 255, 0.97)";
+      ctx.fillText(glyph, sx, sy);
 
       // 6. Build-progress bar under a structure still under construction.
       if (b.underConstruction) {
@@ -1629,7 +1635,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         `<span class="res-rate">+${formatRate(runtime.goldPerSecond)}/s</span></span>` +
         `<span class="res"><span class="res-ico">🗺️</span>` +
         `<span class="res-val">${pctStr}%</span></span>` +
-        `<span class="res res-builds">🏛️ ${runtime.myCities} ⚓ ${runtime.myPorts} 🛡️ ${runtime.myForts} 🏭 ${runtime.myFactories}</span>`;
+        `<span class="res res-builds">${BUILDING_DEFS.city.icon} ${runtime.myCities} ${BUILDING_DEFS.port.icon} ${runtime.myPorts} ${BUILDING_DEFS.fort.icon} ${runtime.myForts} ${BUILDING_DEFS.factory.icon} ${runtime.myFactories}</span>`;
     }
     refreshBuildMenu();
     if (!live) {

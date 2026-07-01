@@ -10,10 +10,10 @@ import {
   defenderLossPerTile,
   defenderStrengthFactor,
   FRONTIER_JITTER_SPAN,
-  FRONTIER_MAGNITUDE_WEIGHT,
-  FRONTIER_PRIORITY_FLOOR,
   FRONTIER_SURROUND_WEIGHT,
   FRONTIER_TOWARD_WEIGHT,
+  terrainPriorityWeight,
+  largeAttackerLossFactor,
   largeDefenderLossFactor,
   maxTroops,
   troopGrowth,
@@ -23,6 +23,9 @@ import {
   RETREAT_MALUS_FRACTION,
   SHIP_TILES_PER_TICK,
   terrainCombat,
+  TRAITOR_DEFENSE_DEBUFF,
+  TRAITOR_DURATION_TICKS,
+  TRAITOR_SPEED_DEBUFF,
 } from "./rasterCombatConfig.js";
 
 /** A request to expand from `attacker`'s territory into `target`'s tiles. */
@@ -179,6 +182,12 @@ export class RasterConflict {
    * any land or sea assault lands on them. Absent = never immune.
    */
   private readonly immuneUntil = new Map<PlayerId, number>();
+  /**
+   * Tick (exclusive) until which a player is a **traitor** for betraying an
+   * alliance. Set by {@link markTraitor} when the session records a betrayal;
+   * while active the player is debuffed in combat (see {@link isTraitor}).
+   */
+  private readonly traitorUntil = new Map<PlayerId, number>();
   /** Auto-routed railroads + the trains that ride them, paying out gold. */
   private readonly rails: RailSystem;
   /** Port-to-port trade ships, paying both ends gold per completed trip. */
@@ -280,6 +289,22 @@ export class RasterConflict {
   isImmune(player: PlayerId): boolean {
     if (player === NEUTRAL_PLAYER) return false;
     return (this.immuneUntil.get(player) ?? 0) > this.tickCount;
+  }
+
+  /**
+   * Mark `player` a **traitor** for betraying an alliance — the session calls this
+   * when a player breaks a pact. Starts (or refreshes) the {@link TRAITOR_DURATION_TICKS}
+   * window during which the traitor is punished in combat.
+   */
+  markTraitor(player: PlayerId): void {
+    if (player === NEUTRAL_PLAYER) return;
+    this.traitorUntil.set(player, this.tickCount + TRAITOR_DURATION_TICKS);
+  }
+
+  /** Whether `player` is currently a marked traitor. Neutral never is. */
+  isTraitor(player: PlayerId): boolean {
+    if (player === NEUTRAL_PLAYER) return false;
+    return (this.traitorUntil.get(player) ?? 0) > this.tickCount;
   }
 
   launchAttack(intent: AttackIntent): AttackRejectReason | null {
@@ -400,6 +425,9 @@ export class RasterConflict {
     let mag = terrainCombat(this.grid.map.magnitude(ref)).mag;
     if (target !== NEUTRAL_PLAYER) mag *= this.grid.modifiersOf(target).defense;
     mag *= this.grid.defenseFactorAt(ref);
+    // A marked traitor defends at half strength (OpenFront's traitorDefenseDebuff),
+    // so its tiles are far cheaper to take for the window after a betrayal.
+    if (target !== NEUTRAL_PLAYER && this.isTraitor(target)) mag *= TRAITOR_DEFENSE_DEBUFF;
     return mag;
   }
 
@@ -441,28 +469,25 @@ export class RasterConflict {
   }
 
   /**
-   * Capture priority of a single frontier tile (lower = taken sooner). Tiles
-   * enclosed by more of the attacker's own territory are grabbed first so a front
-   * fills its concavities and advances as a smooth, radial bulge rather than
-   * snaking outward as a thin tendril — the organic feel of OpenFront's conquest
-   * queue. Elevation only gently biases ties between equally-enclosed tiles (the
-   * surround term dominates; see the weights in `rasterCombatConfig`). The
-   * `jitter` is a deterministic hash of tile and tick (no RNG, so replays stay
-   * identical) that scatters captures across otherwise-equal perimeter tiles so
-   * the ring grows evenly instead of advancing lopsidedly along one edge.
+   * Capture priority of a single frontier tile (lower = taken sooner), mirroring
+   * OpenFront's structural key: `jitter · (1 − ownedNeighbours·0.5 + magWeight/2)`.
+   * Tiles enclosed by more of the attacker's own territory (pockets) score lower —
+   * even negative — so the front back-fills concavities and grows as a smooth
+   * radial blob rather than a tendril; higher ground scores higher, so easy low
+   * ground is eaten first. The `jitter` is a small deterministic hash of tile and
+   * tick (OpenFront uses a wide RNG range we can't, so replays stay identical)
+   * that scatters otherwise-equal perimeter tiles; see `rasterCombatConfig`.
    */
   private tilePriority(attacker: PlayerId, ref: TileRef): number {
     let ownedNeighbours = 0;
     for (const n of this.grid.map.neighbors(ref)) {
       if (this.grid.ownerOf(n) === attacker) ownedNeighbours += 1;
     }
-    const base = Math.max(
-      FRONTIER_PRIORITY_FLOOR,
-      1 + this.grid.map.magnitude(ref) * FRONTIER_MAGNITUDE_WEIGHT - ownedNeighbours * FRONTIER_SURROUND_WEIGHT,
-    );
+    const structural =
+      1 - ownedNeighbours * FRONTIER_SURROUND_WEIGHT + terrainPriorityWeight(this.grid.map.magnitude(ref)) / 2;
     // Deterministic [0,1) wobble from a cheap integer hash of (ref, tick).
     const hash = ((ref * 2654435761 + this.tickCount * 40503) >>> 0) / 0x100000000;
-    return base * (1 + hash * FRONTIER_JITTER_SPAN);
+    return structural * (1 + hash * FRONTIER_JITTER_SPAN);
   }
 
   /**
@@ -520,16 +545,20 @@ export class RasterConflict {
   }
 
   /**
-   * Troops a transport ship spends to seize its landing tile. OpenFront charges
-   * **no amphibious surcharge** — a landing pays exactly the normal per-tile
-   * attacker loss for the beachhead, then whatever survives pushes inland as an
-   * ordinary land attack. The garrison defends a beachhead just as it defends any
-   * inland tile.
+   * Troops a transport ship spends to seize its landing tile. Mirrors OpenFront:
+   * a landing pays the **normal** attacker loss for the beachhead tile via the
+   * same `attackLogic` as a land capture — there is **no** flat amphibious
+   * surcharge. The garrison defends a beachhead exactly as it defends an inland
+   * tile (defender strength, density, defense posts, large-empire debuffs all
+   * apply), so an opposed landing is only as dear as the ground itself.
    */
   private beachheadCost(ref: TileRef, attacker: PlayerId, target: PlayerId, attackerForce: number): number {
     const defTroops = target === NEUTRAL_PLAYER ? 0 : this.grid.troopsOf(target);
     const defDensity = target === NEUTRAL_PLAYER ? 0 : this.defenderDensityOf(target);
-    const largeFactor = target === NEUTRAL_PLAYER ? 1 : largeDefenderLossFactor(this.grid.tileCountOf(target));
+    const largeFactor = target === NEUTRAL_PLAYER
+      ? 1
+      : largeDefenderLossFactor(this.grid.tileCountOf(target)) *
+        largeAttackerLossFactor(this.grid.tileCountOf(attacker));
     return Math.ceil(this.attackerTileLoss(ref, target, attackerForce, defTroops, defDensity) * largeFactor);
   }
 
@@ -756,18 +785,24 @@ export class RasterConflict {
       const defenderDensity = vsPlayer ? this.defenderDensityOf(attack.target) : 0;
       const defenderBleed = vsPlayer ? this.defenderLossFor(attack.target) : 0;
       // A sprawling nation defends each tile worse (OpenFront's defenseSig), so
-      // its tiles cost the attacker less — an anti-snowball lever. Snapshotted
-      // once for the tick from the defender's current territory.
-      const largeFactor = vsPlayer ? largeDefenderLossFactor(this.grid.tileCountOf(attack.target)) : 1;
+      // its tiles cost the attacker less — an anti-snowball lever. A huge *attacker*
+      // also projects force cheaply (OpenFront's largeAttackBonus). Both snapshotted
+      // once for the tick, and both fold the OpenFront speed bonuses into cost.
+      const largeFactor = vsPlayer
+        ? largeDefenderLossFactor(this.grid.tileCountOf(attack.target)) *
+          largeAttackerLossFactor(this.grid.tileCountOf(attack.attacker))
+        : 1;
 
       // Tiles this front may take this tick (OpenFront's `attackTilesPerTick`):
       // it scales with the attacker's troop advantage and the contested border
       // width, so an overwhelming assault rolls fast while an under-committed poke
       // barely creeps. `expansionSpeed` is the attacker's own speed modifier.
       const expansionSpeed = this.grid.modifiersOf(attack.attacker).expansionSpeed;
+      // A marked traitor's own assaults advance slower (OpenFront's traitorSpeedDebuff).
+      const traitorSpeed = this.isTraitor(attack.attacker) ? TRAITOR_SPEED_DEBUFF : 1;
       const budget = Math.max(
         1,
-        Math.round(attackTilesPerTick(defenderTroops, attack.committed, frontier.length, vsPlayer) * expansionSpeed),
+        Math.round(attackTilesPerTick(defenderTroops, attack.committed, frontier.length, vsPlayer) * expansionSpeed * traitorSpeed),
       );
 
       let taken = 0;

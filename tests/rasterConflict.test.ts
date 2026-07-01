@@ -16,12 +16,16 @@ import {
   attackTilesPerTick,
   attackerLossPerTile,
   largeDefenderLossFactor,
+  largeAttackerLossFactor,
+  LARGE_ATTACKER_TILES,
   LARGE_DEFENDER_MIDPOINT,
   LARGE_DEFENDER_LOSS_FLOOR,
   defenderLossPerTile,
   defenderStrengthFactor,
   neutralLossPerTile,
   terrainCombat,
+  terrainPriorityWeight,
+  TRAITOR_DURATION_TICKS,
 } from "../src/Core/rasterCombatConfig.js";
 
 const flatLand = (width: number, height: number): GameMap => {
@@ -173,6 +177,44 @@ test("defender bleed is density-based: a dense defender loses more per tile", ()
   assert.ok(before - grid.troopsOf(2) >= 100, `dense defender should bleed hard, lost ${before - grid.troopsOf(2)}`);
 });
 
+test("a traitor is marked for a fixed window, then clears (OpenFront traitorDuration)", () => {
+  const grid = new TerritoryGrid(flatLand(4, 1));
+  grid.addPlayer(1, 100);
+  grid.claim(0, 1);
+  const conflict = new RasterConflict(grid);
+
+  assert.equal(conflict.isTraitor(1), false, "nobody starts a traitor");
+  conflict.markTraitor(1);
+  assert.equal(conflict.isTraitor(1), true, "betrayal marks the player");
+  runTicks(conflict, TRAITOR_DURATION_TICKS - 1);
+  assert.equal(conflict.isTraitor(1), true, "still a traitor just before the window ends");
+  runTicks(conflict, 1);
+  assert.equal(conflict.isTraitor(1), false, "the mark clears after traitorDuration ticks");
+});
+
+test("a traitor defender is cheaper to conquer (OpenFront traitorDefenseDebuff)", () => {
+  // Same assault against the same defender captures MORE of its land when the
+  // defender is a marked traitor, because its tiles cost half the magnitude.
+  const conquer = (betray: boolean): number => {
+    const grid = new TerritoryGrid(flatLand(12, 1));
+    grid.addPlayer(1, 6000); // attacker
+    grid.addPlayer(2, 60_000); // dense defender holds tiles 1..11 (costly to take)
+    grid.claim(0, 1);
+    for (let ref = 1; ref < 12; ref += 1) grid.claim(ref, 2);
+    freezeIncome(grid);
+    const conflict = new RasterConflict(grid);
+    if (betray) conflict.markTraitor(2);
+    assert.equal(conflict.launchAttack({ attacker: 1, target: 2, troops: 6000 }), null);
+    runTicks(conflict, 60);
+    return grid.tileCountOf(1) - 1; // tiles taken from the defender
+  };
+
+  const normal = conquer(false);
+  const vsTraitor = conquer(true);
+  assert.ok(normal > 0 && normal < 11, `the baseline assault should stall partway, took ${normal}`);
+  assert.ok(vsTraitor > normal, `a traitor loses more ground: ${vsTraitor} vs ${normal}`);
+});
+
 test("defenderLossPerTile spreads the pool over territory, floored at 1", () => {
   assert.equal(defenderLossPerTile(100, 4), 25); // dense: 100/4
   assert.equal(defenderLossPerTile(3, 10), 1); // sparse: 0.3 -> floored to 1
@@ -199,6 +241,21 @@ test("largeDefenderLossFactor eases a huge empire's tiles cheaper to take (anti-
   );
   // Monotonic: the bigger the defender, the cheaper each of its tiles is to take.
   assert.ok(largeDefenderLossFactor(500_000) < largeDefenderLossFactor(100_000), "bigger = cheaper to chip");
+});
+
+test("largeAttackerLossFactor makes a huge empire's tiles cheaper to take (OpenFront largeAttackBonus)", () => {
+  // At or below the threshold there is no discount (normal games/maps unaffected).
+  assert.equal(largeAttackerLossFactor(0), 1, "a small attacker pays full price");
+  assert.equal(largeAttackerLossFactor(LARGE_ATTACKER_TILES), 1, "no discount right at the threshold");
+  // Past the threshold the factor eases below 1 as sqrt(100000/att)^0.7 = (100000/att)^0.35.
+  const f = largeAttackerLossFactor(LARGE_ATTACKER_TILES * 4);
+  assert.ok(Math.abs(f - Math.pow(0.25, 0.35)) < 1e-9, "matches (100000/att)^0.35");
+  assert.ok(f < 1, "a huge attacker projects force more cheaply");
+  // Monotonic: the bigger the attacker, the cheaper each tile it takes.
+  assert.ok(
+    largeAttackerLossFactor(LARGE_ATTACKER_TILES * 9) < largeAttackerLossFactor(LARGE_ATTACKER_TILES * 4),
+    "bigger attacker = cheaper conquest",
+  );
 });
 
 test("terrainCombat buckets elevation into plains/highland/mountain mag/speed bands", () => {
@@ -373,6 +430,15 @@ test("frontier priority captures easy low ground before high ground", () => {
 
   assert.equal(grid.ownerOf(2), 1, "flat low ground is taken first");
   assert.equal(grid.ownerOf(0), NEUTRAL_PLAYER, "dear mountain ground is left for last");
+});
+
+test("terrainPriorityWeight buckets elevation into OpenFront's 1 / 1.5 / 2 bands", () => {
+  assert.equal(terrainPriorityWeight(0), 1, "plains");
+  assert.equal(terrainPriorityWeight(9), 1, "top of the plains band");
+  assert.equal(terrainPriorityWeight(10), 1.5, "highland");
+  assert.equal(terrainPriorityWeight(19), 1.5, "top of the highland band");
+  assert.equal(terrainPriorityWeight(20), 2, "mountain");
+  assert.equal(terrainPriorityWeight(30), 2, "top of the mountain band");
 });
 
 test("expansion spreads as an even blob, not a contour-hugging tendril", () => {
