@@ -78,6 +78,15 @@ interface PendingBuild {
 const MAX_EVENTS = 10;
 
 /**
+ * Per-client cap on expand/build intents queued between ticks. A legitimate
+ * player can't click faster than this in one ~100ms tick window; without a
+ * cap, a client that floods CLIENT_RASTER_EXPAND/BUILD messages could grow
+ * `pendingExpands`/`pendingBuilds` unboundedly before the next tick drains
+ * them.
+ */
+const MAX_PENDING_PER_CLIENT = 16;
+
+/**
  * Curated hex colours for the first players, indexed by playerId-1. Small games
  * read identically to before; ids past this list get a distinct generated hue
  * (see {@link colorForPlayer}) so the now much larger, OpenFront-style fields
@@ -261,6 +270,14 @@ export class RasterGameSession {
   /** Determines spawn placement: each new subscriber takes the next slot. */
   private nextPlayerId: PlayerId = 1;
   private matchEndedBroadcast = false;
+  /**
+   * The match's winner once decided, including a timeLimit finish (where
+   * {@link RasterConflict.winner} itself stays null — only conquest sets it).
+   * Snapshots use this so a spectating, previously-eliminated client's
+   * winnerPlayerId poll (its only way to learn the match ended) also fires on
+   * a timeLimit finish, not just conquest.
+   */
+  private finalWinnerId: PlayerId | null = null;
   /** Cached spawn tiles per player, chosen deterministically from the terrain. */
   private readonly spawnTiles: TileRef[] = [];
   /** Players wiped off the map — their entire territory has been captured. */
@@ -404,6 +421,11 @@ export class RasterGameSession {
     return chosen;
   }
 
+  /**
+   * Seat `clientId` as a new player. Returns an unsubscribe function, or `null`
+   * if the session has already seated {@link MAX_PLAYERS} nations — callers must
+   * check for `null` instead of assuming a seat is always available.
+   */
   public subscribe(
     clientId: string,
     send: RasterMessageHandler,
@@ -411,9 +433,9 @@ export class RasterGameSession {
     wantsRaster = true,
     playerName?: string,
     isBot = false,
-  ): () => void {
+  ): (() => void) | null {
     if (this.nextPlayerId > MAX_PLAYERS) {
-      throw new Error(`Raster session is full (max ${MAX_PLAYERS} players).`);
+      return null;
     }
     const playerId = this.nextPlayerId;
     this.nextPlayerId += 1;
@@ -568,11 +590,15 @@ export class RasterGameSession {
 
   public queueExpand(clientId: string, intent: RasterExpandIntent): void {
     if (!this.subscribers.has(clientId)) return;
+    const pending = this.pendingExpands.reduce((n, p) => (p.clientId === clientId ? n + 1 : n), 0);
+    if (pending >= MAX_PENDING_PER_CLIENT) return;
     this.pendingExpands.push({ clientId, intent });
   }
 
   public queueBuild(clientId: string, intent: RasterBuildIntent): void {
     if (!this.subscribers.has(clientId)) return;
+    const pending = this.pendingBuilds.reduce((n, p) => (p.clientId === clientId ? n + 1 : n), 0);
+    if (pending >= MAX_PENDING_PER_CLIENT) return;
     this.pendingBuilds.push({ clientId, intent });
   }
 
@@ -785,6 +811,17 @@ export class RasterGameSession {
       });
     }
 
+    // Decide the match winner (if any) before broadcasting this tick's
+    // snapshot: a timeLimit finish's winner comes from leaderByTiles(), not
+    // from the engine's own `conflict.winner` (conquest-only), and this is the
+    // last snapshot ever sent once the match ends — a spectating,
+    // previously-eliminated client relies on this snapshot's winnerPlayerId to
+    // learn the match is over, since it doesn't get a second MATCH_ENDED here.
+    const timeUp = this.conflict.tick >= this.maxDurationTicks;
+    if (tickResult.winner !== null || timeUp) {
+      this.finalWinnerId = tickResult.winner !== null ? tickResult.winner : this.leaderByTiles();
+    }
+
     this.broadcastSnapshots();
 
     // Give every player eliminated this tick their own end-of-run summary now —
@@ -812,11 +849,10 @@ export class RasterGameSession {
     // End the match on conquest (a player owns everything) or when the clock
     // runs out (the territory leader is crowned). Either way, broadcast a
     // per-player run summary for the post-match stats screen.
-    const timeUp = this.conflict.tick >= this.maxDurationTicks;
     if (tickResult.winner !== null || timeUp) {
       this.matchEndedBroadcast = true;
       const reason: RasterMatchEndReason = tickResult.winner !== null ? "conquest" : "timeLimit";
-      const winnerId = tickResult.winner !== null ? tickResult.winner : this.leaderByTiles();
+      const winnerId = this.finalWinnerId;
       const endTick = this.conflict.tick;
 
       const endLine = winnerId === null
@@ -1235,7 +1271,7 @@ export class RasterGameSession {
       includeTerrain: false,
       terrainHash: this.terrainHash,
       terrainBase64: this.terrainBase64,
-      winnerPlayerId: this.conflict.winner,
+      winnerPlayerId: this.finalWinnerId ?? this.conflict.winner,
       recentEvents: this.recentEvents,
       crossings: this.lastCrossings,
       ships: this.lastShips,

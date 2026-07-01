@@ -62,6 +62,12 @@ export class MatchRegistry {
 
     // The human is seated only once they pick a start position (autoSpawn=false).
     const unsubHuman = session.subscribe(clientId, send, false);
+    if (!unsubHuman) {
+      // A brand-new session always has a free seat for its first subscriber, so
+      // this is unreachable today — guarded defensively rather than trusting it.
+      this.activeMatches.delete(matchId);
+      return () => {};
+    }
     this.clientToSession.set(clientId, session);
 
     // Field size: a fixed override when supplied, otherwise scaled to the land
@@ -115,8 +121,10 @@ export class MatchRegistry {
     // Tick AI sessions; remove ones that have ended or been abandoned.
     for (const [gameId, aiSession] of this.aiSessions) {
       aiSession.getSession().tick();
-      // Clean up sessions idle for more than 30 minutes
-      if (Date.now() - aiSession.createdAt > 30 * 60 * 1000) {
+      // Clean up sessions with no agent activity (poll or action) for more than
+      // 30 minutes — not sessions merely older than that, so a long-running
+      // match an agent is actively playing is never force-destroyed mid-game.
+      if (Date.now() - aiSession.lastActivityAt > 30 * 60 * 1000) {
         aiSession.destroy();
         this.aiSessions.delete(gameId);
       }

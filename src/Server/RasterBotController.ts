@@ -122,6 +122,12 @@ export class RasterBotController {
     // isBot=true so the session applies the per-difficulty AI handicaps and the
     // full conquer bounty when this nation is beaten.
     const unsubscribe = session.subscribe(this.config.botId, (message) => this.onMessage(message), true, false, undefined, true);
+    if (!unsubscribe) {
+      // The session is already full (e.g. exhausted MAX_PLAYERS seats) — this
+      // bot simply never takes the field rather than crashing the caller.
+      this.session = null;
+      return () => {};
+    }
     return () => {
       this.session = null;
       this.myPlayerId = null;
