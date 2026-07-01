@@ -134,6 +134,10 @@ export class TerritoryGrid {
   private seaPathParent?: Int32Array;
   private seaPathStamp?: Int32Array;
   private seaPathGeneration?: number;
+  // Reused, generation-stamped scratch for the {@link findWaterRoute} BFS.
+  private waterRouteParent?: Int32Array;
+  private waterRouteStamp?: Int32Array;
+  private waterRouteGeneration?: number;
   // Reused, generation-stamped scratch for the {@link resolveSeaLanding} BFS.
   private landingDepth?: Int32Array;
   private landingStamp?: Int32Array;
@@ -261,25 +265,29 @@ export class TerritoryGrid {
   }
 
   /**
-   * True if a land attack could march from `player`'s territory to `dest` over a
-   * *bounded* corridor of contiguous capturable land — i.e. `dest` is close
-   * enough by land that crossing it on foot is the sensible route. This is the
-   * land-vs-boat gate (OpenFront's model): a 4-connected BFS spreads out of
-   * `dest` over capturable land (any owner) and succeeds the instant it touches a
-   * tile `player` owns, but gives up once it has travelled `maxSteps` tiles.
+   * True if a land attack could march from `player`'s territory to a **neutral**
+   * `dest` over a *bounded* corridor of **unowned** land — i.e. `dest` is close
+   * enough, over ground nobody else holds, that crossing it on foot is the
+   * sensible route. This is OpenFront's neutral-land half of `canAttack`: a
+   * 4-connected BFS spreads out of `dest` over neutral land only and succeeds the
+   * instant it touches a tile `player` owns, giving up once it has travelled
+   * `maxSteps` tiles.
    *
-   * The cap is the whole point. Two coasts of one giant landmass are technically
+   * Two properties matter, both matching OpenFront. **The corridor is neutral
+   * only:** a front can't march *through* a third party's territory to reach the
+   * far side, so a chain blocked by someone else's land fails here and falls
+   * through to a boat — the fix for an enemy wedged between two coasts. **The
+   * reach is bounded:** two coasts of one giant landmass are technically
    * land-connected, so an unbounded "same landmass?" test ({@link
-   * ownsLandComponentOf}) would always answer "march" — and a click on a coast
-   * across a bay would crawl a front the long way round instead of sending a
-   * boat. Bounding the reach makes a far coast fall through to an amphibious
-   * order ({@link resolveSeaLanding}) exactly when the land detour is long, which
-   * is what a player means by "that landmass across the water".
+   * ownsLandComponentOf}) would always answer "march" and crawl a front the long
+   * way round a bay; the cap makes a far coast fall through to an amphibious
+   * order ({@link resolveSeaLanding}) exactly when the land detour is long.
    *
-   * Fast-rejects via {@link ownsLandComponentOf} when `dest` is on a landmass the
-   * player holds no ground on (a different island can never be land-reachable),
-   * so the BFS only runs for same-landmass clicks. Generation-stamped scratch
-   * keeps repeated calls allocation-free.
+   * Only meaningful for a neutral `dest`: a march onto a *player's* tile is gated
+   * purely by a shared border ({@link hasLandBorderWith}), as in OpenFront. Fast-
+   * rejects via {@link ownsLandComponentOf} when `dest` is on a landmass the
+   * player holds no ground on. Generation-stamped scratch keeps repeated calls
+   * allocation-free.
    */
   canReachByLand(player: PlayerId, dest: TileRef, maxSteps: number = LAND_ATTACK_REACH): boolean {
     if (!this.isCapturable(dest)) return false;
@@ -300,7 +308,9 @@ export class TerritoryGrid {
       for (const n of this.map.neighbors(tile)) {
         // Touching the player's own ground means a contiguous front can reach here.
         if (this.owner[n] === player) return true;
-        if (d < maxSteps && this.isCapturable(n) && stamp[n] !== generation) {
+        // Only spread through *neutral* land: a march can't pass through a third
+        // party's territory (OpenFront). Enemy-held ground blocks the corridor.
+        if (d < maxSteps && this.isCapturable(n) && this.owner[n] === NEUTRAL_PLAYER && stamp[n] !== generation) {
           stamp[n] = generation;
           queue.push(n);
           depth.push(d + 1);
@@ -786,6 +796,60 @@ export class TerritoryGrid {
           const path: TileRef[] = [n];
           for (let t = water; t !== dest; t = parent[t]) path.push(t);
           path.push(dest);
+          return path;
+        }
+        if (this.map.isWater(n) && stamp[n] !== generation) {
+          stamp[n] = generation;
+          parent[n] = water;
+          queue.push(n);
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Shortest contiguous water route between two coastal tiles `from` and `to`
+   * (e.g. two trade ports), or `null` when no body of water joins them. The
+   * returned path is `[from, water…water, to]`: the source coast, every water
+   * tile sailed, then the destination coast — so a ship hugs the real shoreline
+   * instead of cutting straight across land, exactly like OpenFront's water
+   * pathfinder routes trade and transport ships shore-to-shore.
+   *
+   * A single BFS runs *outward from `to`'s bordering water*; the first water tile
+   * it reaches that also borders `from` gives the nearest route, and parent
+   * pointers (water→`to`) already spell the path in `from`→`to` order, so no
+   * reversal is needed. Deterministic via the map's fixed neighbour order. The
+   * search is confined to a single connected water body, so it never explores an
+   * ocean the two coasts don't share.
+   */
+  findWaterRoute(from: TileRef, to: TileRef): TileRef[] | null {
+    if (from === to) return null;
+    const size = this.map.size;
+    const parent = (this.waterRouteParent ??= new Int32Array(size));
+    const stamp = (this.waterRouteStamp ??= new Int32Array(size).fill(-1));
+    const generation = (this.waterRouteGeneration = (this.waterRouteGeneration ?? 0) + 1);
+    const queue: TileRef[] = [];
+
+    // Seed with the water bordering the destination coast.
+    for (const n of this.map.neighbors(to)) {
+      if (this.map.isWater(n) && stamp[n] !== generation) {
+        stamp[n] = generation;
+        parent[n] = to;
+        queue.push(n);
+      }
+    }
+    if (queue.length === 0) return null;
+
+    for (let head = 0; head < queue.length; head += 1) {
+      const water = queue[head];
+      for (const n of this.map.neighbors(water)) {
+        if (n === from) {
+          // Reached the source coast. Walk parents water→`to`, yielding
+          // [from, water, …, seed-water, to] with no reversal.
+          const path: TileRef[] = [from];
+          for (let t = water; t !== to; t = parent[t]) path.push(t);
+          path.push(to);
           return path;
         }
         if (this.map.isWater(n) && stamp[n] !== generation) {

@@ -429,15 +429,15 @@ export const CLICK_SNAP_RADIUS = 4;
  * 4-connected land travel, before a click is treated as an amphibious (boat)
  * order instead.
  *
- * This is the land-vs-boat gate, and it mirrors OpenFront precisely. OpenFront
- * does not decide "boat or march" by whether the target sits on the *same
- * landmass* (on a real map an entire continent is one connected landmass, so
- * that test would march a front the long way around a bay forever). Instead it
- * asks a bounded question: starting from the clicked tile, can a short corridor
- * of contiguous land reach my territory? OpenFront caps that flood fill at a
- * Manhattan radius (≈200 tiles) — within it the target is "marchable" and a land
- * attack is launched; beyond it the sensible route is across the water, so a
- * transport ship is sent (see {@link TerritoryGrid.canReachByLand}).
+ * This is the land-vs-boat gate for **neutral** land, mirroring OpenFront's
+ * `canAttack`. OpenFront decides a march to a player's tile purely by a shared
+ * border (see {@link TerritoryGrid.hasLandBorderWith}); a *neutral* click,
+ * though, marches if a bounded corridor of **unowned** land reaches back to the
+ * attacker. OpenFront caps that flood fill at ≈200 steps — within it the neutral
+ * target is "marchable" and a land attack is launched; beyond it (or when the
+ * only corridor threads through someone else's territory) the sensible route is
+ * across the water, so a transport ship is sent (see
+ * {@link TerritoryGrid.canReachByLand}).
  *
  * On the small procedural/ASCII test maps every tile is well within this radius,
  * so they behave exactly as a contiguous landmass; the bound only bites on the

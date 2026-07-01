@@ -77,16 +77,56 @@ interface PendingBuild {
 
 const MAX_EVENTS = 10;
 
-/** Hex colours for player 1..N, wrapping for large fields. Indexed by playerId-1. */
+/**
+ * Curated hex colours for the first players, indexed by playerId-1. Small games
+ * read identically to before; ids past this list get a distinct generated hue
+ * (see {@link colorForPlayer}) so the now much larger, OpenFront-style fields
+ * stay legible instead of cycling a tiny palette.
+ */
 const PLAYER_COLORS: readonly string[] = [
   "#3b82f6", "#ef4444", "#22c55e", "#f59e0b", "#a855f7", "#06b6d4",
   "#ec4899", "#84cc16", "#f97316", "#0ea5e9",
 ];
 
 /**
+ * Pick a colour for a player id. The curated palette covers the first nations;
+ * beyond it we walk the hue wheel with the golden-angle so successive nations
+ * land far apart in colour, keeping a crowded map readable without hand-listing
+ * dozens of hex codes.
+ */
+const colorForPlayer = (id: PlayerId): string => {
+  if (id - 1 < PLAYER_COLORS.length) return PLAYER_COLORS[id - 1];
+  const hue = ((id - 1 - PLAYER_COLORS.length) * 137.508) % 360;
+  // Alternate lightness so neighbouring generated hues never read as twins.
+  const light = (id - PLAYER_COLORS.length) % 2 === 0 ? 55 : 42;
+  return hslToHex(hue, 62, light);
+};
+
+/** Minimal HSL→hex (h in degrees, s/l in percent) for generated nation colours. */
+const hslToHex = (h: number, s: number, l: number): string => {
+  const sn = s / 100;
+  const ln = l / 100;
+  const c = (1 - Math.abs(2 * ln - 1)) * sn;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = ln - c / 2;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  if (h < 60) [r, g, b] = [c, x, 0];
+  else if (h < 120) [r, g, b] = [x, c, 0];
+  else if (h < 180) [r, g, b] = [0, c, x];
+  else if (h < 240) [r, g, b] = [0, x, c];
+  else if (h < 300) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  const toHex = (v: number) => Math.round((v + m) * 255).toString(16).padStart(2, "0");
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+};
+
+/**
  * Nation names, indexed by playerId-1. The first six keep the classic colour
  * names (so small games read identically); the rest are distinct so a crowded
- * map of many small nations stays legible. Length sets the player cap.
+ * map of many small nations stays legible. Length sets the player cap — kept
+ * large so the bigger Earth maps can seat an OpenFront-style field of rivals.
  */
 const NATION_NAMES: readonly string[] = [
   "Blue Empire", "Red Empire", "Green Empire", "Amber Empire", "Violet Empire", "Cyan Empire",
@@ -94,16 +134,18 @@ const NATION_NAMES: readonly string[] = [
   "Ash Horde", "Dawn Coalition", "Storm Reach", "Ridge Confederacy", "Dust Khanate", "Reed Princes",
   "Granite Order", "Marsh Syndicate", "Cinder Tribes", "Vale Compact", "Salt Barony", "Pine Hegemony",
   "Wolf Banner", "Falcon State", "Boar Clans", "Serpent Cult", "Bear Holds", "Shark Fleet",
-  "Crane Court", "Lynx Reach",
+  "Crane Court", "Lynx Reach", "Onyx Pact", "Coral League", "Briar Clans", "Harbor Union",
+  "Glass Dominion", "Thorn Reach", "Copper Court", "Mire Princes", "Slate Order", "Quartz Barony",
+  "Raven Banner", "Otter State", "Bison Clans", "Viper Cult", "Moose Holds", "Orca Fleet",
 ];
 
 /** Maximum nations a single session can seat (1 human + up to N-1 bots). */
 const MAX_PLAYERS = NATION_NAMES.length;
 
-/** Display name + colour for a player id (both wrap for ids beyond the lists). */
+/** Display name + colour for a player id (the name wraps for ids beyond the list). */
 const metaForPlayer = (id: PlayerId): { name: string; color: string } => ({
   name: NATION_NAMES[(id - 1) % NATION_NAMES.length],
-  color: PLAYER_COLORS[(id - 1) % PLAYER_COLORS.length],
+  color: colorForPlayer(id),
 });
 
 export interface RasterGameSessionOptions {
@@ -944,6 +986,10 @@ export class RasterGameSession {
     if (troops > pool) {
       return { kind: "rejected", reason: "INSUFFICIENT_TROOPS", message: "Not enough troops in your pool." };
     }
+    // A transport ship carries OpenFront's `boatAttackAmount`: one-fifth of the
+    // pool, and never more than the slider asked for — `min(clicked, ⌊pool/5⌋)`.
+    // Land attacks still commit the full slider amount; only boats are rationed.
+    const boatTroops = Math.min(troops, Math.floor(pool / 5));
 
     // Snap a click that fell on un-ownable terrain (open water or impassable
     // rock) to the nearest land the player plausibly meant, so targeting works
@@ -957,9 +1003,9 @@ export class RasterGameSession {
       // Before giving up, treat it as an amphibious order: if a transport ship can
       // reach a shore near the click, sail there. Only a click with no reachable
       // shore at all is finally rejected.
-      const landing = this.grid.resolveSeaLanding(attacker, rawRef);
+      const landing = boatTroops >= 1 ? this.grid.resolveSeaLanding(attacker, rawRef) : null;
       if (landing !== null) {
-        return { kind: "sea", intent: { attacker, dest: landing, troops } };
+        return { kind: "sea", intent: { attacker, dest: landing, troops: boatTroops } };
       }
       return { kind: "rejected", reason: "INVALID_TILE", message: "No land near there to target." };
     }
@@ -977,44 +1023,31 @@ export class RasterGameSession {
       };
     }
 
-    // Within land-march reach of the attacker → a contiguous land attack rolls to
-    // it. Out of reach (a separate island, or a coast only sensibly crossed by
-    // water — across a bay on the same giant landmass) → dispatch a transport ship
-    // toward the click instead. The reach is bounded, so two coasts of one
-    // continent separated by water resolve to a boat, not a march the long way
-    // round — see {@link TerritoryGrid.canReachByLand}.
-    if (this.grid.canReachByLand(attacker, ref, LAND_ATTACK_REACH)) {
-      // We already border the clicked owner (neutral or a rival): push straight
-      // into them, biased toward the exact tile clicked.
-      if (this.grid.hasLandBorderWith(attacker, target)) {
-        return { kind: "land", intent: { attacker, target, troops, toward: ref } };
-      }
-      // Same landmass but not yet bordering that rival. Rather than a dead
-      // rejection, march toward the click through whatever neutral ground we do
-      // border — the front heads that way and rolls into the rival once adjacent,
-      // instead of the player having to hand-walk their border over there first.
-      if (target !== NEUTRAL_PLAYER && this.grid.hasLandBorderWith(attacker, NEUTRAL_PLAYER)) {
-        return { kind: "land", intent: { attacker, target: NEUTRAL_PLAYER, troops, toward: ref } };
-      }
-      return {
-        kind: "rejected",
-        reason: "NO_FRONTIER",
-        message: target === NEUTRAL_PLAYER
-          ? "Your border doesn't touch any neutral land there yet."
-          : "There's no land route toward that opponent yet.",
-      };
+    // Land-vs-boat, exactly as OpenFront's `canAttack` decides it:
+    //   • an enemy player's tile is a land attack **only across a shared border**
+    //     — there is no "march the long way round" to a rival you don't touch;
+    //   • a neutral tile is a land attack when a bounded corridor of *unowned*
+    //     land reaches back to us ({@link TerritoryGrid.canReachByLand});
+    //   • anything else routes to a transport ship if the water reaches it.
+    // An enemy wedged between our two coasts fails both land tests (no border,
+    // and the corridor isn't neutral), so it correctly becomes a boat.
+    const canMarch = target === NEUTRAL_PLAYER
+      ? this.grid.canReachByLand(attacker, ref, LAND_ATTACK_REACH)
+      : this.grid.hasLandBorderWith(attacker, target);
+    if (canMarch) {
+      return { kind: "land", intent: { attacker, target, troops, toward: ref } };
     }
-    // The click is on a different landmass. Rather than demanding the player hit
-    // an exact in-range coastal tile, land the boat on the reachable shore
-    // nearest the click (its own tile wins when that tile is itself reachable).
-    const landing = this.grid.resolveSeaLanding(attacker, ref);
+    // Not marchable → a transport ship to the reachable shore nearest the click
+    // (its own tile wins when that tile is itself reachable). Rather than demand
+    // the player hit an exact in-range coastal tile, the boat picks the shore.
+    const landing = boatTroops >= 1 ? this.grid.resolveSeaLanding(attacker, ref) : null;
     if (landing !== null) {
-      return { kind: "sea", intent: { attacker, dest: landing, troops } };
+      return { kind: "sea", intent: { attacker, dest: landing, troops: boatTroops } };
     }
     return {
       kind: "rejected",
       reason: "NO_FRONTIER",
-      message: "No water route reaches that area (it may be too far across open water).",
+      message: "No route reaches that area — no land border, and no water crossing to it.",
     };
   }
 

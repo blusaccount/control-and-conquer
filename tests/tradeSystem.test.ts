@@ -18,6 +18,18 @@ const rowMap = (mask: string) => {
   return buildTerrainFromMask({ width, height: 1, land, elevation });
 };
 
+/** 2-D map from equal-length mask rows: '#' = land, ' ' = water. */
+const gridMap = (rows: string[]) => {
+  const height = rows.length;
+  const width = rows[0].length;
+  const land = new Uint8Array(width * height);
+  const elevation = new Uint8Array(width * height);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) if (rows[y][x] === "#") land[y * width + x] = 1;
+  }
+  return buildTerrainFromMask({ width, height, land, elevation });
+};
+
 test("tradeShipGold follows OpenFront's sigmoid: long hauls pay far more than short hops", () => {
   assert.ok(tradeShipGold(1000) > tradeShipGold(100), "a longer route pays more");
   // Approaches ~75,000 + 50*dist for a very long haul (sigmoid ~1).
@@ -52,6 +64,53 @@ test("two ports across a shared sea trade and pay BOTH owners gold", () => {
   const expected = tradeShipGold(dist);
   assert.ok(grid.goldOf(1) >= expected, `port owner 1 was paid the trade gold, got ${grid.goldOf(1)}`);
   assert.ok(grid.goldOf(2) >= expected, `port owner 2 was paid the trade gold, got ${grid.goldOf(2)}`);
+});
+
+test("a trade ship sails the water route and never crosses land", () => {
+  // An L-shaped channel: the two ports (A at 0,0 and B at 1,2) share the water,
+  // but the STRAIGHT line between them cuts across the land block at the corner.
+  // The ship must hug the channel — every position it reports must be on water.
+  //   col:  0 1 2 3
+  //   y0:   A . . #
+  //   y1:   # # . #
+  //   y2:   # B . #
+  //   y3:   # # # #
+  const map = gridMap([
+    "#  #",
+    "## #",
+    "## #",
+    "####",
+  ]);
+  const grid = new TerritoryGrid(map);
+  const A = map.ref(0, 0);
+  const B = map.ref(1, 2);
+  grid.addPlayer(1, 0);
+  grid.addPlayer(2, 0);
+  grid.claim(A, 1);
+  grid.claim(B, 2);
+  grid.placeBuilding(A, "port");
+  grid.placeBuilding(B, "port");
+
+  const trade = new TradeSystem(grid);
+  const isWaterOrPort = (ref: number) => map.isWater(ref) || ref === A || ref === B;
+
+  let sawShip = false;
+  // A port fires on OpenFront's spawn cadence (~100 ticks for the first ship), so
+  // run well past that.
+  for (let tick = 0; tick <= 200; tick += 1) {
+    trade.advance(tick);
+    for (const ship of trade.tradeViews()) {
+      sawShip = true;
+      // The reported position lies on the segment between two path tiles, so the
+      // nearest tile is always one of them — assert it is water (or a port).
+      const tile = map.ref(Math.round(ship.x), Math.round(ship.y));
+      assert.ok(
+        isWaterOrPort(tile),
+        `trade ship at (${ship.x.toFixed(2)}, ${ship.y.toFixed(2)}) sailed onto land tile ${tile}`,
+      );
+    }
+  }
+  assert.ok(sawShip, "a trade ship was dispatched across the channel");
 });
 
 test("a lone port with no partner across the water earns no trade gold", () => {

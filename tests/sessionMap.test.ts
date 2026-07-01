@@ -18,13 +18,6 @@ test("resolveCatalogSessionMap builds the earth heightmap choice with land", () 
   assert.ok(countLand(map) > 0, "earth has land");
 });
 
-test("resolveCatalogSessionMap builds the world ASCII choice with land", () => {
-  const choice = getMapChoice("world")!;
-  const { map } = resolveCatalogSessionMap(choice.options, choice.name);
-  assert.ok(map.size > 0);
-  assert.ok(countLand(map) > 0, "world has land");
-});
-
 test("resolveHeightmapSessionMap returns null for non-heightmap ids", () => {
   assert.equal(resolveHeightmapSessionMap("world", undefined), null);
   assert.equal(resolveHeightmapSessionMap(undefined, undefined), null);

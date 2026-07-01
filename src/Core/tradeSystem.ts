@@ -7,15 +7,17 @@
  * Trade Ship wiki / `TradeShipExecution`). This class owns that simulation — it
  * keeps a port roster in sync, dispatches and moves ships, and banks the payouts
  * — all deterministically (fixed spawn cadence, route picks break ties by tile
- * ref, straight-line interpolation; no `Math.random`), so it stays replay-stable
- * like the rail economy. `RasterConflict` ticks it once per tick and reads
+ * ref, a BFS water route; no `Math.random`), so it stays replay-stable like the
+ * rail economy. `RasterConflict` ticks it once per tick and reads
  * {@link tradeViews} for the snapshot.
  *
- * Routing is simplified relative to OpenFront: eligibility is real (two ports may
- * trade only if they border the *same* connected body of water), but the lane is
- * interpolated straight between the ports and the trip distance is their
- * Manhattan separation, rather than an A* water path. This keeps the system
- * cheap and deterministic; a future pass can sail the actual shoreline route.
+ * Routing matches OpenFront's naval model: two ports may trade only if they
+ * border the *same* connected body of water, and a dispatched ship sails the
+ * actual water route between them ({@link TerritoryGrid.findWaterRoute}) — the
+ * shortest shore-to-shore path through the sea — rather than cutting a straight
+ * line across intervening land. Trip *gold* is still priced on the ports'
+ * Manhattan separation (OpenFront's `tradeShipGold(dist)`), independent of how
+ * far the ship actually has to sail to hug the coastline.
  */
 import type { TileRef } from "./GameMap.js";
 import { type PlayerId, type TerritoryGrid } from "./TerritoryGrid.js";
@@ -41,9 +43,11 @@ interface TradeShip {
   owner: PlayerId;
   from: TileRef;
   to: TileRef;
-  /** Tiles sailed so far along the straight lane. */
+  /** Water route `[from, water…water, to]` the ship follows shore-to-shore. */
+  path: TileRef[];
+  /** Tiles sailed so far along {@link path}. */
   progress: number;
-  /** Lane length in tiles (Manhattan separation of the two ports). */
+  /** Manhattan separation of the two ports — the basis for the trade payout. */
   dist: number;
 }
 
@@ -135,7 +139,10 @@ export class TradeSystem {
     const survivors: TradeShip[] = [];
     for (const ship of this.ships) {
       ship.progress += TRADE_SHIP_TILES_PER_TICK;
-      if (ship.progress < ship.dist) {
+      // The ship has arrived once it has walked to the last tile of its water
+      // route (the destination port). Route length is one less than the tile
+      // count: an N-tile path has N-1 hops between tiles.
+      if (ship.progress < ship.path.length - 1) {
         survivors.push(ship);
         continue;
       }
@@ -182,18 +189,34 @@ export class TradeSystem {
       const dist = Math.abs(this.grid.map.x(src.ref) - this.grid.map.x(dst.ref)) +
         Math.abs(this.grid.map.y(src.ref) - this.grid.map.y(dst.ref));
       if (dist <= 0) continue;
-      this.ships.push({ id: this.nextShipId++, owner: src.owner, from: src.ref, to: dst.ref, progress: 0, dist });
+      // Sail the real water route between the ports (main's shore-hugging path);
+      // skip the pairing if — despite sharing a sea component — no shore-to-shore
+      // path can be traced (defensive).
+      const path = this.grid.findWaterRoute(src.ref, dst.ref);
+      if (!path || path.length < 2) continue;
+      this.ships.push({ id: this.nextShipId++, owner: src.owner, from: src.ref, to: dst.ref, path, progress: 0, dist });
+      // Successful dispatch resets the port's rejection counter (OpenFront spawn rate).
       this.rejections.set(src.ref, 0);
     }
   }
 
-  /** Interpolate a trade ship's position (fractional tile) along its lane. */
+  /**
+   * A trade ship's position as a fractional tile, interpolated between the two
+   * water-route tiles it currently sits between. Following the path tile-by-tile
+   * (rather than lerping straight from port to port) is what keeps the dot on the
+   * water and off the land.
+   */
   private shipPosition(ship: TradeShip): { x: number; y: number } {
     const map = this.grid.map;
-    const f = ship.dist === 0 ? 1 : Math.min(1, ship.progress / ship.dist);
+    const last = ship.path.length - 1;
+    const clamped = Math.max(0, Math.min(last, ship.progress));
+    const i = Math.min(last - 1, Math.floor(clamped));
+    const frac = clamped - i;
+    const a = ship.path[i];
+    const b = ship.path[i + 1];
     return {
-      x: map.x(ship.from) + (map.x(ship.to) - map.x(ship.from)) * f,
-      y: map.y(ship.from) + (map.y(ship.to) - map.y(ship.from)) * f,
+      x: map.x(a) + (map.x(b) - map.x(a)) * frac,
+      y: map.y(a) + (map.y(b) - map.y(a)) * frac,
     };
   }
 }
