@@ -1,0 +1,25 @@
+Copyright (c) 2026 Lukas Becker. All Rights Reserved.
+
+This repository and its contents — including but not limited to source code,
+game assets, and documentation — are proprietary and confidential. No part of
+this project may be copied, modified, distributed, sublicensed, publicly
+performed, or used in any form without the prior written permission of the
+copyright holder.
+
+------------------------------------------------------------------------------
+
+Note on OpenFront.io
+
+This project is an independent, clean-room reimplementation of certain
+publicly observable gameplay mechanics and numeric balancing found in
+openfront.io, which is itself licensed under the GNU Affero General Public
+License v3.0 (AGPL-3.0).
+
+No source code or art assets from openfront.io are included in, or were used
+to produce, this project. Game rules, mechanics, and numeric formulas are
+facts and are not subject to copyright protection; only a work's specific
+creative expression (source code, art, text) is protected. AGPL-3.0 governs
+OpenFront's own expression — none of which appears in this repository.
+
+See docs/openfront-balance-replication-plan.md for this project's clean-room
+methodology and sourcing notes.

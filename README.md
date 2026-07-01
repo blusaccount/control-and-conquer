@@ -146,3 +146,12 @@ Early prototype. Solo-vs-bots only (no human-vs-human yet); state is in-memory; 
 roguelite layers are designed but not yet implemented. See
 [`docs/openfront-gap-analysis.md`](docs/openfront-gap-analysis.md) for the
 prioritized roadmap.
+
+## License
+
+Proprietary — see [`LICENSE`](LICENSE). This project is an independent,
+clean-room reimplementation of certain OpenFront.io gameplay mechanics (game
+rules and numeric formulas are not copyrightable); no OpenFront source code or
+assets are used. See
+[`docs/openfront-balance-replication-plan.md`](docs/openfront-balance-replication-plan.md#0-methodik--lizenz-grenze-wichtig)
+for the clean-room methodology.
