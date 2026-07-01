@@ -66,3 +66,34 @@ export const initSettings = (): void => {
     document.addEventListener("click", () => setOpen(false));
   }
 };
+
+/**
+ * Wire the top-right frame controls (fullscreen toggle, leave match) — the
+ * page chrome around the match, not game state, so this is independent of
+ * whether a match is running and safe to call once at page load.
+ */
+export const initFrameControls = (): void => {
+  const fullscreenButton = document.querySelector<HTMLButtonElement>("#fullscreenButton");
+  if (fullscreenButton) {
+    fullscreenButton.addEventListener("click", () => {
+      if (document.fullscreenElement) {
+        void document.exitFullscreen();
+      } else {
+        void document.documentElement.requestFullscreen().catch(() => {
+          // Fullscreen can be denied (e.g. iframe without the allow attribute,
+          // or a user gesture requirement not met) — fail silently rather than
+          // surface a broken feature as an error.
+        });
+      }
+    });
+  }
+
+  const leaveButton = document.querySelector<HTMLButtonElement>("#leaveButton");
+  if (leaveButton) {
+    leaveButton.addEventListener("click", () => {
+      if (window.confirm("Leave this match and return to the menu?")) {
+        window.location.reload();
+      }
+    });
+  }
+};

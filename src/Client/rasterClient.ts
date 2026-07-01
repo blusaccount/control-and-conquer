@@ -32,6 +32,7 @@ import {
   type BuildingType,
 } from "../Core/buildings.js";
 import type { RasterDifficulty } from "../Core/messages.js";
+import { SIMULATION_TICK_RATE } from "../Server/simulationConfig.js";
 
 /** Options for starting a raster match: the chosen map and difficulty. */
 export interface RasterClientOptions {
@@ -714,6 +715,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.phase = snapshot.phase;
     runtime.spawnRemainingSeconds = snapshot.spawnRemainingSeconds;
     updateStartBanner();
+    updateMatchTimer(snapshot.tick);
 
     const me = snapshot.players.find((p) => p.playerId === runtime.myPlayerId);
     runtime.pool = me?.troops ?? 0;
@@ -1717,6 +1719,21 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       `<span class="start-banner-timer">${secs}s</span>` +
       `<span class="start-banner-sub">${escapeHtml(sub)}</span>`;
     ui.startBanner.classList.remove("hidden");
+  };
+
+  /**
+   * The top-right elapsed-match-time readout (mm:ss), OpenFront's frame timer.
+   * Blank during the spawn phase, which has its own countdown banner instead.
+   */
+  const updateMatchTimer = (tick: number): void => {
+    if (runtime.phase === "spawn") {
+      ui.matchTimer.textContent = "0:00";
+      return;
+    }
+    const totalSeconds = Math.floor(tick / SIMULATION_TICK_RATE);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    ui.matchTimer.textContent = `${minutes}:${String(seconds).padStart(2, "0")}`;
   };
 
   const renderSidebar = (): void => {
