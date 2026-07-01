@@ -132,15 +132,10 @@ const factoryDef = (): Group[] => {
   return [{ rule: "evenodd", segs: [...outline, { op: "CIRCLE", cx: 0, cy: 0, r: holeR }] }];
 };
 
-/**
- * Shield: flat top, curved sides tapering to a point, with a cross-shaped
- * cutout — like the city's door, an evenodd hole that reveals the
- * owner-coloured badge behind it, giving the shield an emblem without
- * needing a second colour.
- */
+/** Shield: flat top, curved sides tapering to a point. */
 const fortDef = (): Group[] => [
   {
-    rule: "evenodd",
+    rule: "nonzero",
     segs: [
       { op: "M", x: -0.7, y: -0.7 },
       { op: "L", x: 0.7, y: -0.7 },
@@ -148,8 +143,6 @@ const fortDef = (): Group[] => [
       { op: "Q", cx: 0.7, cy: 0.55, x: 0, y: 0.9 },
       { op: "Q", cx: -0.7, cy: 0.55, x: -0.7, y: 0.05 },
       { op: "Z" },
-      ...rectSegs(-0.12, -0.46, 0.12, 0.42),
-      ...rectSegs(-0.34, -0.14, 0.34, 0.1),
     ],
   },
 ];
