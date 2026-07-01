@@ -155,6 +155,9 @@ interface RasterRuntime {
   myFactories: number;
   /** The structure type the player is placing, or null when not in build mode. */
   buildMode: BuildingType | null;
+  /** Tile under the cursor, for the build-mode ghost preview. Null off-canvas. */
+  hoverTileX: number | null;
+  hoverTileY: number | null;
   /** Structures on the map this snapshot, drawn as icon markers. */
   buildings: RasterBuilding[];
   /** Auto-routed railroads this snapshot, drawn as track polylines. */
@@ -369,6 +372,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     myForts: 0,
     myFactories: 0,
     buildMode: null,
+    hoverTileX: null,
+    hoverTileY: null,
     buildings: [],
     rails: [],
     trains: [],
@@ -980,6 +985,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       drawLandings(now, ctx, scale);
       drawClickRipples(now, ctx, scale);
       drawFronts(ctx, scale);
+      drawBuildGhost(ctx, scale);
     }
     drawMinimap();
     requestAnimationFrame(renderFrame);
@@ -1540,6 +1546,46 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     ctx.restore();
   };
 
+  /**
+   * In build mode, outline the hovered tile with the structure's own colour
+   * and icon before the player commits — OpenFront's ghost-build preview.
+   * Green when the tile is a legal build site (owned, no existing structure),
+   * red otherwise, so the outline itself answers "can I build here?".
+   */
+  const drawBuildGhost = (ctx: CanvasRenderingContext2D, scale: number): void => {
+    const map = runtime.map;
+    const owner = runtime.owner;
+    const type = runtime.buildMode;
+    if (!map || !owner || !type || runtime.hoverTileX === null || runtime.hoverTileY === null) return;
+    const tx = runtime.hoverTileX;
+    const ty = runtime.hoverTileY;
+    if (!map.inBounds(tx, ty)) return;
+
+    const ref = map.ref(tx, ty);
+    const isMine = owner[ref] === runtime.myPlayerId;
+    const alreadyBuilt = runtime.buildings.some((b) => b.x === tx && b.y === ty);
+    const valid = isMine && !alreadyBuilt;
+    const outline = valid ? "rgba(74, 222, 128, 0.9)" : "rgba(248, 113, 113, 0.9)";
+    const fill = valid ? "rgba(74, 222, 128, 0.22)" : "rgba(248, 113, 113, 0.18)";
+
+    const { x: sx, y: sy } = worldToScreen(tx, ty);
+    const size = scale;
+    ctx.save();
+    ctx.fillStyle = fill;
+    ctx.strokeStyle = outline;
+    ctx.lineWidth = Math.max(1.5, scale * 0.08);
+    ctx.fillRect(sx, sy, size, size);
+    ctx.strokeRect(sx, sy, size, size);
+    if (scale >= 10) {
+      ctx.font = `${Math.min(scale * 0.6, 22)}px "Segoe UI Symbol", "Noto Sans Symbols2", system-ui, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = valid ? "#4ade80" : "#f87171";
+      ctx.fillText(BUILDING_DEFS[type].icon, sx + size / 2, sy + size / 2);
+    }
+    ctx.restore();
+  };
+
   // Ease each ship's drawn position toward its latest server position, then draw
   // it as a haloed dot. Smoothing between snapshots is what makes a ship appear
   // to glide continuously along the shortest water route it was assigned.
@@ -1914,6 +1960,20 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     lastX = event.clientX;
     lastY = event.clientY;
     clampView();
+  });
+
+  // Track the hovered tile at all times (not just while dragging) so build
+  // mode can draw a ghost preview of where the structure would land —
+  // OpenFront's ghost-build outline.
+  ui.mapCanvas.addEventListener("pointermove", (event) => {
+    if (!runtime.map) return;
+    const { x, y } = toCanvasPixels(event);
+    runtime.hoverTileX = Math.floor(runtime.view.x + x / runtime.view.scale);
+    runtime.hoverTileY = Math.floor(runtime.view.y + y / runtime.view.scale);
+  });
+  ui.mapCanvas.addEventListener("pointerleave", () => {
+    runtime.hoverTileX = null;
+    runtime.hoverTileY = null;
   });
 
   const endDrag = (event: PointerEvent): void => {
