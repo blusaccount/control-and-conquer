@@ -265,25 +265,29 @@ export class TerritoryGrid {
   }
 
   /**
-   * True if a land attack could march from `player`'s territory to `dest` over a
-   * *bounded* corridor of contiguous capturable land — i.e. `dest` is close
-   * enough by land that crossing it on foot is the sensible route. This is the
-   * land-vs-boat gate (OpenFront's model): a 4-connected BFS spreads out of
-   * `dest` over capturable land (any owner) and succeeds the instant it touches a
-   * tile `player` owns, but gives up once it has travelled `maxSteps` tiles.
+   * True if a land attack could march from `player`'s territory to a **neutral**
+   * `dest` over a *bounded* corridor of **unowned** land — i.e. `dest` is close
+   * enough, over ground nobody else holds, that crossing it on foot is the
+   * sensible route. This is OpenFront's neutral-land half of `canAttack`: a
+   * 4-connected BFS spreads out of `dest` over neutral land only and succeeds the
+   * instant it touches a tile `player` owns, giving up once it has travelled
+   * `maxSteps` tiles.
    *
-   * The cap is the whole point. Two coasts of one giant landmass are technically
+   * Two properties matter, both matching OpenFront. **The corridor is neutral
+   * only:** a front can't march *through* a third party's territory to reach the
+   * far side, so a chain blocked by someone else's land fails here and falls
+   * through to a boat — the fix for an enemy wedged between two coasts. **The
+   * reach is bounded:** two coasts of one giant landmass are technically
    * land-connected, so an unbounded "same landmass?" test ({@link
-   * ownsLandComponentOf}) would always answer "march" — and a click on a coast
-   * across a bay would crawl a front the long way round instead of sending a
-   * boat. Bounding the reach makes a far coast fall through to an amphibious
-   * order ({@link resolveSeaLanding}) exactly when the land detour is long, which
-   * is what a player means by "that landmass across the water".
+   * ownsLandComponentOf}) would always answer "march" and crawl a front the long
+   * way round a bay; the cap makes a far coast fall through to an amphibious
+   * order ({@link resolveSeaLanding}) exactly when the land detour is long.
    *
-   * Fast-rejects via {@link ownsLandComponentOf} when `dest` is on a landmass the
-   * player holds no ground on (a different island can never be land-reachable),
-   * so the BFS only runs for same-landmass clicks. Generation-stamped scratch
-   * keeps repeated calls allocation-free.
+   * Only meaningful for a neutral `dest`: a march onto a *player's* tile is gated
+   * purely by a shared border ({@link hasLandBorderWith}), as in OpenFront. Fast-
+   * rejects via {@link ownsLandComponentOf} when `dest` is on a landmass the
+   * player holds no ground on. Generation-stamped scratch keeps repeated calls
+   * allocation-free.
    */
   canReachByLand(player: PlayerId, dest: TileRef, maxSteps: number = LAND_ATTACK_REACH): boolean {
     if (!this.isCapturable(dest)) return false;
@@ -304,7 +308,9 @@ export class TerritoryGrid {
       for (const n of this.map.neighbors(tile)) {
         // Touching the player's own ground means a contiguous front can reach here.
         if (this.owner[n] === player) return true;
-        if (d < maxSteps && this.isCapturable(n) && stamp[n] !== generation) {
+        // Only spread through *neutral* land: a march can't pass through a third
+        // party's territory (OpenFront). Enemy-held ground blocks the corridor.
+        if (d < maxSteps && this.isCapturable(n) && this.owner[n] === NEUTRAL_PLAYER && stamp[n] !== generation) {
           stamp[n] = generation;
           queue.push(n);
           depth.push(d + 1);

@@ -21,7 +21,6 @@ import {
   NEUTRAL_CAPTURE_COST,
   neutralLossPerTile,
   RETREAT_MALUS_FRACTION,
-  SEA_CROSSING_SURCHARGE,
   SHIP_TILES_PER_TICK,
   terrainCombat,
 } from "./rasterCombatConfig.js";
@@ -521,20 +520,17 @@ export class RasterConflict {
   }
 
   /**
-   * Troops a transport ship spends to seize its landing tile — the normal
-   * capture cost plus the amphibious {@link SEA_CROSSING_SURCHARGE}, so an
-   * opposed landing is dearer than walking the same tile over land. The
-   * attacker's Sea God perk (seaSpeed) lowers that surcharge.
+   * Troops a transport ship spends to seize its landing tile. OpenFront charges
+   * **no amphibious surcharge** — a landing pays exactly the normal per-tile
+   * attacker loss for the beachhead, then whatever survives pushes inland as an
+   * ordinary land attack. The garrison defends a beachhead just as it defends any
+   * inland tile.
    */
   private beachheadCost(ref: TileRef, attacker: PlayerId, target: PlayerId, attackerForce: number): number {
-    const surcharge = Math.ceil(SEA_CROSSING_SURCHARGE / this.grid.modifiersOf(attacker).seaSpeed);
-    // The garrison defends a beachhead just as it defends an inland tile: pay the
-    // normal OpenFront attacker loss for the landing tile plus the amphibious
-    // surcharge, so an opposed landing is dearer than walking the same tile.
     const defTroops = target === NEUTRAL_PLAYER ? 0 : this.grid.troopsOf(target);
     const defDensity = target === NEUTRAL_PLAYER ? 0 : this.defenderDensityOf(target);
     const largeFactor = target === NEUTRAL_PLAYER ? 1 : largeDefenderLossFactor(this.grid.tileCountOf(target));
-    return Math.ceil(this.attackerTileLoss(ref, target, attackerForce, defTroops, defDensity) * largeFactor) + surcharge;
+    return Math.ceil(this.attackerTileLoss(ref, target, attackerForce, defTroops, defDensity) * largeFactor);
   }
 
   /**

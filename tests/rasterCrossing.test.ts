@@ -3,10 +3,7 @@ import { test } from "node:test";
 import { buildTerrainFromMask } from "../src/Core/terrainBuilder.js";
 import { NEUTRAL_PLAYER, TerritoryGrid } from "../src/Core/TerritoryGrid.js";
 import { RasterConflict, type SeaCrossing } from "../src/Core/RasterConflict.js";
-import {
-  MAX_TRANSPORT_SHIPS_PER_PLAYER,
-  SEA_CROSSING_SURCHARGE,
-} from "../src/Core/rasterCombatConfig.js";
+import { MAX_TRANSPORT_SHIPS_PER_PLAYER } from "../src/Core/rasterCombatConfig.js";
 import { IDENTITY_MODIFIERS } from "../src/Core/playerModifiers.js";
 
 /**
@@ -91,7 +88,9 @@ test("troops left after the beachhead push inland from the landing", () => {
 });
 
 test("a ship too small to pay the beachhead cost is repelled and refunds its troops", () => {
-  // A one-tile river: beachhead cost = base(1) + SEA_CROSSING_SURCHARGE.
+  // A one-tile river: with no amphibious surcharge (OpenFront), the beachhead is
+  // just the normal neutral capture cost, ⌈mag/5⌉ = 16 on plains. A handful of
+  // troops can't pay it, so the landing is repelled and the troops fall back.
   const grid = new TerritoryGrid(rowMap("## ##"));
   grid.addPlayer(1, 50);
   grid.claim(0, 1);
@@ -99,13 +98,12 @@ test("a ship too small to pay the beachhead cost is repelled and refunds its tro
   freezeIncome(grid);
   const conflict = new RasterConflict(grid);
 
-  const tooFew = SEA_CROSSING_SURCHARGE - 1; // can't afford to land
+  const tooFew = 5; // < ⌈mag/5⌉, can't afford to land
   assert.equal(conflict.launchShip({ attacker: 1, dest: 3, troops: tooFew }), null);
   for (let i = 0; i < 10; i += 1) conflict.processTick();
 
   assert.equal(grid.ownerOf(3), NEUTRAL_PLAYER, "the assault is repelled");
   assert.equal(grid.troopsOf(1), 50, "repelled troops fall back into the pool");
-  assert.ok(SEA_CROSSING_SURCHARGE > 0);
 });
 
 test("a landing repelled off a player-held shore loses the retreat malus", () => {
