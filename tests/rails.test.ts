@@ -114,10 +114,14 @@ test("links respect OpenFront's station range (min and max)", () => {
   assert.equal(inRange.edges.length, 1, "within the max range they link");
 });
 
-test("a factory links every in-range station (no artificial fan-out cap)", () => {
+test("the network is a spanning tree (with junctions), not a dense mesh", () => {
   const grid = landGrid(120, 120, 1);
-  // A factory hub ringed by cities all >=15 and <=110 tiles away: OpenFront links
-  // every one (no per-station cap of our own).
+  // A factory hub ringed by 8 cities, all within range of the hub AND of their
+  // ring neighbours. A full mesh would lay a link for every in-range pair (well
+  // over a dozen criss-crossing tracks). OpenFront instead grows a spanning tree,
+  // tapping existing track at junctions — so the graph over all nodes (stations
+  // plus any junctions) is connected and acyclic (edges == nodes − 1), and every
+  // station is reachable from the hub, with no redundant parallel track.
   const stations: RailStation[] = [stationAt(grid, 60, 60, 1, "factory")];
   const ring: Array<[number, number]> = [
     [60, 40], [60, 80], [40, 60], [80, 60], [42, 42], [78, 78], [42, 78], [78, 42],
@@ -125,9 +129,67 @@ test("a factory links every in-range station (no artificial fan-out cap)", () =>
   for (const [x, y] of ring) stations.push(stationAt(grid, x, y, 1, "city"));
 
   const network = computeRailNetwork(grid.map, stations);
+
+  // Collect every node (stations + grafted junctions) and confirm a tree: a
+  // connected graph with exactly nodes − 1 edges has no redundant links.
+  const nodeSet = new Set<number>();
+  for (const e of network.edges) {
+    nodeSet.add(e.a);
+    nodeSet.add(e.b);
+  }
+  assert.equal(network.edges.length, nodeSet.size - 1, "connected & acyclic: a spanning tree");
+  assert.ok(network.edges.length < 20, "far fewer links than a full every-pair mesh");
+
+  // Every station is reachable from the hub through the network.
   const hub = grid.map.ref(60, 60);
-  const hubLinks = network.adjacency.get(hub)?.length ?? 0;
-  assert.equal(hubLinks, ring.length, "the hub links all in-range ring stations");
+  const seen = new Set<number>([hub]);
+  const queue: number[] = [hub];
+  while (queue.length > 0) {
+    const cur = queue.pop()!;
+    for (const nb of network.adjacency.get(cur) ?? []) {
+      if (!seen.has(nb)) {
+        seen.add(nb);
+        queue.push(nb);
+      }
+    }
+  }
+  for (const s of stations) assert.ok(seen.has(s.ref), "every station reachable from the hub");
+});
+
+test("a station taps existing track at a T-junction, not a long parallel line", () => {
+  const grid = landGrid(100, 40, 1);
+  // A long straight track between a factory and a city (processed first, lower
+  // refs), then a city sitting just off the *middle* of that track. Rather than
+  // run a long line all the way back to the factory or the far city, it should
+  // tap the existing track at the nearest point — a T-junction — like OpenFront.
+  const factory = grid.map.ref(5, 10);
+  const farCity = grid.map.ref(95, 10);
+  const midCity = grid.map.ref(50, 25); // 15 tiles below the track's midpoint
+  const network = computeRailNetwork(grid.map, [
+    stationAt(grid, 5, 10, 1, "factory"),
+    stationAt(grid, 95, 10, 1, "city"),
+    stationAt(grid, 50, 25, 1, "city"),
+  ]);
+
+  // Splitting the trunk at the tap point yields three edges over four nodes.
+  assert.equal(network.edges.length, 3, "trunk split in two + the tap = 3 edges");
+  const nodeSet = new Set<number>();
+  for (const e of network.edges) {
+    nodeSet.add(e.a);
+    nodeSet.add(e.b);
+  }
+  assert.equal(nodeSet.size, 4, "three stations + one junction node");
+
+  // The extra node is a junction on the trunk (here the tile directly above the
+  // mid city), and the mid city connects straight to it — a short cardinal tap.
+  const junction = grid.map.ref(50, 10);
+  assert.ok(nodeSet.has(junction) && ![factory, farCity, midCity].includes(junction), "a junction was grafted");
+  assert.ok(
+    (network.adjacency.get(midCity) ?? []).includes(junction),
+    "the mid city taps the trunk at the junction, not the distant stations",
+  );
+  assert.ok(!(network.adjacency.get(midCity) ?? []).some((n) => n === factory || n === farCity),
+    "no long parallel track back to a distant station");
 });
 
 test("rails never link stations of different owners", () => {

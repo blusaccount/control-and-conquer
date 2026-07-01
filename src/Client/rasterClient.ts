@@ -1151,11 +1151,37 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   /**
    * Draw the auto-routed railroads as track polylines: a dark casing with a
    * lighter steel rail on top so the network reads as track, not borders. Drawn
-   * beneath the building icons (the stations) it links. Skipped when zoomed too
-   * far out to keep the map tidy, matching the building-marker threshold.
+   * beneath the building icons (the stations) it links. Zoomed far out the
+   * ballast/sleeper detail collapses into a single thin line so the clean
+   * spanning network still reads alongside the station dots.
    */
   const drawRails = (ctx: CanvasRenderingContext2D, scale: number): void => {
-    if (runtime.rails.length === 0 || scale < 2) return;
+    if (runtime.rails.length === 0) return;
+
+    // Zoomed out: the ballast/sleeper detail is illegible and only muddies the
+    // map, so draw the network as a single thin dark line — enough to read the
+    // links between the (now-visible) station dots without clutter.
+    if (scale < 2) {
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      ctx.save();
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = "rgba(40, 42, 52, 0.75)";
+      ctx.lineWidth = Math.max(1, 1.2 * dpr);
+      ctx.beginPath();
+      for (const rail of runtime.rails) {
+        if (rail.points.length < 2) continue;
+        for (let i = 0; i < rail.points.length; i += 1) {
+          const p = worldToScreen(rail.points[i][0] + 0.5, rail.points[i][1] + 0.5);
+          if (i === 0) ctx.moveTo(p.x, p.y);
+          else ctx.lineTo(p.x, p.y);
+        }
+      }
+      ctx.stroke();
+      ctx.restore();
+      return;
+    }
+
     const lw = Math.max(1, scale * 0.5);
     // Sleepers (perpendicular ties) only when there's room to read them.
     const showSleepers = scale >= 5;
