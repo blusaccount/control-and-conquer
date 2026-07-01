@@ -134,6 +134,10 @@ export class TerritoryGrid {
   private seaPathParent?: Int32Array;
   private seaPathStamp?: Int32Array;
   private seaPathGeneration?: number;
+  // Reused, generation-stamped scratch for the {@link findWaterRoute} BFS.
+  private waterRouteParent?: Int32Array;
+  private waterRouteStamp?: Int32Array;
+  private waterRouteGeneration?: number;
   // Reused, generation-stamped scratch for the {@link resolveSeaLanding} BFS.
   private landingDepth?: Int32Array;
   private landingStamp?: Int32Array;
@@ -783,6 +787,60 @@ export class TerritoryGrid {
           const path: TileRef[] = [n];
           for (let t = water; t !== dest; t = parent[t]) path.push(t);
           path.push(dest);
+          return path;
+        }
+        if (this.map.isWater(n) && stamp[n] !== generation) {
+          stamp[n] = generation;
+          parent[n] = water;
+          queue.push(n);
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Shortest contiguous water route between two coastal tiles `from` and `to`
+   * (e.g. two trade ports), or `null` when no body of water joins them. The
+   * returned path is `[from, water…water, to]`: the source coast, every water
+   * tile sailed, then the destination coast — so a ship hugs the real shoreline
+   * instead of cutting straight across land, exactly like OpenFront's water
+   * pathfinder routes trade and transport ships shore-to-shore.
+   *
+   * A single BFS runs *outward from `to`'s bordering water*; the first water tile
+   * it reaches that also borders `from` gives the nearest route, and parent
+   * pointers (water→`to`) already spell the path in `from`→`to` order, so no
+   * reversal is needed. Deterministic via the map's fixed neighbour order. The
+   * search is confined to a single connected water body, so it never explores an
+   * ocean the two coasts don't share.
+   */
+  findWaterRoute(from: TileRef, to: TileRef): TileRef[] | null {
+    if (from === to) return null;
+    const size = this.map.size;
+    const parent = (this.waterRouteParent ??= new Int32Array(size));
+    const stamp = (this.waterRouteStamp ??= new Int32Array(size).fill(-1));
+    const generation = (this.waterRouteGeneration = (this.waterRouteGeneration ?? 0) + 1);
+    const queue: TileRef[] = [];
+
+    // Seed with the water bordering the destination coast.
+    for (const n of this.map.neighbors(to)) {
+      if (this.map.isWater(n) && stamp[n] !== generation) {
+        stamp[n] = generation;
+        parent[n] = to;
+        queue.push(n);
+      }
+    }
+    if (queue.length === 0) return null;
+
+    for (let head = 0; head < queue.length; head += 1) {
+      const water = queue[head];
+      for (const n of this.map.neighbors(water)) {
+        if (n === from) {
+          // Reached the source coast. Walk parents water→`to`, yielding
+          // [from, water, …, seed-water, to] with no reversal.
+          const path: TileRef[] = [from];
+          for (let t = water; t !== to; t = parent[t]) path.push(t);
+          path.push(to);
           return path;
         }
         if (this.map.isWater(n) && stamp[n] !== generation) {
