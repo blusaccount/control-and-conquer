@@ -5,8 +5,7 @@ import { TerritoryGrid, type PlayerId } from "../src/Core/TerritoryGrid.js";
 import { RailSystem } from "../src/Core/railSystem.js";
 import { computeRailNetwork, type RailStation } from "../src/Core/railNetwork.js";
 import {
-  RAIL_CONNECT_DISTANCE,
-  RAIL_MAX_CONNECTIONS,
+  RAIL_STATION_MAX_RANGE,
   TRAIN_GOLD_SELF_BASE,
   TRAIN_GOLD_FLOOR,
   trainGold,
@@ -38,63 +37,97 @@ const stationAt = (
 // --- network routing -------------------------------------------------------
 
 test("a factory is required before any track is laid", () => {
-  const grid = landGrid(60, 10, 1);
-  // Two cities side by side, but no factory: OpenFront lays no rail.
+  const grid = landGrid(80, 60, 1);
+  // Two cities (>=15 tiles apart, OpenFront's station spacing), but no factory:
+  // OpenFront lays no rail without the factory catalyst.
   const noFactory = computeRailNetwork(grid.map, [
-    stationAt(grid, 5, 5, 1, "city"),
-    stationAt(grid, 15, 5, 1, "city"),
+    stationAt(grid, 20, 20, 1, "city"),
+    stationAt(grid, 45, 20, 1, "city"),
   ]);
   assert.equal(noFactory.edges.length, 0);
 
-  // Add a factory near them and the network wires all three together.
+  // Add a factory near them and the network wires them together.
   const withFactory = computeRailNetwork(grid.map, [
-    stationAt(grid, 5, 5, 1, "city"),
-    stationAt(grid, 15, 5, 1, "city"),
-    stationAt(grid, 10, 5, 1, "factory"),
+    stationAt(grid, 20, 20, 1, "city"),
+    stationAt(grid, 45, 20, 1, "city"),
+    stationAt(grid, 20, 45, 1, "factory"),
   ]);
-  assert.ok(withFactory.edges.length >= 2, "factory links to both cities");
+  assert.ok(withFactory.edges.length >= 2, "the factory catalyses links to the cities");
 });
 
-test("track is cardinal L-paths over land between linked stations", () => {
-  const grid = landGrid(60, 30, 1);
+test("track is a cardinal A* path over land between linked stations", () => {
+  const grid = landGrid(80, 60, 1);
   const network = computeRailNetwork(grid.map, [
     stationAt(grid, 10, 5, 1, "factory"),
-    stationAt(grid, 25, 20, 1, "city"),
+    stationAt(grid, 30, 25, 1, "city"),
   ]);
   assert.equal(network.edges.length, 1);
   const edge = network.edges[0];
-  // An L-path between non-aligned stations has exactly one bend (3 corners),
-  // and each leg runs in a single cardinal direction.
+  // Over open land the A* route (direction-change penalty) is a single-bend L:
+  // 3 corners, each leg a single cardinal direction.
   assert.equal(edge.corners.length, 3);
-  const [a, corner, b] = edge.corners;
   const aligned = (p: number, q: number): boolean =>
     grid.map.x(p) === grid.map.x(q) || grid.map.y(p) === grid.map.y(q);
-  assert.ok(aligned(a, corner) && aligned(corner, b), "both legs are cardinal");
+  for (let i = 1; i < edge.corners.length; i += 1) {
+    assert.ok(aligned(edge.corners[i - 1], edge.corners[i]), "each leg is cardinal");
+  }
 });
 
-test("links respect the maximum connection distance", () => {
-  const grid = landGrid(RAIL_CONNECT_DISTANCE + 40, 10, 1);
-  // Factory and city aligned but farther apart than the connect distance.
-  const tooFar = computeRailNetwork(grid.map, [
-    stationAt(grid, 2, 5, 1, "factory"),
-    stationAt(grid, 2 + RAIL_CONNECT_DISTANCE + 5, 5, 1, "city"),
+test("A* routes track around impassable rock (a straight L-path would fail)", () => {
+  // 40x13 land with a vertical wall of impassable rock at x=20 blocking the
+  // direct line between two aligned stations, except for a gap at the bottom.
+  const W = 40;
+  const H = 13;
+  const land = new Uint8Array(W * H).fill(1);
+  const elevation = new Uint8Array(W * H);
+  for (let y = 0; y < H - 1; y += 1) elevation[y * W + 20] = 31; // rock wall, gap at y=H-1
+  const map = buildTerrainFromMask({ width: W, height: H, land, elevation });
+  const grid = new TerritoryGrid(map);
+  grid.addPlayer(1);
+  for (let ref = 0; ref < map.size; ref += 1) if (!map.isImpassable(ref)) grid.claim(ref, 1);
+
+  const network = computeRailNetwork(map, [
+    stationAt(grid, 5, 3, 1, "factory"),
+    stationAt(grid, 35, 3, 1, "city"),
   ]);
-  assert.equal(tooFar.edges.length, 0, "beyond range = no link");
+  assert.equal(network.edges.length, 1, "A* finds a detour around the wall");
+  const edge = network.edges[0];
+  // The detour bends more than a single L, and no corner sits on rock.
+  assert.ok(edge.corners.length > 3, "the route bends around the wall");
+  for (const ref of edge.corners) assert.equal(map.isImpassable(ref), false, "track never crosses rock");
 });
 
-test("each station anchors at most RAIL_MAX_CONNECTIONS links", () => {
-  const grid = landGrid(40, 40, 1);
-  // A factory hub ringed by more cities than it may connect to.
-  const stations: RailStation[] = [stationAt(grid, 20, 20, 1, "factory")];
+test("links respect OpenFront's station range (min and max)", () => {
+  const grid = landGrid(RAIL_STATION_MAX_RANGE + 40, 20, 1);
+  // Factory and city aligned but farther apart than the max station range.
+  const tooFar = computeRailNetwork(grid.map, [
+    stationAt(grid, 2, 10, 1, "factory"),
+    stationAt(grid, 2 + RAIL_STATION_MAX_RANGE + 5, 10, 1, "city"),
+  ]);
+  assert.equal(tooFar.edges.length, 0, "beyond the max range = no link");
+
+  // Comfortably within range they link.
+  const inRange = computeRailNetwork(grid.map, [
+    stationAt(grid, 2, 10, 1, "factory"),
+    stationAt(grid, 2 + RAIL_STATION_MAX_RANGE - 10, 10, 1, "city"),
+  ]);
+  assert.equal(inRange.edges.length, 1, "within the max range they link");
+});
+
+test("a factory links every in-range station (no artificial fan-out cap)", () => {
+  const grid = landGrid(120, 120, 1);
+  // A factory hub ringed by cities all >=15 and <=110 tiles away: OpenFront links
+  // every one (no per-station cap of our own).
+  const stations: RailStation[] = [stationAt(grid, 60, 60, 1, "factory")];
   const ring: Array<[number, number]> = [
-    [20, 14], [20, 26], [14, 20], [26, 20], [16, 16], [24, 24], [16, 24], [24, 16],
+    [60, 40], [60, 80], [40, 60], [80, 60], [42, 42], [78, 78], [42, 78], [78, 42],
   ];
   for (const [x, y] of ring) stations.push(stationAt(grid, x, y, 1, "city"));
 
   const network = computeRailNetwork(grid.map, stations);
-  const hub = grid.map.ref(20, 20);
+  const hub = grid.map.ref(60, 60);
   const hubLinks = network.adjacency.get(hub)?.length ?? 0;
-  assert.ok(hubLinks <= RAIL_MAX_CONNECTIONS, `hub has ${hubLinks} links`);
+  assert.equal(hubLinks, ring.length, "the hub links all in-range ring stations");
 });
 
 test("rails never link stations of different owners", () => {

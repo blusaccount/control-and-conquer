@@ -163,9 +163,9 @@ export const BUILDING_CONSTRUCTION_TICKS: Readonly<Record<BuildingType, number>>
 // wiki). We mirror that here — a factory is the catalyst that wires a player's
 // stations (factory/city/port) into a mesh, and only city/port stops earn gold.
 // Rails are routed automatically (the player never draws them), cardinal-only,
-// over land, with the same distance/length/fan-out caps OpenFront uses (scaled
-// to our smaller grids). Everything is deterministic: spawn cadence is a fixed
-// tick interval, never `Math.random`, so replays stay identical.
+// over land, with OpenFront's exact station ranges and A* routing (cardinal,
+// direction-change + water penalties). Everything is deterministic: spawn cadence
+// is a fixed tick interval, never `Math.random`, so replays stay identical.
 
 /** Station building types that a railroad can link together. */
 export const RAIL_STATION_TYPES: readonly BuildingType[] = ["factory", "city", "port"];
@@ -174,22 +174,42 @@ export const RAIL_STATION_TYPES: readonly BuildingType[] = ["factory", "city", "
 export const RAIL_PAYOUT_TYPES: readonly BuildingType[] = ["city", "port"];
 
 /**
- * Greatest straight-line distance (tiles) between two stations that may be wired
- * by a single railroad. OpenFront uses 80 on its larger maps; scaled down a
- * touch for our grids so a rail links a regional cluster, not the whole map.
+ * Shortest straight-line distance (tiles) between two stations a railroad links,
+ * OpenFront's `trainStationMinRange` (15). Stations closer than this aren't wired
+ * directly (they already sit within {@link STRUCTURE_MIN_DIST} of each other).
  */
-export const RAIL_CONNECT_DISTANCE = 55;
+export const RAIL_STATION_MIN_RANGE = 15;
 
 /**
- * Longest a single railroad connection may run (tiles of track). Cardinal-only
- * L-paths are longer than the straight-line distance, so this is a touch above
- * {@link RAIL_CONNECT_DISTANCE}; a candidate whose routed path exceeds it (e.g.
- * a long detour around water) is dropped.
+ * Greatest straight-line distance (tiles) between two linked stations, OpenFront's
+ * `trainStationMaxRange` (110). A city/port only becomes a rail station at all
+ * when a factory sits within this range of it (the factory is the catalyst).
  */
-export const RAIL_MAX_LENGTH = 90;
+export const RAIL_STATION_MAX_RANGE = 110;
 
-/** Most railroads any one station may anchor — caps fan-out into a mesh. */
-export const RAIL_MAX_CONNECTIONS = 4;
+/**
+ * Longest a single railroad's routed track may run, OpenFront's `railroadMaxSize`
+ * = `trainStationMaxRange · √2 ≈ 155.56`. A route whose A* path exceeds this
+ * (e.g. a long detour around water) is dropped, so no link is laid.
+ */
+export const RAIL_MAX_TRACK_LENGTH = RAIL_STATION_MAX_RANGE * Math.SQRT2;
+
+/**
+ * Extra A* cost for laying track onto a water or shoreline tile, OpenFront's
+ * `waterPenalty` (5) — so a rail hugs dry inland ground and only bridges water on
+ * the shortest shore-to-shore hop when it must.
+ */
+export const RAIL_WATER_PENALTY = 5;
+
+/**
+ * Extra A* cost each time the track changes cardinal direction, OpenFront's
+ * `directionChangePenalty` (3) — so routes prefer long straight runs and bend
+ * only when they have to, giving the clean rail look.
+ */
+export const RAIL_DIRECTION_CHANGE_PENALTY = 3;
+
+/** A* heuristic weight (Manhattan × this), OpenFront's `heuristicWeight` (2). */
+export const RAIL_HEURISTIC_WEIGHT = 2;
 
 /**
  * Base gold a train pays when it reaches a city/port on its **own** owner's
