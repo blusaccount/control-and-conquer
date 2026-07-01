@@ -1011,14 +1011,6 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     if (now - runtime.lastNameComputeMs < interval) return;
     runtime.lastNameComputeMs = now;
 
-    // Skip the whole (full-raster) pass when the camera is zoomed out far enough
-    // that no label would clear the minimum on-screen font size — exactly the
-    // state where the scan is pure waste. `drawNames` culls per-anchor anyway, so
-    // keeping the previous anchors is harmless; the next zoom-in recomputes them.
-    let maxSize = 0;
-    for (const a of runtime.nameAnchors) if (a.size > maxSize) maxSize = a.size;
-    if (maxSize > 0 && maxSize * runtime.view.scale < MIN_NAME_FONT_PX) return;
-
     const players = runtime.players
       .filter((p) => !p.eliminated && p.tiles > 0)
       .map((p) => ({ playerId: p.playerId, nameLength: p.name.length }));
