@@ -1281,13 +1281,22 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
    * hidden entirely — detail is *removed*, not shrunk into mush.
    */
   const drawBuildings = (ctx: CanvasRenderingContext2D, scale: number): void => {
-    if (runtime.buildings.length === 0 || scale < 2) return; // too far out — keep it clean
+    if (runtime.buildings.length === 0) return;
     const cw = ui.mapCanvas.width;
     const ch = ui.mapCanvas.height;
-    // Marker radius scales with zoom but clamps to a legible band; below the dot
-    // threshold we draw plain owner dots so the map doesn't clutter.
+    // Radii are in backing-store (device) pixels, so a legible on-screen size has
+    // to be expressed in CSS px × DPR — otherwise the markers vanish on retina
+    // displays. This is why structures used to be "barely visible zoomed out":
+    // the dot floor was a sub-CSS-pixel 1.8 device px, and we bailed entirely
+    // below scale 2 — which is the *fit* zoom for the default Large/Huge maps,
+    // so at full-map view no structures showed at all.
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    // Below this zoom the shaped icon tokens are too big/cluttered, so we draw
+    // plain owner dots — but with a firm minimum screen size so they always read.
     const dotMode = scale < 6;
-    const radius = dotMode ? Math.max(1.8, scale * 0.42) : Math.max(12, Math.min(scale * 0.72, 30));
+    const radius = dotMode
+      ? Math.max(3.2 * dpr, Math.min(scale * 0.7, 6 * dpr))
+      : Math.max(12, Math.min(scale * 0.72, 30));
     // Monochrome glyphs read clearly even when large, so the icon fills most of
     // the disc (OpenFront's white-on-colour markers).
     const iconPx = radius * 1.5;
@@ -1335,13 +1344,16 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
 
       if (dotMode) {
         // Zoomed out: a small owner-coloured dot with a dark halo — shows where
-        // structures stand without drawing unreadable icons.
+        // structures stand without drawing unreadable icons. Cities (the anchor
+        // of an empire) get a slightly fatter dot so they stand out from ports,
+        // forts and the rest at a glance.
+        const r = b.type === "city" ? radius * 1.35 : radius;
         ctx.beginPath();
-        ctx.arc(sx, sy, radius + 1, 0, Math.PI * 2);
+        ctx.arc(sx, sy, r + dpr, 0, Math.PI * 2);
         ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
         ctx.fill();
         ctx.beginPath();
-        ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+        ctx.arc(sx, sy, r, 0, Math.PI * 2);
         ctx.fillStyle = rgbaToCss(col);
         ctx.fill();
         continue;
