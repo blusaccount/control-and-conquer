@@ -1454,12 +1454,14 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     // below scale 2 — which is the *fit* zoom for the default Large/Huge maps,
     // so at full-map view no structures showed at all.
     const dpr = Math.max(1, window.devicePixelRatio || 1);
-    // Below this zoom the shaped icon tokens are too big/cluttered, so we draw
-    // plain owner dots — but with a firm minimum screen size so they always read.
-    const dotMode = scale < 6;
+    // Keep the full glyph tokens legible far out — buildings are spaced ≥15
+    // tiles apart, so even a floored ~9px token doesn't overlap its neighbours.
+    // Only at extreme zoom-out (tiles a few px each) do we drop to a shaped
+    // owner dot, where a glyph would be sub-pixel mush anyway.
+    const dotMode = scale < 3;
     const radius = dotMode
       ? Math.max(3.2 * dpr, Math.min(scale * 0.7, 6 * dpr))
-      : Math.max(12, Math.min(scale * 0.72, 30));
+      : Math.max(9, Math.min(scale * 0.72, 30));
     // Monochrome glyphs read clearly even when large, so the icon fills most of
     // the disc (OpenFront's white-on-colour markers).
     const iconPx = radius * 1.5;
@@ -1478,6 +1480,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       factory: { sides: 6, rot: -Math.PI / 2 },
       fort: { sides: 8, rot: Math.PI / 8 },
       warship: { sides: 4, rot: 0 },
+      silo: { sides: 3, rot: -Math.PI / 2 },
     };
     const tracePath = (cx: number, cy: number, r: number, type: string): void => {
       const shape = SHAPE[type] ?? { sides: 0, rot: 0 };
@@ -1506,19 +1509,25 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       const col = playerColor(b.playerId);
 
       if (dotMode) {
-        // Zoomed out: a small owner-coloured dot with a dark halo — shows where
-        // structures stand without drawing unreadable icons. Cities (the anchor
-        // of an empire) get a slightly fatter dot so they stand out from ports,
-        // forts and the rest at a glance.
-        const r = b.type === "city" ? radius * 1.35 : radius;
-        ctx.beginPath();
-        ctx.arc(sx, sy, r + dpr, 0, Math.PI * 2);
-        ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
+        // Zoomed out: too small for the glyph tokens, but the per-type
+        // silhouette still encodes the kind at a glance (circle = city,
+        // pentagon = port, hexagon = factory, octagon = fort, diamond =
+        // warship, triangle = silo) — far more legible than identical dots.
+        // Drawn as an owner-coloured shape with a dark halo; a white pip in
+        // the centre keeps even the tiniest token visible over dark terrain.
+        const r = b.type === "city" ? radius * 1.25 : radius;
+        tracePath(sx, sy, r + dpr, b.type);
+        ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
         ctx.fill();
-        ctx.beginPath();
-        ctx.arc(sx, sy, r, 0, Math.PI * 2);
+        tracePath(sx, sy, r, b.type);
         ctx.fillStyle = rgbaToCss(col);
         ctx.fill();
+        if (r >= 4 * dpr) {
+          ctx.beginPath();
+          ctx.arc(sx, sy, Math.max(1, r * 0.32), 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+          ctx.fill();
+        }
         continue;
       }
 
