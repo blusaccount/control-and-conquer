@@ -20,11 +20,10 @@
 import type { TileRef } from "./GameMap.js";
 import { type PlayerId, type TerritoryGrid } from "./TerritoryGrid.js";
 import {
-  TRADE_SHIP_SPAWN_INTERVAL_TICKS,
+  TRADE_SPAWN_ATTEMPT_INTERVAL_TICKS,
   TRADE_SHIP_TILES_PER_TICK,
-  tradeFleetCap,
-  tradePayoutDistance,
   tradeShipGold,
+  tradeShipSpawnRate,
 } from "./buildings.js";
 
 /** A port on the trade roster: its tile, owner, and the sea body it opens onto. */
@@ -62,6 +61,12 @@ export class TradeSystem {
   private nextShipId = 1;
   /** Signature of the port set the roster was last built from. */
   private signature = "";
+  /**
+   * Per-port rejection counter for OpenFront's `tradeShipSpawnRate`. Each failed
+   * spawn attempt bumps it; a successful dispatch resets it to 0. Keyed by port
+   * tile ref; pruned when a port is removed.
+   */
+  private rejections = new Map<TileRef, number>();
 
   constructor(grid: TerritoryGrid) {
     this.grid = grid;
@@ -69,13 +74,13 @@ export class TradeSystem {
 
   /**
    * Advance the trade economy one tick: refresh the port roster if it changed,
-   * move every ship (paying out on arrivals), then dispatch new ships on the
-   * fixed cadence. `tick` is the simulation tick being processed.
+   * move every ship (paying out on arrivals), then run OpenFront's per-port spawn
+   * attempts on the fixed 10-tick cadence. `tick` is the tick being processed.
    */
   advance(tick: number): void {
     this.sync();
     this.moveShips();
-    if (tick % TRADE_SHIP_SPAWN_INTERVAL_TICKS === 0) this.dispatch(tick);
+    if (tick % TRADE_SPAWN_ATTEMPT_INTERVAL_TICKS === 0) this.attemptSpawns(tick);
   }
 
   /** Every live trade ship as a fractional-tile position, owner-tagged. */
@@ -101,6 +106,8 @@ export class TradeSystem {
     // Drop ships whose endpoints are no longer ports.
     const live = new Set(ports.map((p) => p.ref));
     this.ships = this.ships.filter((s) => live.has(s.from) && live.has(s.to));
+    // Forget rejection counters for ports that no longer exist.
+    for (const ref of [...this.rejections.keys()]) if (!live.has(ref)) this.rejections.delete(ref);
   }
 
   /** Snapshot the ports with owner + the sea body they open onto. */
@@ -134,10 +141,8 @@ export class TradeSystem {
       }
       // Arrived: pay both ports their gold, provided each still exists. The
       // owners are read live so a port captured mid-voyage pays its new owner.
-      // The trip is *priced* at a map-relative distance so trade pays back a port
-      // on small maps too, not just OpenFront-scale ones (see tradePayoutDistance).
-      const span = this.grid.map.width + this.grid.map.height;
-      const gold = tradeShipGold(tradePayoutDistance(ship.dist, span));
+      // Priced by the distance actually travelled, exactly as OpenFront.
+      const gold = tradeShipGold(ship.dist);
       if (this.grid.buildingAt(ship.from) === "port") this.grid.addGold(this.grid.ownerOf(ship.from), gold);
       if (this.grid.buildingAt(ship.to) === "port") this.grid.addGold(this.grid.ownerOf(ship.to), gold);
     }
@@ -145,35 +150,40 @@ export class TradeSystem {
   }
 
   /**
-   * Dispatch one trade ship from each eligible port whose owner is under the
-   * fleet cap. The destination is another of the owner's reach: any port sharing
-   * the source's sea body (different tile), chosen by a tick-derived epoch so
-   * successive dispatches fan out across partners rather than always the first.
+   * Run one spawn *attempt* per eligible port, mirroring OpenFront's
+   * `tradeShipSpawnRate`. A port fires a trade ship once its rejection counter
+   * reaches the current rate (which itself depends on that counter and the global
+   * fleet's soft cap); otherwise the attempt is "rejected" and the counter grows,
+   * so the port fires soon after. There is no hard fleet cap — the soft cap in the
+   * rate (sigmoid on the total ships at sea, midpoint ~400) does the throttling.
+   * The destination is any port sharing the source's sea body, chosen by a
+   * tick-derived epoch so successive dispatches fan out across partners.
    */
-  private dispatch(tick: number): void {
+  private attemptSpawns(tick: number): void {
     if (this.ports.length < 2) return;
-    const epoch = Math.floor(tick / TRADE_SHIP_SPAWN_INTERVAL_TICKS);
-    const liveByOwner = new Map<PlayerId, number>();
-    for (const ship of this.ships) liveByOwner.set(ship.owner, (liveByOwner.get(ship.owner) ?? 0) + 1);
-    // Ports each owner holds — the fleet cap scales with this so more ports means
-    // more simultaneous trade (income tracks the coastal empire, as in OpenFront).
-    const portsByOwner = new Map<PlayerId, number>();
-    for (const p of this.ports) portsByOwner.set(p.owner, (portsByOwner.get(p.owner) ?? 0) + 1);
-
+    const epoch = Math.floor(tick / TRADE_SPAWN_ATTEMPT_INTERVAL_TICKS);
     const sorted = [...this.ports].sort((a, b) => a.ref - b.ref);
     for (const src of sorted) {
       if (src.sea < 0) continue;
-      if ((liveByOwner.get(src.owner) ?? 0) >= tradeFleetCap(portsByOwner.get(src.owner) ?? 0)) continue;
       // Partners: any other port on the same sea body (any owner — trade flows
       // even between rivals, as in OpenFront, enriching both ends).
       const partners = sorted.filter((p) => p.ref !== src.ref && p.sea === src.sea);
-      if (partners.length === 0) continue;
+      if (partners.length === 0) continue; // no reachable partner — not a rejection, just skip
+
+      const rejected = this.rejections.get(src.ref) ?? 0;
+      const rate = tradeShipSpawnRate(rejected, this.ships.length);
+      if (rejected < rate) {
+        // Attempt "fails" this cycle: grow the counter so the port fires sooner.
+        this.rejections.set(src.ref, rejected + 1);
+        continue;
+      }
+
       const dst = partners[epoch % partners.length];
       const dist = Math.abs(this.grid.map.x(src.ref) - this.grid.map.x(dst.ref)) +
         Math.abs(this.grid.map.y(src.ref) - this.grid.map.y(dst.ref));
       if (dist <= 0) continue;
       this.ships.push({ id: this.nextShipId++, owner: src.owner, from: src.ref, to: dst.ref, progress: 0, dist });
-      liveByOwner.set(src.owner, (liveByOwner.get(src.owner) ?? 0) + 1);
+      this.rejections.set(src.ref, 0);
     }
   }
 

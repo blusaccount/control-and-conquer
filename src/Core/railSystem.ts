@@ -16,10 +16,11 @@ import {
   type BuildingType,
   RAIL_PAYOUT_TYPES,
   RAIL_STATION_TYPES,
-  TRAIN_GOLD_PER_STATION,
+  trainGold,
+  trainSpawnRate,
   TRAIN_MAX_PER_PLAYER,
   TRAIN_MAX_VISITS,
-  TRAIN_SPAWN_INTERVAL_TICKS,
+  TRAIN_SPAWN_MIN_COOLDOWN_TICKS,
   TRAIN_TILES_PER_TICK,
 } from "./buildings.js";
 import {
@@ -68,6 +69,10 @@ export class RailSystem {
   private nextTrainId = 1;
   /** Signature of the station set the current network was built from. */
   private signature = "";
+  /** Per-factory rejection counter for OpenFront's `trainSpawnRate` (reset on spawn). */
+  private trainRejections = new Map<TileRef, number>();
+  /** Tick a factory last launched a train, for the spawn cooldown. */
+  private lastTrainSpawn = new Map<TileRef, number>();
 
   constructor(grid: TerritoryGrid) {
     this.grid = grid;
@@ -85,7 +90,7 @@ export class RailSystem {
       return;
     }
     this.moveTrains();
-    if (tick % TRAIN_SPAWN_INTERVAL_TICKS === 0) this.spawnTrains(tick);
+    this.attemptTrainSpawns(tick);
   }
 
   /** Every rail link as drawable corner-point polylines, owner-tagged. */
@@ -127,6 +132,9 @@ export class RailSystem {
     this.network = computeRailNetwork(this.grid.map, stations);
     this.edgeByPair = new Map(this.network.edges.map((e) => [railPairKey(e.a, e.b), e]));
     this.trains = this.trains.filter((t) => this.edgeByPair.has(railPairKey(t.from, t.to)));
+    // Forget spawn state for stations that no longer exist.
+    for (const ref of [...this.trainRejections.keys()]) if (!this.stationType.has(ref)) this.trainRejections.delete(ref);
+    for (const ref of [...this.lastTrainSpawn.keys()]) if (!this.stationType.has(ref)) this.lastTrainSpawn.delete(ref);
   }
 
   /** Snapshot the station buildings (factory/city/port) with owner + kind. */
@@ -156,10 +164,11 @@ export class RailSystem {
         continue;
       }
 
-      // Arrived. A city/port still owned by the train's owner pays out.
+      // Arrived. A city/port still owned by the train's owner pays out, with
+      // OpenFront's per-stop decay: the payout eases the longer the train runs.
       const arrivedType = this.stationType.get(train.to);
       if (arrivedType && RAIL_PAYOUT_TYPES.includes(arrivedType) && this.grid.ownerOf(train.to) === train.owner) {
-        this.grid.addGold(train.owner, TRAIN_GOLD_PER_STATION);
+        this.grid.addGold(train.owner, trainGold(train.visits));
       }
       train.visits += 1;
       if (train.visits >= TRAIN_MAX_VISITS) continue;
@@ -192,12 +201,15 @@ export class RailSystem {
   }
 
   /**
-   * Spawn one train from each connected factory whose owner is under the train
-   * cap. The departure neighbour is chosen by a tick-derived epoch so successive
-   * spawns fan out across a hub's links rather than all taking the same one.
+   * Run one spawn *attempt* per connected factory each tick, mirroring OpenFront's
+   * `trainSpawnRate` = `(numFactories + 10) · 15`: a factory launches a train once
+   * its rejection counter reaches that rate, then resets — so the more factories an
+   * owner runs, the *less* often each one launches (the network shares the spawn
+   * budget). A per-factory cooldown floors the gap between two trains, the owner's
+   * live-train cap still applies, and the departure neighbour rotates by tick so
+   * successive trains fan out across a hub's links.
    */
-  private spawnTrains(tick: number): void {
-    const epoch = Math.floor(tick / TRAIN_SPAWN_INTERVAL_TICKS);
+  private attemptTrainSpawns(tick: number): void {
     const liveByOwner = new Map<PlayerId, number>();
     for (const train of this.trains) {
       liveByOwner.set(train.owner, (liveByOwner.get(train.owner) ?? 0) + 1);
@@ -211,12 +223,32 @@ export class RailSystem {
     }
     factories.sort((a, b) => a - b);
 
+    // Factories each owner runs — feeds OpenFront's per-owner spawn rate.
+    const factoriesByOwner = new Map<PlayerId, number>();
+    for (const factory of factories) {
+      const owner = this.grid.ownerOf(factory);
+      factoriesByOwner.set(owner, (factoriesByOwner.get(owner) ?? 0) + 1);
+    }
+
     for (const factory of factories) {
       const owner = this.grid.ownerOf(factory);
       if ((liveByOwner.get(owner) ?? 0) >= TRAIN_MAX_PER_PLAYER) continue;
+      // Respect the minimum gap between two trains from the same factory.
+      const last = this.lastTrainSpawn.get(factory);
+      if (last !== undefined && tick - last < TRAIN_SPAWN_MIN_COOLDOWN_TICKS) continue;
+
+      const rate = trainSpawnRate(factoriesByOwner.get(owner) ?? 1);
+      const rejected = this.trainRejections.get(factory) ?? 0;
+      if (rejected < rate) {
+        this.trainRejections.set(factory, rejected + 1);
+        continue;
+      }
+
       const neighbors = [...this.network.adjacency.get(factory)!].sort((a, b) => a - b);
-      const to = neighbors[epoch % neighbors.length];
+      const to = neighbors[tick % neighbors.length];
       this.trains.push({ id: this.nextTrainId++, owner, from: factory, to, progress: 0, visits: 0 });
+      this.trainRejections.set(factory, 0);
+      this.lastTrainSpawn.set(factory, tick);
       liveByOwner.set(owner, (liveByOwner.get(owner) ?? 0) + 1);
     }
   }

@@ -7,8 +7,10 @@ import { computeRailNetwork, type RailStation } from "../src/Core/railNetwork.js
 import {
   RAIL_CONNECT_DISTANCE,
   RAIL_MAX_CONNECTIONS,
-  TRAIN_GOLD_PER_STATION,
-  TRAIN_SPAWN_INTERVAL_TICKS,
+  TRAIN_GOLD_SELF_BASE,
+  TRAIN_GOLD_FLOOR,
+  trainGold,
+  trainSpawnRate,
 } from "../src/Core/buildings.js";
 
 /** An all-land `width`×`height` grid with every tile owned by `player`. */
@@ -114,13 +116,15 @@ test("trains earn gold at cities and the run is deterministic", () => {
     grid.placeBuilding(grid.map.ref(25, 5), "city");
     const rails = new RailSystem(grid);
     assert.equal(rails.edgeCount, 0, "no network until first advance syncs stations");
-    for (let tick = 0; tick < 200; tick += 1) rails.advance(tick);
+    // A single factory launches a train every trainSpawnRate(1) = 165 ticks, so
+    // run well past the first spawn to bank at least one city payout.
+    for (let tick = 0; tick < 400; tick += 1) rails.advance(tick);
     return grid.goldOf(1);
   };
 
   const goldA = runGold();
   assert.ok(goldA > 0, "a train paid out at the city");
-  assert.equal(goldA % TRAIN_GOLD_PER_STATION, 0, "payouts come in whole-station units");
+  assert.equal(goldA % TRAIN_GOLD_SELF_BASE, 0, "payouts come in whole-station units");
   // Same setup, same ticks → identical gold (no RNG anywhere).
   assert.equal(runGold(), goldA);
 });
@@ -131,8 +135,23 @@ test("a factory with no reachable station spawns no paying trains", () => {
   // Lone factory: nothing within range to link to.
   grid.placeBuilding(grid.map.ref(20, 5), "factory");
   const rails = new RailSystem(grid);
-  for (let tick = 0; tick < TRAIN_SPAWN_INTERVAL_TICKS * 3; tick += 1) rails.advance(tick);
+  for (let tick = 0; tick < 200; tick += 1) rails.advance(tick);
   assert.equal(rails.edgeCount, 0);
   assert.equal(rails.trainCount, 0);
   assert.equal(grid.goldOf(1), 0);
+});
+
+test("trainGold pays the self base, then decays per stop to a floor (OpenFront)", () => {
+  // First ~10 stops pay full; each stop beyond drops 5000, floored at 5000.
+  assert.equal(trainGold(0), TRAIN_GOLD_SELF_BASE, "the first stop pays the full self base");
+  assert.equal(trainGold(9), TRAIN_GOLD_SELF_BASE, "still full at the last free stop");
+  assert.equal(trainGold(10), TRAIN_GOLD_SELF_BASE - 5_000, "one stop past free costs 5000");
+  assert.equal(trainGold(11), TRAIN_GOLD_FLOOR, "and it bottoms out at the floor");
+  assert.equal(trainGold(50), TRAIN_GOLD_FLOOR, "never below the floor");
+});
+
+test("trainSpawnRate: more factories means each launches less often (OpenFront)", () => {
+  assert.equal(trainSpawnRate(1), (1 + 10) * 15, "one factory → (1+10)·15 = 165");
+  assert.equal(trainSpawnRate(0), 150);
+  assert.ok(trainSpawnRate(5) > trainSpawnRate(1), "the shared spawn budget slows each factory");
 });

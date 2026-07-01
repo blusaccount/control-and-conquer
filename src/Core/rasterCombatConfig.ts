@@ -91,7 +91,7 @@ export const RASTER_MATCH_DURATION_SECONDS = 600;
  * gameplay rule, independent of tick rate); the engine is granted the equivalent
  * tick count when a player is seated.
  */
-export const SPAWN_IMMUNITY_SECONDS = 8;
+export const SPAWN_IMMUNITY_SECONDS = 5;
 
 /**
  * Fraction of leftover committed troops lost when an attack against a *player*
