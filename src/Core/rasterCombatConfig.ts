@@ -103,6 +103,31 @@ export const SPAWN_IMMUNITY_SECONDS = 5;
  */
 export const RETREAT_MALUS_FRACTION = 0.25;
 
+/**
+ * How long (ticks) a player stays a **traitor** after betraying an alliance,
+ * mirroring OpenFront's `traitorDuration` (300). Betrayal is powerful but marked:
+ * for this window the traitor is punished in combat (see the two debuffs below),
+ * so backstabbing an ally carries a real, temporary cost.
+ */
+export const TRAITOR_DURATION_TICKS = 300;
+
+/**
+ * Combat penalty on a **traitor defender**, mirroring OpenFront's
+ * `traitorDefenseDebuff` (0.5): while marked, the traitor's tiles cost an attacker
+ * only half the usual magnitude — its defence is halved, so an ally it stabbed (or
+ * anyone) can punish it far more cheaply. Applied to the tile magnitude for a
+ * traitor target.
+ */
+export const TRAITOR_DEFENSE_DEBUFF = 0.5;
+
+/**
+ * Combat penalty on a **traitor attacker**, mirroring OpenFront's
+ * `traitorSpeedDebuff` (0.8): while marked, the traitor's own assaults advance at
+ * 0.8× — its aggression is blunted for the duration. Applied to the traitor's
+ * per-tick tile budget.
+ */
+export const TRAITOR_SPEED_DEBUFF = 0.8;
+
 // ---------------------------------------------------------------------------
 // Combat model
 //

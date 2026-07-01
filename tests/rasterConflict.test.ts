@@ -24,6 +24,7 @@ import {
   defenderStrengthFactor,
   neutralLossPerTile,
   terrainCombat,
+  TRAITOR_DURATION_TICKS,
 } from "../src/Core/rasterCombatConfig.js";
 
 const flatLand = (width: number, height: number): GameMap => {
@@ -173,6 +174,44 @@ test("defender bleed is density-based: a dense defender loses more per tile", ()
   assert.equal(grid.ownerOf(1), 1, "the bordering enemy tile is taken");
   // One tile captured should bleed ~density (1000), not the flat 1-troop floor.
   assert.ok(before - grid.troopsOf(2) >= 100, `dense defender should bleed hard, lost ${before - grid.troopsOf(2)}`);
+});
+
+test("a traitor is marked for a fixed window, then clears (OpenFront traitorDuration)", () => {
+  const grid = new TerritoryGrid(flatLand(4, 1));
+  grid.addPlayer(1, 100);
+  grid.claim(0, 1);
+  const conflict = new RasterConflict(grid);
+
+  assert.equal(conflict.isTraitor(1), false, "nobody starts a traitor");
+  conflict.markTraitor(1);
+  assert.equal(conflict.isTraitor(1), true, "betrayal marks the player");
+  runTicks(conflict, TRAITOR_DURATION_TICKS - 1);
+  assert.equal(conflict.isTraitor(1), true, "still a traitor just before the window ends");
+  runTicks(conflict, 1);
+  assert.equal(conflict.isTraitor(1), false, "the mark clears after traitorDuration ticks");
+});
+
+test("a traitor defender is cheaper to conquer (OpenFront traitorDefenseDebuff)", () => {
+  // Same assault against the same defender captures MORE of its land when the
+  // defender is a marked traitor, because its tiles cost half the magnitude.
+  const conquer = (betray: boolean): number => {
+    const grid = new TerritoryGrid(flatLand(12, 1));
+    grid.addPlayer(1, 6000); // attacker
+    grid.addPlayer(2, 60_000); // dense defender holds tiles 1..11 (costly to take)
+    grid.claim(0, 1);
+    for (let ref = 1; ref < 12; ref += 1) grid.claim(ref, 2);
+    freezeIncome(grid);
+    const conflict = new RasterConflict(grid);
+    if (betray) conflict.markTraitor(2);
+    assert.equal(conflict.launchAttack({ attacker: 1, target: 2, troops: 6000 }), null);
+    runTicks(conflict, 60);
+    return grid.tileCountOf(1) - 1; // tiles taken from the defender
+  };
+
+  const normal = conquer(false);
+  const vsTraitor = conquer(true);
+  assert.ok(normal > 0 && normal < 11, `the baseline assault should stall partway, took ${normal}`);
+  assert.ok(vsTraitor > normal, `a traitor loses more ground: ${vsTraitor} vs ${normal}`);
 });
 
 test("defenderLossPerTile spreads the pool over territory, floored at 1", () => {

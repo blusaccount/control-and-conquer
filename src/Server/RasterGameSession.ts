@@ -592,7 +592,10 @@ export class RasterGameSession {
     const me = this.resolveDiplomacy(clientId, targetId);
     if (me === null) return;
     if (this.alliances.breakAlliance(me, targetId)) {
-      this.pushEvent(`${this.nameOf(me)} broke their alliance with ${this.nameOf(targetId)}.`);
+      // Betrayal marks the breaker a traitor: a temporary combat penalty
+      // (OpenFront's traitor debuffs) — see RasterConflict.markTraitor.
+      this.conflict.markTraitor(me);
+      this.pushEvent(`${this.nameOf(me)} betrayed their alliance with ${this.nameOf(targetId)}.`);
     }
   }
 

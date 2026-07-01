@@ -24,6 +24,9 @@ import {
   RETREAT_MALUS_FRACTION,
   SHIP_TILES_PER_TICK,
   terrainCombat,
+  TRAITOR_DEFENSE_DEBUFF,
+  TRAITOR_DURATION_TICKS,
+  TRAITOR_SPEED_DEBUFF,
 } from "./rasterCombatConfig.js";
 
 /** A request to expand from `attacker`'s territory into `target`'s tiles. */
@@ -180,6 +183,12 @@ export class RasterConflict {
    * any land or sea assault lands on them. Absent = never immune.
    */
   private readonly immuneUntil = new Map<PlayerId, number>();
+  /**
+   * Tick (exclusive) until which a player is a **traitor** for betraying an
+   * alliance. Set by {@link markTraitor} when the session records a betrayal;
+   * while active the player is debuffed in combat (see {@link isTraitor}).
+   */
+  private readonly traitorUntil = new Map<PlayerId, number>();
   /** Auto-routed railroads + the trains that ride them, paying out gold. */
   private readonly rails: RailSystem;
   /** Port-to-port trade ships, paying both ends gold per completed trip. */
@@ -281,6 +290,22 @@ export class RasterConflict {
   isImmune(player: PlayerId): boolean {
     if (player === NEUTRAL_PLAYER) return false;
     return (this.immuneUntil.get(player) ?? 0) > this.tickCount;
+  }
+
+  /**
+   * Mark `player` a **traitor** for betraying an alliance — the session calls this
+   * when a player breaks a pact. Starts (or refreshes) the {@link TRAITOR_DURATION_TICKS}
+   * window during which the traitor is punished in combat.
+   */
+  markTraitor(player: PlayerId): void {
+    if (player === NEUTRAL_PLAYER) return;
+    this.traitorUntil.set(player, this.tickCount + TRAITOR_DURATION_TICKS);
+  }
+
+  /** Whether `player` is currently a marked traitor. Neutral never is. */
+  isTraitor(player: PlayerId): boolean {
+    if (player === NEUTRAL_PLAYER) return false;
+    return (this.traitorUntil.get(player) ?? 0) > this.tickCount;
   }
 
   launchAttack(intent: AttackIntent): AttackRejectReason | null {
@@ -401,6 +426,9 @@ export class RasterConflict {
     let mag = terrainCombat(this.grid.map.magnitude(ref)).mag;
     if (target !== NEUTRAL_PLAYER) mag *= this.grid.modifiersOf(target).defense;
     mag *= this.grid.defenseFactorAt(ref);
+    // A marked traitor defends at half strength (OpenFront's traitorDefenseDebuff),
+    // so its tiles are far cheaper to take for the window after a betrayal.
+    if (target !== NEUTRAL_PLAYER && this.isTraitor(target)) mag *= TRAITOR_DEFENSE_DEBUFF;
     return mag;
   }
 
@@ -774,9 +802,11 @@ export class RasterConflict {
       // width, so an overwhelming assault rolls fast while an under-committed poke
       // barely creeps. `expansionSpeed` is the attacker's own speed modifier.
       const expansionSpeed = this.grid.modifiersOf(attack.attacker).expansionSpeed;
+      // A marked traitor's own assaults advance slower (OpenFront's traitorSpeedDebuff).
+      const traitorSpeed = this.isTraitor(attack.attacker) ? TRAITOR_SPEED_DEBUFF : 1;
       const budget = Math.max(
         1,
-        Math.round(attackTilesPerTick(defenderTroops, attack.committed, frontier.length, vsPlayer) * expansionSpeed),
+        Math.round(attackTilesPerTick(defenderTroops, attack.committed, frontier.length, vsPlayer) * expansionSpeed * traitorSpeed),
       );
 
       let taken = 0;
