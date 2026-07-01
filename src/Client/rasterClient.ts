@@ -127,6 +127,9 @@ interface View {
   initialized: boolean;
 }
 
+/** Sortable leaderboard columns (OpenFront: Owned % | Gold | Max Troops, + name). */
+type LeaderboardSortKey = "owned" | "gold" | "max" | "name";
+
 interface RasterRuntime {
   map: GameMap | null;
   owner: Uint16Array | null;
@@ -161,6 +164,8 @@ interface RasterRuntime {
   capturableTotal: number;
   /** Full player standings from the latest snapshot, for the leaderboard. */
   players: RasterPlayerInfo[];
+  /** Which leaderboard column the standings are sorted by, and the direction. */
+  leaderboardSort: { key: LeaderboardSortKey; dir: 1 | -1 };
   recentEvents: string[];
   matchEnded: boolean;
   /**
@@ -366,6 +371,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     rails: [],
     trains: [],
     tradeShips: [],
+    leaderboardSort: { key: "owned", dir: -1 },
     capturableTotal: 0,
     players: [],
     recentEvents: [],
@@ -465,16 +471,30 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     for (const btn of ui.buildMenu.querySelectorAll<HTMLButtonElement>("[data-building]")) {
       btn.addEventListener("click", () => {
         const type = btn.getAttribute("data-building") as BuildingType;
-        runtime.buildMode = runtime.buildMode === type ? null : type;
-        refreshBuildMenu();
-        renderSidebar();
-        if (runtime.buildMode) {
-          setStatus(ui, `Build mode: click a tile you own to place a ${BUILDING_DEFS[type].name}.`);
-        } else {
-          setStatus(ui, "Build cancelled.");
-        }
+        toggleBuildMode(type);
       });
     }
+  };
+
+  /**
+   * Enter (or toggle off) build mode for `type`, shared by the build-menu buttons
+   * and the number-key hotkeys. Re-selecting the active type, or passing `null`,
+   * cancels build mode. No-op while we can't build (unspawned, spectating, ended).
+   */
+  const toggleBuildMode = (type: BuildingType | null): void => {
+    if (type !== null) {
+      const canBuild = runtime.spawned && runtime.phase === "playing" && !runtime.matchEnded && !runtime.myEliminated;
+      if (!canBuild) return;
+    }
+    runtime.buildMode = type === null || runtime.buildMode === type ? null : type;
+    refreshBuildMenu();
+    renderSidebar();
+    setStatus(
+      ui,
+      runtime.buildMode
+        ? `Build mode: click a tile you own to place a ${BUILDING_DEFS[runtime.buildMode].name}.`
+        : "Build cancelled.",
+    );
   };
 
   /** Refresh each build button's cost, affordability and selected state. */
@@ -1745,46 +1765,80 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
    * highlighted, and turns green while you hold the lead ("du gewinnst"); allies
    * are flagged with a 🤝.
    */
-  const renderLeaderboard = (): void => {
-    const active = runtime.players
-      .filter((p) => !p.eliminated)
-      .sort((a, b) => b.tiles - a.tiles || a.playerId - b.playerId);
+  /** Sortable leaderboard columns, in OpenFront's order (rank is implicit). */
+  const LEADERBOARD_COLUMNS: ReadonlyArray<{ key: LeaderboardSortKey; label: string; cls: string }> = [
+    { key: "name", label: "Player", cls: "name" },
+    { key: "owned", label: "Owned", cls: "num" },
+    { key: "gold", label: "Gold", cls: "num" },
+    { key: "max", label: "Max", cls: "num" },
+  ];
 
-    if (active.length === 0) {
+  const leaderboardValue = (p: RasterPlayerInfo, key: LeaderboardSortKey): number | string =>
+    key === "name" ? p.name.toLowerCase() : key === "gold" ? p.gold : key === "max" ? p.maxTroops : p.tiles;
+
+  const renderLeaderboard = (): void => {
+    const activeAll = runtime.players.filter((p) => !p.eliminated);
+    if (activeAll.length === 0) {
       ui.leaderboard.innerHTML = `<div class="lb-empty">No active players.</div>`;
       return;
     }
+    // The leader crown always tracks territory, whatever the table is sorted by.
+    const leaderId = activeAll.reduce((best, p) => (p.tiles > best.tiles ? p : best)).playerId;
+
+    const { key, dir } = runtime.leaderboardSort;
+    const active = [...activeAll].sort((a, b) => {
+      const av = leaderboardValue(a, key);
+      const bv = leaderboardValue(b, key);
+      let cmp = typeof av === "string" ? av.localeCompare(bv as string) : (av as number) - (bv as number);
+      if (cmp === 0) cmp = a.playerId - b.playerId; // stable tiebreak
+      return cmp * dir;
+    });
 
     const rel = diplomacyState();
     const canDiplo = runtime.spawned && runtime.phase === "playing" && !runtime.matchEnded && !runtime.myEliminated && runtime.myPlayerId !== null;
-    const leaderId = active[0].playerId;
-    ui.leaderboard.innerHTML = active
-      .map((p) => {
+
+    const arrow = (colKey: LeaderboardSortKey): string => (colKey === key ? (dir < 0 ? " ▾" : " ▴") : "");
+    const header =
+      `<div class="lb-head">` +
+      `<span class="lb-rank">#</span>` +
+      LEADERBOARD_COLUMNS.map(
+        (c) => `<button type="button" data-sort="${c.key}" class="${c.cls}${c.key === key ? " active" : ""}">${c.label}${arrow(c.key)}</button>`,
+      ).join("") +
+      `</div>`;
+
+    const rows = active
+      .map((p, i) => {
         const isMe = p.playerId === runtime.myPlayerId;
         const isLeader = p.playerId === leaderId;
         const isAlly = rel.allies.has(p.playerId);
-        const rowClass = ["lb-row", isMe ? "me" : "", isLeader ? "leader" : "", isAlly ? "ally" : ""]
-          .filter(Boolean)
-          .join(" ");
+        const rowClass = ["lb-row", isMe ? "me" : "", isLeader ? "leader" : "", isAlly ? "ally" : ""].filter(Boolean).join(" ");
         const allyMark = isAlly ? "🤝 " : "";
         const name = `${allyMark}${playerEmoji(p.playerId)} ${escapeHtml(p.name)}` + (isMe ? " (you)" : "");
-        const maxPool = p.maxTroops;
         const own = runtime.capturableTotal > 0 ? (p.tiles / runtime.capturableTotal) * 100 : 0;
-        const ownStr = own >= 10 ? String(Math.round(own)) : own.toFixed(1);
-        const stats =
-          `${ownStr}% · ${formatCount(p.troops)}/${formatCount(maxPool)} (+${formatRate(p.troopsPerSecond)}/s)` +
-          ` · ${formatCount(p.gold)}g`;
+        const ownStr = own >= 10 ? `${Math.round(own)}%` : `${own.toFixed(1)}%`;
         const actions = isMe ? "" : diplomacyActions(p.playerId, rel, canDiplo);
         return (
           `<div class="${rowClass}">` +
-          `<span class="lb-dot" style="background:${escapeHtml(p.color)}"></span>` +
-          `<span class="lb-name">${name}</span>` +
-          `<span class="lb-stats">${stats}</span>` +
+          `<span class="lb-rank">${i + 1}</span>` +
+          `<span class="lb-name"><span class="lb-dot" style="background:${escapeHtml(p.color)}"></span><span class="txt">${name}</span></span>` +
+          `<span class="lb-col">${ownStr}</span>` +
+          `<span class="lb-col">${formatCount(p.gold)}</span>` +
+          `<span class="lb-col">${formatCount(p.maxTroops)}</span>` +
           (actions ? `<span class="lb-acts">${actions}</span>` : "") +
           `</div>`
         );
       })
       .join("");
+    ui.leaderboard.innerHTML = header + rows;
+  };
+
+  /** Apply a header click: toggle direction when re-clicking a column, else sort by it. */
+  const setLeaderboardSort = (key: LeaderboardSortKey): void => {
+    const cur = runtime.leaderboardSort;
+    // Numeric columns default to descending (biggest first); name to ascending.
+    if (cur.key === key) cur.dir = cur.dir === 1 ? -1 : 1;
+    else runtime.leaderboardSort = { key, dir: key === "name" ? 1 : -1 };
+    renderLeaderboard();
   };
 
   // ---- Input -----------------------------------------------------------
@@ -1895,6 +1949,78 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     { passive: false },
   );
 
+  // ---- Keyboard shortcuts (OpenFront-style) --------------------------------
+
+  /** Zoom about the viewport centre, mirroring the wheel-zoom anchoring. */
+  const zoomBy = (factor: number): void => {
+    if (!runtime.map) return;
+    const cx = ui.mapCanvas.width / 2;
+    const cy = ui.mapCanvas.height / 2;
+    const tileX = runtime.view.x + cx / runtime.view.scale;
+    const tileY = runtime.view.y + cy / runtime.view.scale;
+    runtime.view.scale *= factor;
+    clampView();
+    runtime.view.x = tileX - cx / runtime.view.scale;
+    runtime.view.y = tileY - cy / runtime.view.scale;
+    clampView();
+  };
+
+  /** Pan the view by a fraction of the current viewport (for WASD/arrow keys). */
+  const panByFraction = (fx: number, fy: number): void => {
+    if (!runtime.map) return;
+    runtime.view.x += (ui.mapCanvas.width / runtime.view.scale) * fx;
+    runtime.view.y += (ui.mapCanvas.height / runtime.view.scale) * fy;
+    clampView();
+  };
+
+  /** Re-centre the camera on our home (spawn) tile, keeping the current zoom. */
+  const centerCamera = (): void => {
+    if (!runtime.map) return;
+    runtime.view.x = runtime.spawnX - ui.mapCanvas.width / runtime.view.scale / 2;
+    runtime.view.y = runtime.spawnY - ui.mapCanvas.height / runtime.view.scale / 2;
+    clampView();
+  };
+
+  /** Nudge the attack-ratio slider by `delta` percent, clamped to its own range. */
+  const nudgeAttackRatio = (delta: number): void => {
+    const lo = Number(ui.attackPercentInput.min) || 1;
+    const hi = Number(ui.attackPercentInput.max) || 100;
+    const next = Math.max(lo, Math.min(hi, Number(ui.attackPercentInput.value) + delta));
+    ui.attackPercentInput.value = String(next);
+    ui.attackPercentOutput.textContent = `${next}%`;
+  };
+
+  window.addEventListener("keydown", (event) => {
+    // Never hijack keys while the user is typing in a field.
+    const target = event.target as HTMLElement | null;
+    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+
+    // 1..N select/toggle the matching build type (menu order).
+    if (event.key >= "1" && event.key <= String(BUILDING_TYPES.length)) {
+      toggleBuildMode(BUILDING_TYPES[Number(event.key) - 1]);
+      event.preventDefault();
+      return;
+    }
+
+    let handled = true;
+    const panStep = 0.18;
+    switch (event.key.toLowerCase()) {
+      case "escape": toggleBuildMode(null); break;
+      case "t": nudgeAttackRatio(-10); break; // OpenFront: attack ratio down
+      case "y": nudgeAttackRatio(10); break; //  and up
+      case "q": zoomBy(1 / 1.2); break; // zoom out
+      case "e": zoomBy(1.2); break; //     zoom in
+      case "c": centerCamera(); break; // centre on home
+      case "w": case "arrowup": panByFraction(0, -panStep); break;
+      case "s": case "arrowdown": panByFraction(0, panStep); break;
+      case "a": case "arrowleft": panByFraction(-panStep, 0); break;
+      case "d": case "arrowright": panByFraction(panStep, 0); break;
+      default: handled = false;
+    }
+    if (handled) event.preventDefault();
+  });
+
   // Click (or drag) the minimap to jump the main camera so the clicked point
   // becomes the centre of the viewport.
   const jumpToMinimap = (event: { clientX: number; clientY: number }): void => {
@@ -1937,6 +2063,12 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   // valid across re-renders). Each button carries the counterparty's player id.
   ui.leaderboard.addEventListener("click", (event) => {
     const node = event.target as HTMLElement | null;
+    // Column-header clicks re-sort the standings.
+    const sortBtn = node?.closest<HTMLButtonElement>("button[data-sort]");
+    if (sortBtn) {
+      setLeaderboardSort(sortBtn.getAttribute("data-sort") as LeaderboardSortKey);
+      return;
+    }
     const btn = node?.closest<HTMLButtonElement>(
       "button[data-ally-propose], button[data-ally-accept], button[data-ally-decline], button[data-ally-break]",
     );
