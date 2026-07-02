@@ -1,7 +1,18 @@
 import type { TileRef } from "./GameMap.js";
 import { NEUTRAL_PLAYER, type PlayerId, type TerritoryGrid } from "./TerritoryGrid.js";
 import { NO_ALLIANCES, type AllianceView } from "./alliances.js";
-import { GOLD_BASE_PER_TICK, WARSHIP_INTERCEPT_RANGE } from "./buildings.js";
+import {
+  GOLD_BASE_PER_TICK,
+  WARSHIP_ENGAGE_RANGE,
+  WARSHIP_MAX_HP,
+  WARSHIP_PASSIVE_HEAL_PER_TICK,
+  WARSHIP_RETREAT_HP,
+  WARSHIP_RETREAT_RECOVER_HP,
+  WARSHIP_SHELL_DAMAGE,
+  WARSHIP_SHELL_RATE_TICKS,
+  WARSHIP_TARGET_RANGE,
+  WARSHIP_TILES_PER_TICK,
+} from "./buildings.js";
 import {
   FALLOUT_DURATION_TICKS,
   MIRV_SCATTER_RADIUS,
@@ -14,7 +25,7 @@ import {
   type NukeKind,
 } from "./nukes.js";
 import { RailSystem, type RailView, type TrainView } from "./railSystem.js";
-import { TradeSystem, type TradeView } from "./tradeSystem.js";
+import { TradeSystem, type TradeShipTarget, type TradeView } from "./tradeSystem.js";
 import {
   attackerLossPerTile,
   attackTilesPerTick,
@@ -142,6 +153,24 @@ export interface NukeInterception {
   y: number;
 }
 
+/** What kind of vessel a warship is currently engaging. */
+export type WarshipTargetKind = "transport" | "warship" | "trade";
+
+/**
+ * Public view of one mobile warship, for snapshotting/animation. `retreating`
+ * drives the client's "fleeing home" visual cue; a health bar only makes
+ * sense to draw once `hp < maxHp`.
+ */
+export interface WarshipState {
+  id: number;
+  owner: PlayerId;
+  x: number;
+  y: number;
+  hp: number;
+  maxHp: number;
+  retreating: boolean;
+}
+
 /**
  * Public view of one active land attack as a *front*: who is pushing whom, how
  * many troops are still committed to the fight, and a representative frontier
@@ -203,6 +232,26 @@ interface TransportShip {
   path: TileRef[];
   /** Index into `path` of the ship's current position. */
   progress: number;
+}
+
+/**
+ * A live warship unit — spawned when its home "warship" structure finishes
+ * construction, torn down (structure and all) when it's sunk or its home tile
+ * is lost. `x`/`y` are fractional tile-space, so movement eases smoothly.
+ */
+interface Warship {
+  id: number;
+  owner: PlayerId;
+  /** The structure tile this warship launched from — where it heals and retreats to. */
+  homeRef: TileRef;
+  x: number;
+  y: number;
+  hp: number;
+  target: { kind: WarshipTargetKind; id: number } | null;
+  /** True once hp has dropped below the retreat threshold, until it heals back past the recovery one. */
+  retreating: boolean;
+  /** Tick (exclusive) this warship's guns are next ready to fire. */
+  shellReadyAt: number;
 }
 
 /** A nuke in flight: a straight-line, constant-speed trip from silo to target. */
@@ -284,6 +333,12 @@ export class RasterConflict {
   private readonly rails: RailSystem;
   /** Port-to-port trade ships, paying both ends gold per completed trip. */
   private readonly trade: TradeSystem;
+  /** Live mobile warship units, one per active "warship" structure. */
+  private readonly warships: Warship[] = [];
+  /** Monotonic id source so each warship has a stable handle for the client. */
+  private nextWarshipId = 1;
+  /** Home structure tile → warship id, so {@link syncWarships} spawns/despawns exactly once per structure. */
+  private readonly warshipByHome = new Map<TileRef, number>();
   /** Transport-ship landings resolved during the current tick. */
   private crossings: SeaCrossing[] = [];
   private tickCount = 0;
@@ -309,6 +364,19 @@ export class RasterConflict {
   /** Trains currently riding the network, for the snapshot. */
   activeTrains(): TrainView[] {
     return this.rails.trainViews();
+  }
+
+  /** Live mobile warships, for the snapshot (empty until a warship structure finishes building). */
+  activeWarships(): WarshipState[] {
+    return this.warships.map((w) => ({
+      id: w.id,
+      owner: w.owner,
+      x: w.x,
+      y: w.y,
+      hp: Math.max(0, Math.round(w.hp)),
+      maxHp: WARSHIP_MAX_HP,
+      retreating: w.retreating,
+    }));
   }
 
   get tick(): number {
@@ -693,8 +761,9 @@ export class RasterConflict {
     this.rails.advance(this.tickCount);
     // Trade ships sail between ports and pay both ends gold on arrival.
     this.trade.advance(this.tickCount);
-    // Warship coastal batteries sink enemy transports before they advance/land.
-    this.interceptTransports();
+    // Mobile warships hunt down enemy transports/warships/trade ships before
+    // transports advance/land this tick.
+    this.advanceWarships();
     this.advanceShips();
     // SAM Launchers shoot down in-flight warheads before they can detonate.
     this.interceptNukes();
@@ -926,41 +995,186 @@ export class RasterConflict {
    * recorded as {@link SeaCrossing}s for the client to flash.
    */
   /**
-   * Sink every enemy transport ship currently within {@link WARSHIP_INTERCEPT_RANGE}
-   * (Chebyshev) of a warship not owned by — and not allied to — the ship's owner.
-   * A sunk transport's troops are lost outright (no refund): a coast defended by
-   * warships turns an unescorted landing into a gamble, the strategic point of a
-   * navy. Run before {@link advanceShips} so an interdicted ship dies mid-voyage
-   * rather than completing its landing this tick.
+   * Spawn a mobile warship the tick its home "warship" structure finishes
+   * construction, and despawn one whose home structure is gone (captured, or
+   * torn down by {@link fireOn} when the unit itself was sunk) — a warship
+   * structure and its mobile unit live and die together, one-to-one.
    */
-  private interceptTransports(): void {
-    if (this.ships.length === 0) return;
-    const warships: TileRef[] = [];
+  private syncWarships(): void {
+    const activeHomes = new Set<TileRef>();
     for (const [ref, type] of this.grid.activeBuildingEntries()) {
-      if (type === "warship") warships.push(ref);
+      if (type !== "warship") continue;
+      activeHomes.add(ref);
+      if (this.warshipByHome.has(ref)) continue;
+      const id = this.nextWarshipId++;
+      this.warshipByHome.set(ref, id);
+      this.warships.push({
+        id,
+        owner: this.grid.ownerOf(ref),
+        homeRef: ref,
+        x: this.grid.map.x(ref),
+        y: this.grid.map.y(ref),
+        hp: WARSHIP_MAX_HP,
+        target: null,
+        retreating: false,
+        shellReadyAt: 0,
+      });
     }
-    if (warships.length === 0) return;
+    for (const [ref, id] of [...this.warshipByHome]) {
+      if (activeHomes.has(ref)) continue;
+      this.warshipByHome.delete(ref);
+      this.removeWarship(id);
+    }
+  }
 
+  /** Drop a warship from the live roster by id (already-dead entries are a no-op). */
+  private removeWarship(id: number): void {
+    const idx = this.warships.findIndex((w) => w.id === id);
+    if (idx !== -1) this.warships.splice(idx, 1);
+  }
+
+  /**
+   * The nearest hostile (non-owner, non-allied) target within
+   * {@link WARSHIP_TARGET_RANGE} of `w`, in OpenFront's fixed priority order:
+   * any enemy transport ship beats every enemy warship, which beats every
+   * enemy trade ship — never a nearer lower-tier target over a farther
+   * higher-tier one.
+   */
+  private pickWarshipTarget(
+    w: Warship,
+  ): { kind: WarshipTargetKind; id: number; x: number; y: number } | null {
     const map = this.grid.map;
-    const survivors: TransportShip[] = [];
-    for (const ship of this.ships) {
-      const tile = ship.path[ship.progress];
-      const sx = map.x(tile);
-      const sy = map.y(tile);
-      let sunk = false;
-      for (const w of warships) {
-        const owner = this.grid.ownerOf(w);
-        if (owner === ship.attacker) continue;
-        if (owner !== NEUTRAL_PLAYER && this.allies.areAllied(ship.attacker, owner)) continue;
-        if (Math.max(Math.abs(map.x(w) - sx), Math.abs(map.y(w) - sy)) <= WARSHIP_INTERCEPT_RANGE) {
-          sunk = true;
-          break;
-        }
-      }
-      if (!sunk) survivors.push(ship);
+    const isHostile = (owner: PlayerId): boolean =>
+      owner !== w.owner && owner !== NEUTRAL_PLAYER && !this.allies.areAllied(w.owner, owner);
+
+    let best: { kind: WarshipTargetKind; id: number; x: number; y: number; d: number } | null = null;
+    const consider = (kind: WarshipTargetKind, id: number, x: number, y: number): void => {
+      const d = Math.max(Math.abs(x - w.x), Math.abs(y - w.y));
+      if (d > WARSHIP_TARGET_RANGE) return;
+      if (!best || d < best.d) best = { kind, id, x, y, d };
+    };
+
+    for (const s of this.ships) {
+      if (!isHostile(s.attacker)) continue;
+      const tile = s.path[s.progress];
+      consider("transport", s.id, map.x(tile), map.y(tile));
     }
-    this.ships.length = 0;
-    this.ships.push(...survivors);
+    if (best) return best;
+
+    for (const other of this.warships) {
+      if (other.id === w.id || !isHostile(other.owner)) continue;
+      consider("warship", other.id, other.x, other.y);
+    }
+    if (best) return best;
+
+    for (const t of this.trade.targetableShips()) {
+      if (!isHostile(t.owner)) continue;
+      consider("trade", t.id, t.x, t.y);
+    }
+    return best;
+  }
+
+  /**
+   * Step `w` one tick's distance toward `(tx, ty)`, snapping exactly onto it
+   * once close enough (arriving is always allowed, even at a home tile that
+   * itself sits on land — "docking"). An intermediate step that would land on
+   * land instead holds position for the tick rather than crossing it: a
+   * straight-line course with a basic no-land guard, not full water routing
+   * (like transport ships get via {@link TerritoryGrid.findWaterRoute}) — a
+   * documented simplification, since a warship's target moves tick to tick
+   * and re-pathing a BFS route every tick would be far more expensive.
+   */
+  private moveWarshipToward(w: Warship, tx: number, ty: number): void {
+    const dx = tx - w.x;
+    const dy = ty - w.y;
+    const dist = Math.max(Math.abs(dx), Math.abs(dy));
+    if (dist === 0) return;
+    const step = Math.min(WARSHIP_TILES_PER_TICK, dist);
+    const nx = w.x + (dx / dist) * step;
+    const ny = w.y + (dy / dist) * step;
+    if (step >= dist) {
+      w.x = nx;
+      w.y = ny;
+      return;
+    }
+    const map = this.grid.map;
+    const rx = Math.round(nx);
+    const ry = Math.round(ny);
+    if (!map.inBounds(rx, ry) || map.isLand(map.ref(rx, ry))) return;
+    w.x = nx;
+    w.y = ny;
+  }
+
+  /**
+   * Resolve `w`'s shot at `target`: an enemy transport or trade ship is sunk
+   * outright (neither has an HP pool in this engine — a transport's troops are
+   * lost with no refund, mirroring the old coast-defence behaviour this
+   * replaces); an enemy warship takes {@link WARSHIP_SHELL_DAMAGE} and, if that
+   * kills it, its home structure is demolished along with it.
+   */
+  private fireOn(w: Warship, target: { kind: WarshipTargetKind; id: number }): void {
+    if (target.kind === "transport") {
+      const idx = this.ships.findIndex((s) => s.id === target.id);
+      if (idx !== -1) this.ships.splice(idx, 1);
+      return;
+    }
+    if (target.kind === "trade") {
+      this.trade.destroyShip(target.id);
+      return;
+    }
+    const enemy = this.warships.find((x) => x.id === target.id);
+    if (!enemy) return;
+    enemy.hp -= WARSHIP_SHELL_DAMAGE;
+    if (enemy.hp <= 0) {
+      this.warshipByHome.delete(enemy.homeRef);
+      this.grid.demolishBuilding(enemy.homeRef);
+      this.removeWarship(enemy.id);
+    }
+  }
+
+  /**
+   * Advance every mobile warship one tick: sync new/lost units, heal, run the
+   * retreat hysteresis, pick (or keep) a target, close the distance, and fire
+   * once in range and off cooldown. A destroyed enemy warship's home structure
+   * is torn down in the same tick, so its own advance this tick — later in the
+   * `[...this.warships]` snapshot — is skipped via the `hp <= 0` guard below.
+   */
+  private advanceWarships(): void {
+    this.syncWarships();
+    if (this.warships.length === 0) return;
+    const map = this.grid.map;
+
+    for (const w of [...this.warships]) {
+      if (w.hp <= 0) continue; // sunk by an earlier warship's shot this tick
+
+      w.hp = Math.min(WARSHIP_MAX_HP, w.hp + WARSHIP_PASSIVE_HEAL_PER_TICK);
+      if (w.hp < WARSHIP_RETREAT_HP) w.retreating = true;
+      else if (w.hp >= WARSHIP_RETREAT_RECOVER_HP) w.retreating = false;
+
+      if (w.retreating) {
+        w.target = null;
+        this.moveWarshipToward(w, map.x(w.homeRef), map.y(w.homeRef));
+        continue;
+      }
+
+      const target = this.pickWarshipTarget(w);
+      w.target = target ? { kind: target.kind, id: target.id } : null;
+      if (!target) {
+        // No hostile in range: hold near home rather than a scripted patrol
+        // route — deterministic, and it still reads as "on station" until
+        // something worth chasing shows up.
+        this.moveWarshipToward(w, map.x(w.homeRef), map.y(w.homeRef));
+        continue;
+      }
+
+      if (Math.max(Math.abs(target.x - w.x), Math.abs(target.y - w.y)) > WARSHIP_ENGAGE_RANGE) {
+        this.moveWarshipToward(w, target.x, target.y);
+        continue;
+      }
+      if (this.tickCount < w.shellReadyAt) continue;
+      w.shellReadyAt = this.tickCount + WARSHIP_SHELL_RATE_TICKS;
+      this.fireOn(w, target);
+    }
   }
 
   private advanceShips(): void {

@@ -22,6 +22,7 @@ import type {
   RasterShip,
   RasterTrade,
   RasterTrain,
+  RasterWarship,
 } from "../Core/types.js";
 import { LAND_ATTACK_REACH, RASTER_MATCH_DURATION_SECONDS, SPAWN_IMMUNITY_SECONDS } from "../Core/rasterCombatConfig.js";
 import { NUKE_DEFS, nukeCost, SILO_RELOAD_TICKS, type NukeKind } from "../Core/nukes.js";
@@ -285,6 +286,8 @@ export class RasterGameSession {
   private lastCrossings: RasterCrossing[] = [];
   /** Transport ships in flight as of the most recent tick, broadcast for animation. */
   private lastShips: RasterShip[] = [];
+  /** Live mobile warships as of the most recent tick, broadcast for animation. */
+  private lastWarships: RasterWarship[] = [];
   /** Active land-attack fronts from the most recent tick, for on-map troop labels. */
   private lastFronts: RasterAttackFront[] = [];
   /** Auto-routed railroads as of the most recent tick, for the client to draw. */
@@ -842,6 +845,15 @@ export class RasterGameSession {
       x: this.map.x(s.tile),
       y: this.map.y(s.tile),
       troops: s.troops,
+    }));
+    this.lastWarships = this.conflict.activeWarships().map((w) => ({
+      warshipId: w.id,
+      playerId: w.owner,
+      x: w.x,
+      y: w.y,
+      hp: w.hp,
+      maxHp: w.maxHp,
+      retreating: w.retreating,
     }));
     this.lastNukes = this.conflict.activeNukes().map((n) => ({
       nukeId: n.id,
@@ -1457,6 +1469,7 @@ export class RasterGameSession {
       recentEvents: this.recentEvents,
       crossings: this.lastCrossings,
       ships: this.lastShips,
+      warships: this.lastWarships,
       nukes: this.lastNukes,
       nukeDetonations: this.lastNukeDetonations,
       nukeInterceptions: this.lastNukeInterceptions,

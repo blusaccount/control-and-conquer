@@ -745,6 +745,17 @@ export class TerritoryGrid {
     return true;
   }
 
+  /**
+   * Publicly tear down the building on `ref`, if any — for a structure lost to
+   * something other than the tile changing hands (e.g. a mobile Warship unit
+   * sunk in combat loses its home port structure too). Delegates to
+   * {@link destroyBuilding}; the owner charged for the loss is `ref`'s current
+   * owner.
+   */
+  demolishBuilding(ref: TileRef): boolean {
+    return this.destroyBuilding(ref, this.owner[ref]);
+  }
+
   /** True if any 4-connected land neighbour of `ref` is owned by `attacker`. */
   hasLandFrontier(attacker: PlayerId, ref: TileRef): boolean {
     for (const n of this.map.neighbors(ref)) {

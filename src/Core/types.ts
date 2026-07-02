@@ -120,6 +120,22 @@ export interface RasterShip {
 }
 
 /**
+ * A mobile warship this snapshot: belonging to `playerId`, at fractional tile
+ * position (`x`,`y`), with its current/max HP for the client's health bar
+ * (drawn only while `hp < maxHp`) and whether it's currently retreating home
+ * to heal instead of pressing an attack.
+ */
+export interface RasterWarship {
+  warshipId: number;
+  playerId: number;
+  x: number;
+  y: number;
+  hp: number;
+  maxHp: number;
+  retreating: boolean;
+}
+
+/**
  * A warhead in flight this snapshot: launched by `playerId`, currently at
  * (`x`,`y`) en route to (`toX`,`toY`). Sent every snapshot while airborne so
  * the client can draw it travelling toward its target. A MIRV launch appears
@@ -285,6 +301,8 @@ export interface RasterSnapshot {
   crossings: RasterCrossing[];
   /** Transport ships currently in flight (empty when none are at sea). */
   ships: RasterShip[];
+  /** Live mobile warships (empty until one finishes construction). */
+  warships: RasterWarship[];
   /** Warheads currently in flight (empty when none are airborne). */
   nukes: RasterNuke[];
   /** Warhead detonations resolved this tick (empty on most ticks). */

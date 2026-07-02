@@ -18,6 +18,7 @@ import type {
   RasterRail,
   RasterServerMessage,
   RasterShip,
+  RasterWarship,
   RasterSnapshot,
   RasterTrade,
   RasterTrain,
@@ -78,6 +79,24 @@ interface ShipDot {
   /** Whether `rx`/`ry` have been seeded yet (false until the first snapshot). */
   placed: boolean;
   /** Snapshot generation this ship was last seen in, for cleanup. */
+  seen: number;
+}
+
+/**
+ * A mobile warship being drawn — same eased-position idea as {@link ShipDot},
+ * plus the current/max HP (for the health bar, drawn only while damaged) and
+ * whether it's currently retreating home to heal (a distinct visual cue from
+ * an "angry"/engaging one).
+ */
+interface WarshipDot {
+  rx: number;
+  ry: number;
+  tx: number;
+  ty: number;
+  color: string;
+  hp: number;
+  maxHp: number;
+  retreating: boolean;
   seen: number;
 }
 
@@ -231,6 +250,10 @@ interface RasterRuntime {
   ships: Map<number, ShipDot>;
   /** Monotonic counter bumped per snapshot to expire ships that have landed. */
   shipGeneration: number;
+  /** Mobile warships currently being drawn, keyed by server warship id. */
+  warships: Map<number, WarshipDot>;
+  /** Monotonic counter bumped per snapshot to expire warships that were sunk. */
+  warshipGeneration: number;
   /** In-flight landing flashes. */
   landings: Landing[];
   /** In-flight nuke explosion rings. */
@@ -463,6 +486,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     view: { scale: 1, x: 0, y: 0, initialized: false },
     ships: new Map(),
     shipGeneration: 0,
+    warships: new Map(),
+    warshipGeneration: 0,
     landings: [],
     nukeExplosions: [],
     nukeIntercepts: [],
@@ -871,6 +896,41 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     }
   };
 
+  // Same reconciliation as updateShips, but a warship's own tile-space (x,y)
+  // is already itself smoothly interpolated server-side (fractional
+  // movement, not a discrete tile hop like transports), so the client eases
+  // on top of that for an extra-smooth glide; hp/maxHp/retreating are just
+  // copied straight through (no interpolation needed for a health bar).
+  const updateWarships = (warships: RasterWarship[]): void => {
+    const generation = (runtime.warshipGeneration += 1);
+    for (const w of warships) {
+      const existing = runtime.warships.get(w.warshipId);
+      if (existing) {
+        existing.tx = w.x;
+        existing.ty = w.y;
+        existing.hp = w.hp;
+        existing.maxHp = w.maxHp;
+        existing.retreating = w.retreating;
+        existing.seen = generation;
+      } else {
+        runtime.warships.set(w.warshipId, {
+          rx: w.x,
+          ry: w.y,
+          tx: w.x,
+          ty: w.y,
+          color: rgbaToCss(playerColor(w.playerId)),
+          hp: w.hp,
+          maxHp: w.maxHp,
+          retreating: w.retreating,
+          seen: generation,
+        });
+      }
+    }
+    for (const [id, dot] of runtime.warships) {
+      if (dot.seen !== generation) runtime.warships.delete(id);
+    }
+  };
+
   const spawnLandings = (crossings: RasterCrossing[]): void => {
     if (crossings.length === 0) return;
     const now = performance.now();
@@ -1000,6 +1060,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const ships = snapshot.ships ?? [];
     runtime.myShips = ships.reduce((n, s) => (s.playerId === runtime.myPlayerId ? n + 1 : n), 0);
     updateShips(ships);
+    updateWarships(snapshot.warships ?? []);
     spawnLandings(snapshot.crossings ?? []);
     spawnNukeExplosions(snapshot.nukeDetonations ?? []);
     spawnNukeIntercepts(snapshot.nukeInterceptions ?? []);
@@ -1232,6 +1293,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       drawTrains(ctx, scale);
       drawTradeShips(ctx, scale);
       drawShips(ctx, scale);
+      drawWarships(ctx, scale);
       drawNukes(ctx, scale);
       drawLandings(now, ctx, scale);
       drawNukeExplosions(now, ctx, scale);
@@ -1931,6 +1993,46 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       // the icon itself is tinted directly to the owner's colour.
       ctx.fillStyle = ship.color;
       drawIcon(ctx, "ship", p.x, p.y, radius);
+      ctx.restore();
+    }
+  };
+
+  /**
+   * Ease and draw every mobile warship: the hull icon (owner-tinted, like a
+   * transport ship), a health bar above it once damaged (OpenFront: "only
+   * warships have health bars"), and a cyan halo instead of white while
+   * retreating home to heal — a distinct "fleeing" cue from its normal/
+   * engaging look.
+   */
+  const drawWarships = (ctx: CanvasRenderingContext2D, scale: number): void => {
+    if (runtime.warships.size === 0) return;
+    const radius = Math.max(3, scale * 0.5);
+    for (const w of runtime.warships.values()) {
+      w.rx += (w.tx - w.rx) * SHIP_EASE;
+      w.ry += (w.ty - w.ry) * SHIP_EASE;
+      const p = worldToScreen(w.rx, w.ry);
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, radius + 1.5, 0, Math.PI * 2);
+      ctx.fillStyle = w.retreating ? "rgba(56, 189, 248, 0.9)" : "rgba(255, 255, 255, 0.85)";
+      ctx.fill();
+      ctx.fillStyle = w.color;
+      drawIcon(ctx, "warship", p.x, p.y, radius);
+
+      if (w.hp < w.maxHp) {
+        const barW = Math.max(14, radius * 2.2);
+        const barH = Math.max(2, scale * 0.12);
+        const barX = p.x - barW / 2;
+        const barY = p.y - radius - barH - 3;
+        const frac = Math.max(0, Math.min(1, w.hp / w.maxHp));
+        // Red at 0hp, amber at half, green at full — a smooth two-segment lerp.
+        const hue = frac < 0.5 ? frac * 2 * 45 : 45 + (frac - 0.5) * 2 * 75;
+        ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
+        ctx.fillRect(barX - 1, barY - 1, barW + 2, barH + 2);
+        ctx.fillStyle = `hsl(${hue}, 85%, 50%)`;
+        ctx.fillRect(barX, barY, barW * frac, barH);
+      }
       ctx.restore();
     }
   };
