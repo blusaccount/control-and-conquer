@@ -76,6 +76,17 @@ export const troopsPerSecond = (
   troopGrowth(troops, maxTroops(tiles, cities) * troopCapMultiplier) * incomeMultiplier * ticksPerSecond;
 
 /**
+ * Fraction of the map's capturable land a single player must hold to win by
+ * **domination**, mirroring OpenFront's FFA win condition (community-documented
+ * as controlling 80% of total land; openfrontpro.com/mechanics/winning and the
+ * OpenFront wiki, 2026-07). Requiring every last tile made matches drag through
+ * a long, foregone mop-up phase; at the threshold the match ends immediately
+ * and the leader is crowned. Team modes use a higher bar (OpenFront: 95%) —
+ * a future team PR should carry its own constant.
+ */
+export const WIN_TILE_FRACTION = 0.8;
+
+/**
  * Maximum wall-clock length of a single roguelite run, in seconds. When the
  * clock runs out the territory leader is declared the winner. Kept in seconds
  * (a pure gameplay rule) so it stays independent of the server tick rate, which

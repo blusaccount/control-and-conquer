@@ -48,6 +48,7 @@ import {
   TRAITOR_DEFENSE_DEBUFF,
   TRAITOR_DURATION_TICKS,
   TRAITOR_SPEED_DEBUFF,
+  WIN_TILE_FRACTION,
 } from "./rasterCombatConfig.js";
 
 /** A request to expand from `attacker`'s territory into `target`'s tiles. */
@@ -190,7 +191,7 @@ export interface AttackFrontState {
 
 export interface RasterTickResult {
   tick: number;
-  /** Set once a single player owns every capturable tile, else null. */
+  /** Set once a player holds {@link WIN_TILE_FRACTION} of the capturable land, else null. */
   winner: PlayerId | null;
   rejections: Array<{ intent: AttackIntent; reason: AttackRejectReason }>;
   /** Number of attacks still in progress after this tick. */
@@ -1369,11 +1370,17 @@ export class RasterConflict {
     this.attacks.push(...survivors);
   }
 
-  /** Declare a winner if a single player owns every capturable tile. */
+  /**
+   * Declare a winner once a player holds {@link WIN_TILE_FRACTION} of the
+   * capturable land (OpenFront's domination win). The match ends the tick the
+   * threshold is crossed — no drawn-out mop-up of the last hold-outs. At most
+   * one player can sit at ≥80%, so first-found is unambiguous.
+   */
   private checkVictory(): void {
     if (this.winnerId !== null || this.grid.capturableCount === 0) return;
+    const threshold = this.grid.capturableCount * WIN_TILE_FRACTION;
     for (const id of this.grid.players()) {
-      if (this.grid.tileCountOf(id) === this.grid.capturableCount) {
+      if (this.grid.tileCountOf(id) >= threshold) {
         this.winnerId = id;
         return;
       }

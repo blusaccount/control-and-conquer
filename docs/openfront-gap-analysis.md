@@ -54,7 +54,10 @@
     Tile erobert, verschwindet die Aura. (Es gibt **keine Hauptstadt** mehr — eine
     Nation wird besiegt, indem ihr *gesamtes* Territorium erobert wird, nicht durch
     Fall eines einzelnen Sitzes.)
-- **Win-Condition:** ein Spieler, der alle eroberbaren Tiles hält, gewinnt;
+- **Win-Condition:** Domination wie OpenFront — ein Spieler, der
+  `WIN_TILE_FRACTION` (80 %) der eroberbaren Tiles hält, gewinnt sofort
+  (öffentlich dokumentierter FFA-Wert; Teams nutzen bei OpenFront 95 % — für
+  einen künftigen Team-Modus als eigene Konstante vorgesehen);
   `SERVER_RASTER_MATCH_ENDED` wird einmalig gebroadcastet. Eine Nation ist
   eliminiert, sobald ihr letztes Tile erobert ist (der Eroberer behält das Land).
 

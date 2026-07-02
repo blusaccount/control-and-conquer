@@ -39,6 +39,7 @@ import {
   type BuildingType,
 } from "../Core/buildings.js";
 import type { RasterDifficulty } from "../Core/messages.js";
+import { WIN_TILE_FRACTION } from "../Core/rasterCombatConfig.js";
 import { SIMULATION_TICK_RATE } from "../Server/simulationConfig.js";
 import { sfx } from "./sound.js";
 import { NUKE_DEFS, NUKE_KINDS, nukeBlast, nukeCost, type NukeKind } from "../Core/nukes.js";
@@ -2512,7 +2513,13 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         );
       })
       .join("");
-    ui.leaderboard.innerHTML = header + rows;
+    // Victory-progress footer: the domination threshold and how close the
+    // current territory leader is to it, so the race's stakes stay visible.
+    const leader = activeAll.find((p) => p.playerId === leaderId);
+    const leaderOwn = leader && runtime.capturableTotal > 0 ? (leader.tiles / runtime.capturableTotal) * 100 : 0;
+    const leaderOwnStr = leaderOwn >= 10 ? `${Math.round(leaderOwn)}%` : `${leaderOwn.toFixed(1)}%`;
+    const note = `<div class="lb-note">Win at ${Math.round(WIN_TILE_FRACTION * 100)}% of land — leader holds ${leaderOwnStr}</div>`;
+    ui.leaderboard.innerHTML = header + rows + note;
   };
 
   /** Apply a header click: toggle direction when re-clicking a column, else sort by it. */

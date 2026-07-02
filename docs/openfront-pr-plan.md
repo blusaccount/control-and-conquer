@@ -86,7 +86,7 @@ Defeat/Spectate.
 | L2 | Boot-Kapazität | `floor(troops/5)` pro Boot | **war bereits umgesetzt** (Session kappt auf `floor(pool/5)`; PR A pinnt das per Test) | — |
 | L3 | **Allianz-Lebenszyklus** | ~5 min Laufzeit, Renewal-Prompt ~30 s vor Ablauf, natürlicher Ablauf ≠ Verrat; Verrats-Zähler; Auto-Embargo | Allianzen laufen **nie** ab (`alliances.ts` kennt keine Zeit) | **hoch** — prägt die ganze Diplomatie-Dynamik |
 | L4 | **Struktur-Upgrades (Level)** | seit v24: Bau auf bestehendes Gebäude = Upgrade (City-Level ×250k Cap, Stations-Level etc.), Level-Ziffern im Render | Gebäude sind one-shot, kein Level-Feld | **hoch** — zentrales Spätspiel-Element |
-| L5 | **Win-Condition** | Prozent-Schwelle der Landfläche (FFA; Teams 95 %) → Spiele *enden* | Sieg erst bei 100 % aller Tiles bzw. Zeitlimit-Führung | **hoch** — Matches ziehen sich künstlich |
+| L5 | **Win-Condition** | Prozent-Schwelle der Landfläche (FFA; Teams 95 %) → Spiele *enden* | **erledigt (PR B)** — `WIN_TILE_FRACTION = 0.8`, Match endet an der Schwelle; Leaderboard zeigt Sieg-Fortschritt | — |
 | L6 | Emojis / Quick-Chat | Emoji-Reaktionen übers Territorium, Preset-Nachrichten | fehlt komplett | mittel |
 | L7 | Spenden / Zielanfragen / Embargo | Truppen-/Gold-Spende an Verbündete, Target-Request, Handels-Embargo (manuell + automatisch bei Verrat) | fehlt komplett | mittel |
 | L8 | Waffen-Feinheiten | MIRV = Schwarm vieler kleiner Sprengköpfe übers Zielterritorium; SAM-Abfangquote je Waffentyp; Defense-Post-Geschütz (Shells vs. Schiffe) | MIRV splittet in 6; SAM flach 75 %; Forts schießen nicht | mittel |
@@ -147,7 +147,7 @@ Zeile ist der Slider (OpenFront-Spieler committen reflexhaft 20 %).
 - **Tests:** Boot-Kapazität; Formatgrenzen. **Akzeptanz:** Default-Klick
   committet 20 %; Boot-Landung entspricht OF-Größenordnung.
 
-### PR B — Win-Condition: Prozent-Schwelle (S/M, P0)
+### PR B — Win-Condition: Prozent-Schwelle (S/M, P0) — ✅ umgesetzt (2026-07-02, 80 % verifiziert via openfrontpro.com/mechanics/winning + Miraheze-Wiki)
 
 Ohne Schwelle enden Matches nie organisch — einer der spürbarsten
 Unterschiede im Matchverlauf.

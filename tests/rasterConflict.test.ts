@@ -112,7 +112,7 @@ test("a directed attack takes the click-side tile first", () => {
   assert.equal(left.ownerOf(11), NEUTRAL_PLAYER, "the away side (right) is left untouched");
 });
 
-test("neutral expansion claims a line of tiles ring by ring until troops run out", () => {
+test("neutral expansion claims a line of tiles ring by ring until domination ends the match", () => {
   const grid = new TerritoryGrid(flatLand(5, 1));
   grid.addPlayer(1, 80);
   grid.claim(0, 1);
@@ -128,9 +128,11 @@ test("neutral expansion claims a line of tiles ring by ring until troops run out
   assert.equal(grid.ownerOf(1), 1);
   assert.equal(grid.ownerOf(2), NEUTRAL_PLAYER);
 
-  // A handful more ticks captures the whole line and wins the (5-tile) map.
+  // A handful more ticks reaches 4 of 5 tiles — the 80% domination threshold —
+  // and the match ends there: the last tile is never mopped up.
   runTicks(conflict, 10);
-  for (let ref = 0; ref < 5; ref += 1) assert.equal(grid.ownerOf(ref), 1);
+  for (let ref = 0; ref < 4; ref += 1) assert.equal(grid.ownerOf(ref), 1);
+  assert.equal(grid.ownerOf(4), NEUTRAL_PLAYER, "the match freezes at the threshold");
   assert.equal(conflict.winner, 1);
 });
 
@@ -196,7 +198,9 @@ test("a traitor defender is cheaper to conquer (OpenFront traitorDefenseDebuff)"
   // Same assault against the same defender captures MORE of its land when the
   // defender is a marked traitor, because its tiles cost half the magnitude.
   const conquer = (betray: boolean): number => {
-    const grid = new TerritoryGrid(flatLand(12, 1));
+    // 15 tiles with a 3-tile neutral tail so the defender's 11 tiles stay
+    // below the 80% domination threshold (11/15) and the match keeps running.
+    const grid = new TerritoryGrid(flatLand(15, 1));
     grid.addPlayer(1, 6000); // attacker
     grid.addPlayer(2, 60_000); // dense defender holds tiles 1..11 (costly to take)
     grid.claim(0, 1);
@@ -530,8 +534,8 @@ test("a front blocked against neutral land refunds troops in full", () => {
 });
 
 test("a defense post fortifies the ground around it, slowing a conquest", () => {
-  // 6x1 flat line, player 1 on tile 0 with exactly enough troops (5 tiles ×
-  // mag/5 = 80) to walk the five neutral tiles — and win — on open ground.
+  // 6x1 flat line, player 1 on tile 0 with ample troops (80) to walk the
+  // neutral line on open ground — domination lands at 5 of 6 tiles (80%).
   const build = () => {
     const grid = new TerritoryGrid(flatLand(6, 1));
     grid.addPlayer(1, 80);
@@ -544,7 +548,7 @@ test("a defense post fortifies the ground around it, slowing a conquest", () => 
   const openConflict = new RasterConflict(open);
   assert.equal(openConflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 80 }), null);
   runTicks(openConflict, 30);
-  assert.equal(open.tileCountOf(1), 6, "on open ground the whole line falls");
+  assert.equal(open.tileCountOf(1), 5, "on open ground the advance reaches the 80% threshold");
   assert.equal(openConflict.winner, 1);
 
   // Same troops, but tile 5 is a defense post (radius 2, strength 3): tiles 4 and
@@ -578,6 +582,26 @@ test("a freshly-seated nation is immune from attack until its window elapses", (
   for (let i = 0; i < 5; i += 1) conflict.processTick();
   assert.equal(conflict.isImmune(2), false, "immunity has lapsed");
   assert.equal(conflict.launchAttack({ attacker: 1, target: 2, troops: 5000 }), null, "the attack is now allowed");
+});
+
+test("domination: holding 80% of the land wins without owning every tile", () => {
+  const grid = new TerritoryGrid(flatLand(5, 1));
+  grid.addPlayer(1, 10);
+  grid.addPlayer(2, 10);
+  grid.claim(0, 1);
+  grid.claim(1, 1);
+  grid.claim(2, 1);
+  grid.claim(4, 2);
+  freezeIncome(grid);
+  const conflict = new RasterConflict(grid);
+
+  conflict.processTick();
+  assert.equal(conflict.winner, null, "3 of 5 tiles (60%) is below the threshold");
+
+  grid.claim(3, 1); // 4 of 5 = exactly 80%
+  conflict.processTick();
+  assert.equal(conflict.winner, 1, "80% of the capturable land wins by domination");
+  assert.equal(grid.ownerOf(4), 2, "the hold-out keeps its tile — the match simply ends");
 });
 
 test("a finished match ignores further intents", () => {

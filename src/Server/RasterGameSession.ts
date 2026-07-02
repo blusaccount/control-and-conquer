@@ -24,7 +24,7 @@ import type {
   RasterTrain,
   RasterWarship,
 } from "../Core/types.js";
-import { LAND_ATTACK_REACH, RASTER_MATCH_DURATION_SECONDS, SPAWN_IMMUNITY_SECONDS } from "../Core/rasterCombatConfig.js";
+import { LAND_ATTACK_REACH, RASTER_MATCH_DURATION_SECONDS, SPAWN_IMMUNITY_SECONDS, WIN_TILE_FRACTION } from "../Core/rasterCombatConfig.js";
 import { NUKE_DEFS, nukeCost, SILO_RELOAD_TICKS, type NukeKind } from "../Core/nukes.js";
 import { BUILDING_CONSTRUCTION_TICKS, BUILDING_DEFS, buildingCost, COASTAL_BUILDING_TYPES, COASTAL_SNAP_RADIUS, CONQUER_GOLD_FRACTION_AI, CONQUER_GOLD_FRACTION_HUMAN, costCounterTypes, STRUCTURE_MIN_DIST } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
@@ -965,9 +965,9 @@ export class RasterGameSession {
       }
     }
 
-    // End the match on conquest (a player owns everything) or when the clock
-    // runs out (the territory leader is crowned). Either way, broadcast a
-    // per-player run summary for the post-match stats screen.
+    // End the match on conquest (a player dominates WIN_TILE_FRACTION of the
+    // land) or when the clock runs out (the territory leader is crowned).
+    // Either way, broadcast a per-player run summary for the stats screen.
     if (tickResult.winner !== null || timeUp) {
       this.matchEndedBroadcast = true;
       const reason: RasterMatchEndReason = tickResult.winner !== null ? "conquest" : "timeLimit";
@@ -977,7 +977,7 @@ export class RasterGameSession {
       const endLine = winnerId === null
         ? "The match ended with no survivors."
         : reason === "conquest"
-          ? `${this.nameOf(winnerId)} has conquered the map.`
+          ? `${this.nameOf(winnerId)} has won by domination — ${Math.round(WIN_TILE_FRACTION * 100)}% of the map.`
           : `Time's up — ${this.nameOf(winnerId)} leads with the most territory.`;
       this.recentEvents = [endLine, ...this.recentEvents].slice(0, MAX_EVENTS);
 
