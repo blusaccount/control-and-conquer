@@ -177,32 +177,41 @@ const warshipDef = (): Group[] => [
   },
 ];
 
-/** Missile silo: a launch pad with an armed missile — nose cone, body and fins. */
+/**
+ * Missile silo: a standalone rocket in flight — nose cone, body with a
+ * porthole cut out, swept fins and an exhaust flame — rather than a static
+ * launch pad, so it reads as "missile" at a glance.
+ */
 const siloDef = (): Group[] => [
   {
+    // Nose cone + body, with the porthole punched through as a hole.
+    rule: "evenodd",
+    segs: [
+      { op: "M", x: 0, y: -0.95 },
+      { op: "L", x: 0.24, y: -0.22 },
+      { op: "L", x: 0.24, y: 0.38 },
+      { op: "L", x: -0.24, y: 0.38 },
+      { op: "L", x: -0.24, y: -0.22 },
+      { op: "Z" },
+      { op: "CIRCLE", cx: 0, cy: -0.15, r: 0.11 },
+    ],
+  },
+  {
+    // Fins + exhaust flame, kept in a separate group so they don't get
+    // clipped by the porthole hole above.
     rule: "nonzero",
     segs: [
-      // Launch pad.
-      { op: "M", x: -0.75, y: 0.75 },
-      { op: "L", x: 0.75, y: 0.75 },
-      { op: "L", x: 0.55, y: 0.52 },
-      { op: "L", x: -0.55, y: 0.52 },
+      { op: "M", x: -0.24, y: 0.12 },
+      { op: "L", x: -0.55, y: 0.5 },
+      { op: "L", x: -0.24, y: 0.38 },
       { op: "Z" },
-      // Missile: nose cone + body.
-      { op: "M", x: 0, y: -0.95 },
-      { op: "L", x: 0.17, y: -0.35 },
-      { op: "L", x: 0.17, y: 0.4 },
-      { op: "L", x: -0.17, y: 0.4 },
-      { op: "L", x: -0.17, y: -0.35 },
+      { op: "M", x: 0.24, y: 0.12 },
+      { op: "L", x: 0.55, y: 0.5 },
+      { op: "L", x: 0.24, y: 0.38 },
       { op: "Z" },
-      // Fins.
-      { op: "M", x: -0.17, y: 0.15 },
-      { op: "L", x: -0.42, y: 0.4 },
-      { op: "L", x: -0.17, y: 0.4 },
-      { op: "Z" },
-      { op: "M", x: 0.17, y: 0.15 },
-      { op: "L", x: 0.42, y: 0.4 },
-      { op: "L", x: 0.17, y: 0.4 },
+      { op: "M", x: -0.15, y: 0.38 },
+      { op: "L", x: 0, y: 0.85 },
+      { op: "L", x: 0.15, y: 0.38 },
       { op: "Z" },
     ],
   },
