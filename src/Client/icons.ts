@@ -12,7 +12,7 @@
  *    `color`.
  */
 
-export type IconKey = "city" | "port" | "factory" | "fort" | "warship" | "ship";
+export type IconKey = "city" | "port" | "factory" | "fort" | "warship" | "silo" | "ship";
 
 type Seg =
   | { op: "M"; x: number; y: number }
@@ -177,6 +177,37 @@ const warshipDef = (): Group[] => [
   },
 ];
 
+/** Missile silo: a launch pad with an armed missile — nose cone, body and fins. */
+const siloDef = (): Group[] => [
+  {
+    rule: "nonzero",
+    segs: [
+      // Launch pad.
+      { op: "M", x: -0.75, y: 0.75 },
+      { op: "L", x: 0.75, y: 0.75 },
+      { op: "L", x: 0.55, y: 0.52 },
+      { op: "L", x: -0.55, y: 0.52 },
+      { op: "Z" },
+      // Missile: nose cone + body.
+      { op: "M", x: 0, y: -0.95 },
+      { op: "L", x: 0.17, y: -0.35 },
+      { op: "L", x: 0.17, y: 0.4 },
+      { op: "L", x: -0.17, y: 0.4 },
+      { op: "L", x: -0.17, y: -0.35 },
+      { op: "Z" },
+      // Fins.
+      { op: "M", x: -0.17, y: 0.15 },
+      { op: "L", x: -0.42, y: 0.4 },
+      { op: "L", x: -0.17, y: 0.4 },
+      { op: "Z" },
+      { op: "M", x: 0.17, y: 0.15 },
+      { op: "L", x: 0.42, y: 0.4 },
+      { op: "L", x: 0.17, y: 0.4 },
+      { op: "Z" },
+    ],
+  },
+];
+
 /** Hull + mast + sail — the plain transport/trade ship. */
 const shipDef = (): Group[] => [
   {
@@ -202,6 +233,7 @@ const ICONS: Record<IconKey, () => Group[]> = {
   factory: factoryDef,
   fort: fortDef,
   warship: warshipDef,
+  silo: siloDef,
   ship: shipDef,
 };
 

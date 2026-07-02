@@ -1477,6 +1477,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       factory: { sides: 6, rot: -Math.PI / 2 },
       fort: { sides: 8, rot: Math.PI / 8 },
       warship: { sides: 4, rot: 0 },
+      silo: { sides: 3, rot: -Math.PI / 2 },
     };
     const tracePath = (cx: number, cy: number, r: number, type: string): void => {
       const shape = SHAPE[type] ?? { sides: 0, rot: 0 };
@@ -1734,11 +1735,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     ctx.fillRect(sx, sy, size, size);
     ctx.strokeRect(sx, sy, size, size);
     if (scale >= 10) {
-      ctx.font = `${Math.min(scale * 0.6, 22)}px "Segoe UI Symbol", "Noto Sans Symbols2", system-ui, sans-serif`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
       ctx.fillStyle = valid ? "#4ade80" : "#f87171";
-      ctx.fillText(BUILDING_DEFS[type].icon, sx + size / 2, sy + size / 2);
+      drawIcon(ctx, type, sx + size / 2, sy + size / 2, Math.min(scale * 0.3, 11));
     }
     ctx.restore();
   };

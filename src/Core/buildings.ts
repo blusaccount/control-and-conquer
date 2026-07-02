@@ -376,7 +376,6 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
     type: "silo",
     name: "Missile Silo",
     description: "Launches an Atom Bomb at a target you choose. Reloads after each launch.",
-    icon: "\u{2622}\u{FE0E}", // ☢ radioactive sign, text-presentation (monochrome)
     baseCost: 1_000_000,
     costGrowth: 1,
     costCap: 1_000_000,
