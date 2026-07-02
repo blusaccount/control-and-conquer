@@ -22,7 +22,7 @@
 | **P2 — Gebäude/Gold/Defense-Post/Platzierung** (City/Port/Factory `2^n·125k` Cap 1M; Fort `(n+1)·50k` Cap 250k; flaches Gold-Base + skalierte Dividenden; Fort Stärke 5/Radius 30; Port nur Küste; `structureMinDist 15`) | ✅ **umgesetzt & getestet** |
 | **P3 — Trade-Schiffe + Warships** (Trade: Port→Port-Gold-Sigmoid, beide Häfen kassieren, Flotten-Cap; Warship: küstengebundene Struktur versenkt feindliche Transporter in Reichweite) | ✅ **umgesetzt & getestet** · mobile Warship-Jagd auf Trade, Boote-`floor(troops/5)` noch offen |
 | **P3b — Nukes, Tier 1** (Missile Silo 1M flach, Cooldown 90 Ticks, Bauzeit 100 Ticks; Atom Bomb 750k, Radius 15/40 (100 % / 50 %-Chance), Truppen-Verlust proportional zur zerstörten Landfläche; nukt man einen Verbündeten bricht das Bündnis + Verräter-Debuff) | ✅ **Atom Bomb umgesetzt & getestet** · Hydrogen Bomb, MIRV, SAM-Abfang noch offen; zerstörtes Land wird neutral statt (wie im Original) zu Wasser — Terrain ist in dieser Engine nach der Generierung unveränderlich, siehe `src/Core/nukes.ts` |
-| **P4 — Spawn-Immunität** (geschütztes Eröffnungsfenster `SPAWN_IMMUNITY_SECONDS`, Angriffe/Boote auf immune Nationen abgewiesen) | ✅ **umgesetzt & getestet** · Bot/Nation-Split, Radial-UI/Hotkeys, Visualisierung noch offen (UI-/Render-lastig) |
+| **P4 — Spawn-Immunität** (geschütztes Eröffnungsfenster `SPAWN_IMMUNITY_SECONDS`, Angriffe/Boote auf immune Nationen abgewiesen) | ✅ **umgesetzt & getestet** · Bot/Nation-Split ✅, Radial-Menü ✅, Hotkey-Parität ✅ (siehe Update 2026-07-02 unten) · übrige Visualisierung (WebGL-Look-Feinschliff) noch offen |
 
 > **Update (Ökonomie-Angleichung):** Gold ist jetzt **flach wie OpenFront** —
 > `goldAdditionRate` = 100/Tick, **unabhängig** von Tiles/Städten/Häfen. Städte

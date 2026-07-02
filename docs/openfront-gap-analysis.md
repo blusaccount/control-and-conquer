@@ -1,6 +1,9 @@
 # OpenFront-ähnliche Roadmap: Repository Audit + Gap-Analyse
 
-> **Letztes Update:** 2026-07-02 — frischer, quellcode-basierter Abgleich gegen
+> **Letztes Update:** 2026-07-02 (Nachmittag) — §3c-Punkte #1 (Rechtsklick-
+> Radialmenü), #2 (Hotkey-Parität), #3 (SAM/Hydrogen/MIRV) und #5 (Bot/Nation-
+> Zweiklassen-KI) sind jetzt **erledigt**; Details in den jeweiligen
+> §3c-Zeilen. Davor am selben Tag: frischer, quellcode-basierter Abgleich gegen
 > das echte `openfrontio/OpenFrontIO`-Repo (aktuell `main`, Tag v0.32.6), nach
 > mehreren Commits seit dem 30.6. (Nukes/Missile-Silo, Frame-Controls,
 > Sound-Effekte, Ghost-Build-Preview, eigene Vektor-Icons). Siehe **§3c** für die
@@ -185,8 +188,8 @@
 | Reconnect/Resync-Protokoll | offen | P2 |
 | Persistenz für Match-Resultate / Progression | offen | P2 |
 | Lobby-/Menü-UI über „Play vs Bot" hinaus | offen | P3 |
-| Rechtsklick-Radialmenü | offen — siehe §3c #1 | **P0** |
-| Vollständige Hotkey-Parität | offen — siehe §3c #2 | P1 |
+| Rechtsklick-Radialmenü | **erledigt** — siehe §3c #1 | — |
+| Vollständige Hotkey-Parität | **erledigt** (bis auf 3 architektonisch nicht übertragbare) — siehe §3c #2 | — |
 | SAM Launcher / Hydrogen Bomb / MIRV | **erledigt** — siehe §3c #3 | — |
 | Karten-Katalog (Featured/All/Favorites/Suche, mehr Karten) | offen — siehe §3c #4 | P1 |
 | Kosmetik/Identität (Name/Flagge/Skin/Clan) | offen — siehe §3c #7 | P2 |
@@ -242,8 +245,8 @@ Architektur-Entscheidung und wird unten nicht erneut als Punkt geführt.
 
 | # | Lücke | OpenFront-Ist (Quelle) | C&C-Ist | Prio |
 |---|---|---|---|---|
-| 1 | **Kein Rechtsklick-Radialmenü** | Verschachteltes Pie-Menü (`RadialMenu.ts`/`MainRadialMenu.ts`/`RadialMenuElements.ts`), bis 3 Ebenen: Mitte=Angriff/Spenden, Äste Info/Build/Attack/Boat/Delete + je Ziel-Spieler Allianz/Handel/Spende/Emoji | Nur flache Sidebar-Buttons (Build-/Waffen-Menü), kein Rechtsklick-Handler (`contextmenu` kommt in `rasterClient.ts` nicht vor) | **P0** — prägt den OF-„Feel" stark |
-| 2 | **Hotkeys stark unvollständig** | ~20 Keybinds: 1–0 Bau (inkl. SAM/Hydrogen/MIRV), B/G Angriffstyp erzwingen, Shift+R Vergeltung, K/L Allianz an-/abfragen, U Raketenrichtung, Space Terrain-/Territoriumsansicht, M Koordinatengitter, F alle Warships wählen, P Pause, „,"/„." Spielgeschwindigkeit (`UserSettings.ts` `getDefaultKeybinds`) | Nur 1–6 Bau, T/Y Ratio, Q/E Zoom, C Zentrieren, WASD/Pfeile Pan, Esc | **P1** |
+| 1 | **Kein Rechtsklick-Radialmenü** | Verschachteltes Pie-Menü (`RadialMenu.ts`/`MainRadialMenu.ts`/`RadialMenuElements.ts`), bis 3 Ebenen: Mitte=Angriff/Spenden, Äste Info/Build/Attack/Boat/Delete + je Ziel-Spieler Allianz/Handel/Spende/Emoji | **erledigt (2026-07-02)** — echtes zweistufiges DOM-Radialmenü (`#radialMenu`), per Rechtsklick am Zieltile geöffnet: Zentrum=Angriff, Ring=Boot/Boden/Build/Nuke + kontextabhängige Diplomatie (Ally/Break/Accept/Decline je nach Beziehung zum Tile-Besitzer); Build/Nuke morphen den Ring zu allen Gebäude- bzw. Waffen-Icons (Wiederverwendung der Vektor-Icons), Auswahl platziert/feuert sofort am rechtsgeklickten Tile — kein zweiter Klick nötig. Kein Info-Panel, keine Emoji-/Spende-Gold/Handelsembargo-Äste (diese Systeme existieren hier nicht). | — |
+| 2 | **Hotkeys stark unvollständig** | ~20 Keybinds: 1–0 Bau (inkl. SAM/Hydrogen/MIRV), B/G Angriffstyp erzwingen, Shift+R Vergeltung, K/L Allianz an-/abfragen, U Raketenrichtung, Space Terrain-/Territoriumsansicht, M Koordinatengitter, F alle Warships wählen, P Pause, „,"/„." Spielgeschwindigkeit (`UserSettings.ts` `getDefaultKeybinds`) | **erledigt, bis auf 3 architektonisch nicht übertragbare** (2026-07-02): 1–0 jetzt Bau *und* Waffen (7 Gebäude + Atom/Hydrogen/MIRV auf 8/9/0); B/G erzwingen Boot- bzw. Bodenroute (neues `RasterExpandIntent.mode`); K/L Allianz anfragen/brechen mit dem Spieler unterm Cursor; Shift+R greift den letzten Angreifer an (neues serverseitiges `lastAttackedBy`-Tracking); Space blendet die Gebiets-Einfärbung aus (reines Terrain); M zeigt ein Koordinatengitter. **Bewusst nicht übertragen** (dokumentierte Architektur-Lücken, keine vergessenen Hotkeys): F (Warships sind hier statische Gebäude, keine beweglichen Einheiten), P/„,"/„." (kein pausierbarer bzw. tempo-veränderlicher Ablauf in der durchgehenden autoritativen Simulation), U (kein richtungssteuerbares Raketenkonzept). | — |
 | 3 | **Waffen-Tier unvollständig** | Missile Silo **+ SAM Launcher** (`min(3M,(n+1)·1.5M)`, Range `70..150` sichtbar als rotierender Dash-Kreis, `SamRadiusPass.ts`) **+ Atom/Hydrogen(5M)/MIRV(25M+n·15M)** Bombe, je eigenes HUD-Icon (`UnitDisplay.ts`, 10 Bautypen gesamt) | **erledigt (2026-07-02)** — SAM Launcher (`min(3M,(n+1)·1.5M)`, Range 70, 90-Tick-Cooldown, deterministisches Abfangen mit Cooldown-Verbrauch bei jedem Versuch) + Hydrogen Bomb (5M, größerer Radius) + MIRV (25M+n·15M, splittet in 6 einzeln fliegende, atombomben-große Sprengköpfe) — alle über den bestehenden Silo/Cooldown-Mechanismus, eigene Waffen-Buttons + Icon je Typ (`nukes.ts`, `RasterConflict.ts`, `rasterClient.ts`) | — |
 | 4 | **Karten-Katalog winzig** | 3-Tab-Browser Featured/All/Favorites + Textsuche + „Random Map"-Option (`MapPicker.ts`); Dutzende kuratierte Karten (14 neue allein in v0.32.0) — Welt, Kontinente, Länder, Kuriositäten wie „Amazon River" | Nur 3 Größenvarianten derselben Earth-Karte (`mapCatalog.ts`), kein Featured/Favorites/Suche, keine weiteren Landmassen | **P1** — größte Content-Lücke fürs „lebendige Welt"-Gefühl |
 | 5 | **Kein Bot/Nation-Zweiklassen-KI-System** | `PlayerType.Bot` = passiver „Tribe"-Filler (Slider 0–400, zivilisationsartige Zwei-Wort-Namen z. B. „Roman Empire", `troops/20` pro Angriff, akzeptiert jede Allianz) **getrennt von** `PlayerType.Nation` = volle KI aus Karten-Manifest + Nomen-generierten Namen (z. B. „Comically Large Snail"), Schwierigkeits-skalierte Entscheidungs-Kadenz 30–100 Ticks | **erledigt (2026-07-02)** — echter Zweiklassen-Split: jeder dritte KI-Sitz ist ein passiver „Bot" (flache, schwierigkeitsunabhängige OpenFront-Tribe-Zahlen, Zwei-Wort-Name z. B. „Roman Empire", baut nichts, nimmt jede Allianz bedingungslos an), der Rest volle „Nation"-KI (unverändert: 5 Persönlichkeiten, Schwierigkeits-Handicaps, kuratierte Namen). Weiterhin ohne Karten-Manifest/Slider — Feldgröße bleibt kartenskaliert statt 0–400-Slider (`botField.ts`, `RasterBotController.ts`) | — |

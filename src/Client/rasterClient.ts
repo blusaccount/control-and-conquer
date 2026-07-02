@@ -2059,7 +2059,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const x1 = Math.min(map.width, Math.ceil(view.x + cw / scale));
     const y1 = Math.min(map.height, Math.ceil(view.y + ch / scale));
     ctx.save();
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.16)";
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.25)";
     ctx.lineWidth = 1;
     ctx.beginPath();
     for (let gx = x0; gx <= x1; gx += 1) {
@@ -2432,6 +2432,239 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     return { x: (event.clientX - bounds.left) * sx, y: (event.clientY - bounds.top) * sy };
   };
 
+  // ---- Right-click radial menu (OpenFront-style contextual pie menu) ------
+  //
+  // A generic two-level pie: right-clicking a tile opens a ring of icon
+  // buttons around a centre "Attack" button; two of those (Build/Nuke) morph
+  // the ring into a sub-menu of building/weapon icons with a "Back" centre
+  // button, mirroring OpenFront's nested `RadialMenu`. Every leaf reuses the
+  // exact same send*/state functions the sidebar buttons already call,
+  // targeted at the tile that was right-clicked — so choosing e.g. a
+  // building here places it immediately, no second click required.
+
+  interface RadialItem {
+    label: string;
+    html: string;
+    className?: string;
+    disabled?: boolean;
+    onClick: () => void;
+  }
+
+  /** Which tile the currently-open radial menu targets, and which ring it's showing. */
+  let radial: { tileX: number; tileY: number; owner: number; level: "root" | "build" | "nuke" } | null = null;
+
+  const RADIAL_RADIUS = 78;
+
+  /** Close the radial menu if one is open. Returns whether it was (so callers can swallow the closing click). */
+  const closeRadialMenu = (): boolean => {
+    if (!radial) return false;
+    radial = null;
+    ui.radialMenu.classList.add("hidden");
+    ui.radialMenu.innerHTML = "";
+    return true;
+  };
+
+  /** Render `center` plus `ring` (evenly spaced) into the radial menu DOM, replacing whatever was there. */
+  const renderRadialSlices = (center: RadialItem, ring: RadialItem[]): void => {
+    ui.radialMenu.innerHTML = "";
+    const place = (item: RadialItem, dx: number, dy: number): void => {
+      const slice = document.createElement("div");
+      slice.className = "radial-slice";
+      slice.style.left = `${dx}px`;
+      slice.style.top = `${dy}px`;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `radial-btn${item.className ? ` ${item.className}` : ""}`;
+      btn.innerHTML = item.html;
+      btn.disabled = !!item.disabled;
+      btn.title = item.label;
+      btn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (item.disabled) return;
+        item.onClick();
+      });
+      slice.appendChild(btn);
+      const label = document.createElement("span");
+      label.className = "radial-label";
+      label.textContent = item.label;
+      slice.appendChild(label);
+      ui.radialMenu.appendChild(slice);
+    };
+    place(center, 0, 0);
+    // A denser ring (the Build sub-menu's 7 structures) needs more spread so
+    // neighbouring labels don't overlap; a sparse root ring stays compact.
+    const radius = Math.max(RADIAL_RADIUS, 46 + ring.length * 12);
+    ring.forEach((item, i) => {
+      const angle = (i / ring.length) * Math.PI * 2 - Math.PI / 2;
+      place(item, Math.cos(angle) * radius, Math.sin(angle) * radius);
+    });
+  };
+
+  /** Root ring: Attack (centre) + Boat/Ground/Build/Nuke + diplomacy actions for the tile's owner. */
+  const renderRadialRoot = (): void => {
+    if (!radial) return;
+    const { tileX, tileY, owner } = radial;
+    const percent = (): number => Number(ui.attackPercentInput.value);
+    const ripple = (): void => {
+      runtime.clickRipples.push({ x: tileX, y: tileY, color: runtime.myColor, start: performance.now() });
+      sfx.click();
+    };
+    const expandFrom = (mode: RasterExpandMode, routeLabel: string): void => {
+      sendExpand(tileX, tileY, percent(), mode);
+      ripple();
+      setStatus(ui, `Expanding toward (${tileX}, ${tileY})${routeLabel} with ${percent()}% of pool.`);
+      closeRadialMenu();
+    };
+
+    const center: RadialItem = {
+      label: "Attack",
+      className: "center",
+      html: `<span class="glyph">⚔️</span>`,
+      onClick: () => expandFrom("auto", ""),
+    };
+    const ring: RadialItem[] = [
+      { label: "Boat", html: `<span class="glyph">⛴️</span>`, onClick: () => expandFrom("sea", " by boat") },
+      { label: "Ground", html: `<span class="glyph">\u{1F6E1}️</span>`, onClick: () => expandFrom("land", " by land") },
+      {
+        label: "Build",
+        html: `<span class="glyph">\u{1F528}</span>`,
+        onClick: () => {
+          radial!.level = "build";
+          renderRadialBuild();
+        },
+      },
+      {
+        label: "Nuke",
+        html: `<span class="glyph">☢️</span>`,
+        onClick: () => {
+          radial!.level = "nuke";
+          renderRadialNuke();
+        },
+      },
+    ];
+
+    if (owner !== 0 && owner !== runtime.myPlayerId) {
+      const { allies, incoming } = diplomacyState();
+      if (incoming.has(owner)) {
+        ring.push({
+          label: "Accept",
+          className: "ally-action",
+          html: `<span class="glyph">✓</span>`,
+          onClick: () => { sendAllyRespond(owner, true); closeRadialMenu(); },
+        });
+        ring.push({
+          label: "Decline",
+          className: "break-action",
+          html: `<span class="glyph">✕</span>`,
+          onClick: () => { sendAllyRespond(owner, false); closeRadialMenu(); },
+        });
+      } else if (allies.has(owner)) {
+        ring.push({
+          label: "Break ally",
+          className: "break-action",
+          html: `<span class="glyph">\u{1F494}</span>`,
+          onClick: () => { sendAllyBreak(owner); closeRadialMenu(); },
+        });
+      } else {
+        ring.push({
+          label: "Ally",
+          className: "ally-action",
+          html: `<span class="glyph">\u{1F91D}</span>`,
+          onClick: () => { sendAllyPropose(owner); closeRadialMenu(); },
+        });
+      }
+    }
+    renderRadialSlices(center, ring);
+  };
+
+  /** Build sub-ring: every building type, placed immediately at the right-clicked tile. */
+  const renderRadialBuild = (): void => {
+    if (!radial) return;
+    const { tileX, tileY } = radial;
+    const center: RadialItem = {
+      label: "Back",
+      className: "center",
+      html: `<span class="glyph">←</span>`,
+      onClick: () => { radial!.level = "root"; renderRadialRoot(); },
+    };
+    const ring: RadialItem[] = BUILDING_TYPES.map((type) => {
+      const def = BUILDING_DEFS[type];
+      const owned = costCounterTypes(type).reduce((s, t) => s + myBuildingCount(t), 0);
+      const cost = buildingCost(type, owned);
+      return {
+        label: `${def.name} (${formatCount(cost)}g)`,
+        html: iconSvgMarkup(type, 22),
+        disabled: runtime.gold < cost,
+        onClick: () => {
+          sendBuild(tileX, tileY, type);
+          runtime.clickRipples.push({ x: tileX, y: tileY, color: runtime.myColor, start: performance.now() });
+          sfx.click();
+          setStatus(ui, `Building ${def.name} at (${tileX}, ${tileY})…`);
+          closeRadialMenu();
+        },
+      };
+    });
+    renderRadialSlices(center, ring);
+  };
+
+  /** Nuke sub-ring: every warhead kind, launched immediately at the right-clicked tile. */
+  const renderRadialNuke = (): void => {
+    if (!radial) return;
+    const { tileX, tileY } = radial;
+    const center: RadialItem = {
+      label: "Back",
+      className: "center",
+      html: `<span class="glyph">←</span>`,
+      onClick: () => { radial!.level = "root"; renderRadialRoot(); },
+    };
+    const ring: RadialItem[] = NUKE_KINDS.map((kind) => {
+      const def = NUKE_DEFS[kind];
+      const cost = nukeCost(kind, runtime.mySilos);
+      return {
+        label: `${def.name} (${formatCount(cost)}g)`,
+        html: `<span class="glyph">${NUKE_GLYPH[kind]}</span>`,
+        disabled: runtime.gold < cost,
+        onClick: () => {
+          sendNuke(tileX, tileY, kind);
+          runtime.clickRipples.push({ x: tileX, y: tileY, color: "rgba(255,120,40,0.9)", start: performance.now() });
+          sfx.nukeLaunch();
+          setStatus(ui, `${def.name} launched at (${tileX}, ${tileY}).`);
+          closeRadialMenu();
+        },
+      };
+    });
+    renderRadialSlices(center, ring);
+  };
+
+  /** Right-click opens the radial menu on the clicked tile, suppressing the browser's own context menu. */
+  ui.mapCanvas.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    if (!runtime.map || !runtime.owner) return;
+    const canAct = runtime.spawned && runtime.phase === "playing" && !runtime.matchEnded && !runtime.myEliminated;
+    if (!canAct) return;
+    const { x, y } = toCanvasPixels(event);
+    const tileX = Math.floor(runtime.view.x + x / runtime.view.scale);
+    const tileY = Math.floor(runtime.view.y + y / runtime.view.scale);
+    if (!runtime.map.inBounds(tileX, tileY)) return;
+    radial = { tileX, tileY, owner: runtime.owner[runtime.map.ref(tileX, tileY)], level: "root" };
+    ui.radialMenu.style.left = `${event.clientX}px`;
+    ui.radialMenu.style.top = `${event.clientY}px`;
+    ui.radialMenu.classList.remove("hidden");
+    renderRadialRoot();
+  });
+
+  // Dismiss the radial menu on any click elsewhere — the map canvas handles
+  // its own dismissal (so the same click that closes it doesn't also fire an
+  // expand), and clicks on the menu's own buttons are handled by their click
+  // listeners, so both are excluded here.
+  document.addEventListener("pointerdown", (event) => {
+    if (!radial) return;
+    const target = event.target;
+    if (target === ui.mapCanvas) return;
+    if (target instanceof Node && ui.radialMenu.contains(target)) return;
+    closeRadialMenu();
+  });
+
   // Drag-to-pan, with a small movement threshold separating a pan from a click
   // so a stationary press still registers as an expand command.
   let dragging = false;
@@ -2442,6 +2675,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   let downY = 0;
 
   ui.mapCanvas.addEventListener("pointerdown", (event) => {
+    // Only the primary (left) button drives pan/expand; the right button is
+    // reserved for the radial menu's own `contextmenu` handler below.
+    if (event.button !== 0) return;
+    if (closeRadialMenu()) return;
     dragging = true;
     moved = false;
     lastX = downX = event.clientX;
@@ -2700,6 +2937,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         toggleBuildMode(null);
         if (runtime.nukeMode) toggleNukeMode(runtime.nukeMode);
         runtime.expandMode = "auto";
+        closeRadialMenu();
         break;
       case "t": nudgeAttackRatio(-10); break; // OpenFront: attack ratio down
       case "y": nudgeAttackRatio(10); break; //  and up
