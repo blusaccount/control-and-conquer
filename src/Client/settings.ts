@@ -2,10 +2,12 @@
  * Lightweight client-side settings, persisted in localStorage.
  *
  * The HUD ships with a minimal default: secondary panels that clutter the map
- * are hidden until the player opts into them from the gear menu. The only
- * setting today is the event log (captures/eliminations feed), which is off by
- * default and toggled on here.
+ * are hidden until the player opts into them from the gear menu. The event log
+ * (captures/eliminations feed) is off by default and toggled on here; sound
+ * effects are on by default and toggled off here.
  */
+
+import { setSoundEnabled } from "./sound.js";
 
 const STORAGE_PREFIX = "cnc.settings.";
 
@@ -37,6 +39,7 @@ export const initSettings = (): void => {
   const panel = document.querySelector<HTMLDivElement>("#settingsPanel");
   const eventsPanel = document.querySelector<HTMLDivElement>("#eventsPanel");
   const toggleEvents = document.querySelector<HTMLInputElement>("#toggleEvents");
+  const toggleSound = document.querySelector<HTMLInputElement>("#toggleSound");
 
   // Event log: hidden by default, revealed when the player turns it on.
   const applyEvents = (show: boolean): void => {
@@ -52,6 +55,17 @@ export const initSettings = (): void => {
     });
   }
 
+  // Sound effects: on by default, muted from here.
+  if (toggleSound) {
+    const soundOn = readBool("sound", true);
+    toggleSound.checked = soundOn;
+    setSoundEnabled(soundOn);
+    toggleSound.addEventListener("change", () => {
+      writeBool("sound", toggleSound.checked);
+      setSoundEnabled(toggleSound.checked);
+    });
+  }
+
   // Gear toggles the panel; a click anywhere outside closes it.
   if (button && panel) {
     const setOpen = (open: boolean): void => {
@@ -64,5 +78,36 @@ export const initSettings = (): void => {
     });
     panel.addEventListener("click", (event) => event.stopPropagation());
     document.addEventListener("click", () => setOpen(false));
+  }
+};
+
+/**
+ * Wire the top-right frame controls (fullscreen toggle, leave match) — the
+ * page chrome around the match, not game state, so this is independent of
+ * whether a match is running and safe to call once at page load.
+ */
+export const initFrameControls = (): void => {
+  const fullscreenButton = document.querySelector<HTMLButtonElement>("#fullscreenButton");
+  if (fullscreenButton) {
+    fullscreenButton.addEventListener("click", () => {
+      if (document.fullscreenElement) {
+        void document.exitFullscreen();
+      } else {
+        void document.documentElement.requestFullscreen().catch(() => {
+          // Fullscreen can be denied (e.g. iframe without the allow attribute,
+          // or a user gesture requirement not met) — fail silently rather than
+          // surface a broken feature as an error.
+        });
+      }
+    });
+  }
+
+  const leaveButton = document.querySelector<HTMLButtonElement>("#leaveButton");
+  if (leaveButton) {
+    leaveButton.addEventListener("click", () => {
+      if (window.confirm("Leave this match and return to the menu?")) {
+        window.location.reload();
+      }
+    });
   }
 };

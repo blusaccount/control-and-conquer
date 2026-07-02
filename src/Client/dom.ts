@@ -16,12 +16,15 @@ export interface UiElements {
   goldInfo: HTMLDivElement;
   buildMenu: HTMLDivElement;
   buildHint: HTMLDivElement;
+  weaponsMenu: HTMLDivElement;
   eventsPanel: HTMLDivElement;
   leaderboard: HTMLDivElement;
   menuOverlay: HTMLDivElement;
   statsOverlay: HTMLDivElement;
   /** Countdown banner shown over the map during the opening start phase. */
   startBanner: HTMLDivElement;
+  /** Elapsed-match-time readout in the top-right frame bar. */
+  matchTimer: HTMLSpanElement;
 }
 
 export type StatusKind = "info" | "error" | "victory";
@@ -37,11 +40,13 @@ export const getUiElements = (): UiElements => {
   const goldInfo = document.querySelector<HTMLDivElement>("#goldInfo");
   const buildMenu = document.querySelector<HTMLDivElement>("#buildMenu");
   const buildHint = document.querySelector<HTMLDivElement>("#buildHint");
+  const weaponsMenu = document.querySelector<HTMLDivElement>("#weaponsMenu");
   const eventsPanel = document.querySelector<HTMLDivElement>("#events");
   const leaderboard = document.querySelector<HTMLDivElement>("#leaderboard");
   const menuOverlay = document.querySelector<HTMLDivElement>("#menuOverlay");
   const statsOverlay = document.querySelector<HTMLDivElement>("#statsOverlay");
   const startBanner = document.querySelector<HTMLDivElement>("#startBanner");
+  const matchTimer = document.querySelector<HTMLSpanElement>("#matchTimer");
 
   if (
     !mapCanvas ||
@@ -54,11 +59,13 @@ export const getUiElements = (): UiElements => {
     !goldInfo ||
     !buildMenu ||
     !buildHint ||
+    !weaponsMenu ||
     !eventsPanel ||
     !leaderboard ||
     !menuOverlay ||
     !statsOverlay ||
-    !startBanner
+    !startBanner ||
+    !matchTimer
   ) {
     throw new Error("UI failed to initialize.");
   }
@@ -82,11 +89,13 @@ export const getUiElements = (): UiElements => {
     goldInfo,
     buildMenu,
     buildHint,
+    weaponsMenu,
     eventsPanel,
     leaderboard,
     menuOverlay,
     statsOverlay,
     startBanner,
+    matchTimer,
   };
 };
 

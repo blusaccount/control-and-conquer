@@ -14,10 +14,10 @@
  */
 
 /** The kinds of structure a player can build on a tile they own. */
-export type BuildingType = "city" | "port" | "fort" | "factory" | "warship";
+export type BuildingType = "city" | "port" | "fort" | "factory" | "warship" | "silo";
 
 /** All building types, in menu order. */
-export const BUILDING_TYPES: readonly BuildingType[] = ["city", "port", "fort", "factory", "warship"];
+export const BUILDING_TYPES: readonly BuildingType[] = ["city", "port", "fort", "factory", "warship", "silo"];
 
 /** Building types that must sit on a coastal (shore) tile. */
 export const COASTAL_BUILDING_TYPES: readonly BuildingType[] = ["port", "warship"];
@@ -151,6 +151,7 @@ export const BUILDING_CONSTRUCTION_TICKS: Readonly<Record<BuildingType, number>>
   port: 50,
   fort: 50,
   warship: 30,
+  silo: 100,
 };
 
 // --- Railroads + trains ----------------------------------------------------
@@ -370,6 +371,15 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
     costGrowth: 1,
     costCap: 1_000_000,
     costLinear: true,
+  },
+  silo: {
+    type: "silo",
+    name: "Missile Silo",
+    description: "Launches an Atom Bomb at a target you choose. Reloads after each launch.",
+    icon: "\u{2622}\u{FE0E}", // ☢ radioactive sign, text-presentation (monochrome)
+    baseCost: 1_000_000,
+    costGrowth: 1,
+    costCap: 1_000_000,
   },
 };
 

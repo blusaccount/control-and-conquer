@@ -102,6 +102,9 @@ ctx.onmessage = (event): void => {
     case "CLIENT_RASTER_BUILD":
       session.queueBuild(LOCAL_CLIENT_ID, message.payload);
       break;
+    case "CLIENT_RASTER_NUKE":
+      session.queueNuke(LOCAL_CLIENT_ID, message.payload);
+      break;
     case "CLIENT_RASTER_ALLY_PROPOSE":
       session.proposeAlliance(LOCAL_CLIENT_ID, message.payload.targetId);
       break;

@@ -1,4 +1,4 @@
-import { RasterBuildIntent, RasterClientMessage, RasterExpandIntent } from "../Core/types.js";
+import { RasterBuildIntent, RasterClientMessage, RasterExpandIntent, RasterNukeIntent } from "../Core/types.js";
 import {
   isRasterDifficulty,
   RasterAllyBreakPayload,
@@ -73,6 +73,20 @@ const parseRasterBuild = (payload: unknown): RasterBuildIntent => {
   return { targetX: intent.targetX, targetY: intent.targetY, building: intent.building };
 };
 
+const parseRasterNuke = (payload: unknown): RasterNukeIntent => {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("CLIENT_RASTER_NUKE.payload must be an object.");
+  }
+  const intent = payload as Record<string, unknown>;
+  if (typeof intent.targetX !== "number" || !Number.isInteger(intent.targetX) || intent.targetX < 0) {
+    throw new Error("targetX must be a non-negative integer.");
+  }
+  if (typeof intent.targetY !== "number" || !Number.isInteger(intent.targetY) || intent.targetY < 0) {
+    throw new Error("targetY must be a non-negative integer.");
+  }
+  return { targetX: intent.targetX, targetY: intent.targetY };
+};
+
 const parseRasterSpawn = (payload: unknown): RasterSpawnPayload => {
   if (typeof payload !== "object" || payload === null) {
     throw new Error("CLIENT_RASTER_SELECT_SPAWN.payload must be an object.");
@@ -119,6 +133,9 @@ export const validateCommand = (raw: unknown): RasterClientMessage => {
   }
   if (message.type === "CLIENT_RASTER_BUILD") {
     return { type: "CLIENT_RASTER_BUILD", payload: parseRasterBuild(message.payload) };
+  }
+  if (message.type === "CLIENT_RASTER_NUKE") {
+    return { type: "CLIENT_RASTER_NUKE", payload: parseRasterNuke(message.payload) };
   }
   if (message.type === "CLIENT_RASTER_SELECT_SPAWN") {
     return { type: "CLIENT_RASTER_SELECT_SPAWN", payload: parseRasterSpawn(message.payload) };

@@ -4,7 +4,7 @@ import {
 } from "./RasterBotController.js";
 import { RasterGameSession, type RasterMessageHandler, type RasterGameSessionOptions } from "./RasterGameSession.js";
 import { resolveHeightmapSessionMap } from "./sessionMap.js";
-import { RasterBuildIntent, RasterExpandIntent } from "../Core/types.js";
+import { RasterBuildIntent, RasterExpandIntent, RasterNukeIntent } from "../Core/types.js";
 import type { RasterDifficulty } from "../Core/messages.js";
 import { SIMULATION_TICK_RATE, SPAWN_PHASE_SECONDS } from "./simulationConfig.js";
 import { AiGameSession } from "./aiApi.js";
@@ -96,6 +96,10 @@ export class MatchRegistry {
 
   public queueRasterBuild(clientId: string, intent: RasterBuildIntent): void {
     this.clientToSession.get(clientId)?.queueBuild(clientId, intent);
+  }
+
+  public queueRasterNuke(clientId: string, intent: RasterNukeIntent): void {
+    this.clientToSession.get(clientId)?.queueNuke(clientId, intent);
   }
 
   public selectRasterSpawn(clientId: string, x: number, y: number): void {
