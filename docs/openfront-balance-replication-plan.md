@@ -41,6 +41,23 @@ eigenständige Folge-PRs vorgesehen, weil sie neue Systeme (Trade/Warship/Nukes)
 bzw. die UI-/Render-Schicht betreffen und nicht ungetestet eingeschoben werden
 sollten.
 
+> **Update (2026-07-02 — frischer Quellcode-Abgleich):** siehe
+> `openfront-gap-analysis.md` §3c für den Detail-Abgleich gegen den aktuellen
+> `openfrontio/OpenFrontIO`-main-Branch (Tag v0.32.6). Kurzfassung der neuen
+> Funde mit Bezug zu diesem Plan: (1) **SAM Launcher/Hydrogen Bomb/MIRV**
+> weiterhin komplett offen (§2.4/§2.9 hier bereits mit Zahlen hinterlegt); (2)
+> **Zug-Tempo** ist mit `TRAIN_TILES_PER_TICK=3` (`buildings.ts:240`) 50 % zu
+> schnell — OpenFronts `speed:2` (§2.6) noch nicht exakt umgesetzt, einfacher
+> Fix; (3) **Bot/Nation-Zweiklassen-KI** (§2.9, „zwei getrennte KI-Typen")
+> weiterhin nicht umgesetzt — eine Klasse mit 5 Persönlichkeiten deckt die
+> Spielstärke ähnlich ab, aber nicht die Namensgebung/Slider-Konfigurierbarkeit;
+> (4) Schwierigkeit **„Impossible"** (§2.9) fehlt als vierte Stufe; (5) tote,
+> irreführende Konstanten `DEFENSE_POST_RADIUS`/`DEFENSE_POST_STRENGTH` in
+> `rasterCombatConfig.ts` (nie benutzt — Forts nutzen korrekt
+> `FORT_DEFENSE_RADIUS`/`STRENGTH` aus `buildings.ts`) sollten aufgeräumt
+> werden. Phase 4 (UI/Radial-Menü/Hotkeys/Karten-Katalog) bleibt der größte
+> offene Block fürs Look-and-Feel-Ziel dieses Plans.
+
 ## 0) Methodik & Lizenz-Grenze (wichtig)
 
 OpenFront ist **AGPL-3.0**. Wie bisher (siehe Kommentar-Header in

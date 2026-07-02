@@ -1,6 +1,12 @@
 # OpenFront-ähnliche Roadmap: Repository Audit + Gap-Analyse
 
-> **Letztes Update:** 2026-06-29 (Diplomatie: Allianzen mit beidseitiger
+> **Letztes Update:** 2026-07-02 — frischer, quellcode-basierter Abgleich gegen
+> das echte `openfrontio/OpenFrontIO`-Repo (aktuell `main`, Tag v0.32.6), nach
+> mehreren Commits seit dem 30.6. (Nukes/Missile-Silo, Frame-Controls,
+> Sound-Effekte, Ghost-Build-Preview, eigene Vektor-Icons). Siehe **§3c** für die
+> Details; §3/§3b sind historisch stehen gelassen, aber teils durch §3c überholt
+> (insb. Playtest-Fund A ist inzwischen erledigt).
+> Davor: 2026-06-29 (Diplomatie: Allianzen mit beidseitiger
 > Zustimmung — Vorschlag/Annahme/Bruch; Verbündete können sich nicht angreifen;
 > Bots reagieren persönlichkeitsbasiert. Davor: Economy & Gebäude — Gold als
 > zweite Ressource + Bau-Schicht — Städte, Häfen, Forts, Fabriken; auto-verlegte
@@ -172,13 +178,18 @@
 | Diplomatie / Allianzen (Vorschlag/Annahme/Bruch, Nichtangriffspakt) | **erledigt** — beidseitige Allianzen; Verbündete können sich nicht angreifen; persönlichkeitsbasierte Bot-Diplomatie (`alliances.ts`) | — |
 | Spielbare Nationen / Fraktions-Fähigkeiten (Generals-Asymmetrie) | offen | P1 |
 | Roguelite-Meta-Loop (Runs, Upgrades zwischen Matches) | offen | P1 |
-| Echtes PvP (geteilte Session, Matchmaking, Player-Identity) | offen | P1 |
-| Stärkere Bot-KI (Sea-Crossing-Nutzung, Zielpriorisierung) | **erledigt** — strategiebasierte Multi-Bot-KI mit Persönlichkeiten, amphibischer Expansion & Gegner-Priorisierung (`RasterBotController`) | — |
-| Schwierigkeits-/Persönlichkeits-Presets als wählbare Lobby-Option | offen | P2 |
+| Echtes PvP (geteilte Session, Matchmaking, Player-Identity) | offen — siehe §3c #8 | P1 |
+| Stärkere Bot-KI (Sea-Crossing-Nutzung, Zielpriorisierung) | **erledigt** — strategiebasierte Multi-Bot-KI mit Persönlichkeiten, amphibischer Expansion & Gegner-Priorisierung (`RasterBotController`); Bot/Nation-Zweiklassen-Split weiterhin offen, siehe §3c #5 | — |
+| Schwierigkeits-/Persönlichkeits-Presets als wählbare Lobby-Option | **teilw. erledigt** — Easy/Medium/Hard wählbar; „Impossible" fehlt, siehe §3c #6 | P2 |
 | Delta-Snapshots (Owner-Raster nur als Diff senden) | **erledigt** — initialer Full-Snapshot + inkrementelle Owner-Deltas bei niedriger Churn (`encodeOwnerDelta`) | — |
 | Reconnect/Resync-Protokoll | offen | P2 |
 | Persistenz für Match-Resultate / Progression | offen | P2 |
 | Lobby-/Menü-UI über „Play vs Bot" hinaus | offen | P3 |
+| Rechtsklick-Radialmenü | offen — siehe §3c #1 | **P0** |
+| Vollständige Hotkey-Parität | offen — siehe §3c #2 | P1 |
+| SAM Launcher / Hydrogen Bomb / MIRV | offen — siehe §3c #3 | P1 |
+| Karten-Katalog (Featured/All/Favorites/Suche, mehr Karten) | offen — siehe §3c #4 | P1 |
+| Kosmetik/Identität (Name/Flagge/Skin/Clan) | offen — siehe §3c #7 | P2 |
 
 ## 3b) Playtest-Funde (2026-06-29 — gespielte Runde via Chrome, Earth-Standard)
 
@@ -200,6 +211,76 @@ neu gegenüber Abschnitt 3:
 **Positiv (bereits nah an OpenFront):** reale Küstenlinien + Terrain-Shading,
 Wasser-Schimmer, und die neuen mittig in der Masse gehaltenen Nationsnamen wirken
 stimmig (siehe Screenshots der Sessions).
+
+**Update 2026-07-02:** Fund A (kein Defeat-Screen) ist **erledigt** — mid-match
+Elimination setzt `myEliminated`, das Match läuft für Spectating weiter, ein
+Stats-Overlay mit „Spectate the battle"-Button erscheint (`rasterClient.ts`
+`onMatchEnded`/`showStatsScreen`). Fund F (Leaderboard-Klarheit) ist **erledigt**
+— Spaltenköpfe (# / Player / Owned % / Gold / Max troops), sortierbar,
+k/M-Formatierung (`formatCount`). Fund E (Klick-Feedback) ist **erledigt** —
+Click-Ripples, Landing-Flashes, Capture-Flash-Wellen, Sound-Cues. B/C/D/G/H
+siehe §3c für den aktuellen Stand.
+
+## 3c) Frischer Quellcode-Abgleich gegen echtes OpenFront (2026-07-02)
+
+Eigenständige Recherche gegen `github.com/openfrontio/OpenFrontIO` (main, Tag
+v0.32.6, Stand 2026-07-01) direkt aus dem Quellcode (`Config.ts`,
+`src/client/hud/layers/*`, `src/client/render/gl/passes/*`,
+`InputHandler.ts`/`UserSettings.ts`, `RadialMenu*.ts`, `TribeExecution.ts` /
+`NationExecution.ts` / `NationCreation.ts`), gegengelesen gegen den tatsächlichen
+Ist-Stand dieses Repos (nicht gegen ältere Docs — die waren teils bereits
+überholt). Wichtigste Erkenntnis vorab: **OpenFronts Renderer ist inzwischen
+komplett auf WebGL2 umgestellt** (v0.32.0, „new renderer"-Release,
+`src/client/render/gl/` mit ~20 Passes: Structure/Border/Rail/Unit/Bar/
+Nuke-Telegraph/Fallout/SAM-Radius/Night/Grid/Selection/…), plus neue
+Abhängigkeiten (`pixi.js`, `lit`, `d3`, `howler`). Dieses Repo bleibt bewusst bei
+Canvas 2D (siehe §0 Lizenz-Methodik) — der *Look* wird nachgeahmt, nicht die
+Engine 1:1 portiert; das ist keine offene Lücke, sondern eine bewusste
+Architektur-Entscheidung und wird unten nicht erneut als Punkt geführt.
+
+### Bestätigt neu offen (echte, quellcode-verifizierte Lücken)
+
+| # | Lücke | OpenFront-Ist (Quelle) | C&C-Ist | Prio |
+|---|---|---|---|---|
+| 1 | **Kein Rechtsklick-Radialmenü** | Verschachteltes Pie-Menü (`RadialMenu.ts`/`MainRadialMenu.ts`/`RadialMenuElements.ts`), bis 3 Ebenen: Mitte=Angriff/Spenden, Äste Info/Build/Attack/Boat/Delete + je Ziel-Spieler Allianz/Handel/Spende/Emoji | Nur flache Sidebar-Buttons (Build-/Waffen-Menü), kein Rechtsklick-Handler (`contextmenu` kommt in `rasterClient.ts` nicht vor) | **P0** — prägt den OF-„Feel" stark |
+| 2 | **Hotkeys stark unvollständig** | ~20 Keybinds: 1–0 Bau (inkl. SAM/Hydrogen/MIRV), B/G Angriffstyp erzwingen, Shift+R Vergeltung, K/L Allianz an-/abfragen, U Raketenrichtung, Space Terrain-/Territoriumsansicht, M Koordinatengitter, F alle Warships wählen, P Pause, „,"/„." Spielgeschwindigkeit (`UserSettings.ts` `getDefaultKeybinds`) | Nur 1–6 Bau, T/Y Ratio, Q/E Zoom, C Zentrieren, WASD/Pfeile Pan, Esc | **P1** |
+| 3 | **Waffen-Tier unvollständig** | Missile Silo **+ SAM Launcher** (`min(3M,(n+1)·1.5M)`, Range `70..150` sichtbar als rotierender Dash-Kreis, `SamRadiusPass.ts`) **+ Atom/Hydrogen(5M)/MIRV(25M+n·15M)** Bombe, je eigenes HUD-Icon (`UnitDisplay.ts`, 10 Bautypen gesamt) | Nur Silo + Atom Bomb (Tier 1, laut `nukes.ts`-Header bewusst so begrenzt) — kein SAM, keine Luftabwehr überhaupt, kein Hydrogen/MIRV | **P1** (dokumentiert bereits als P3b-Folgearbeit im Balance-Plan) |
+| 4 | **Karten-Katalog winzig** | 3-Tab-Browser Featured/All/Favorites + Textsuche + „Random Map"-Option (`MapPicker.ts`); Dutzende kuratierte Karten (14 neue allein in v0.32.0) — Welt, Kontinente, Länder, Kuriositäten wie „Amazon River" | Nur 3 Größenvarianten derselben Earth-Karte (`mapCatalog.ts`), kein Featured/Favorites/Suche, keine weiteren Landmassen | **P1** — größte Content-Lücke fürs „lebendige Welt"-Gefühl |
+| 5 | **Kein Bot/Nation-Zweiklassen-KI-System** | `PlayerType.Bot` = passiver „Tribe"-Filler (Slider 0–400, zivilisationsartige Zwei-Wort-Namen z. B. „Roman Empire", `troops/20` pro Angriff, akzeptiert jede Allianz) **getrennt von** `PlayerType.Nation` = volle KI aus Karten-Manifest + Nomen-generierten Namen (z. B. „Comically Large Snail"), Schwierigkeits-skalierte Entscheidungs-Kadenz 30–100 Ticks | Eine `RasterBotController`-Klasse für alle KI-Sitze, 5 Persönlichkeiten (expander/aggressor/balanced/opportunist/turtle) im Round-Robin, Feldgröße kartenskaliert statt Slider (max. 47 statt 0–400) | **P1** (bereits als offen dokumentiert, jetzt mit Detailzahlen verifiziert) |
+| 6 | **Schwierigkeit „Impossible" fehlt** | 4 Stufen: Easy/Medium/Hard/**Impossible** (1.25× Start-/Max-Truppen, 1.05× Wachstum, KI entscheidet ~2× so oft wie auf Easy — 30–50 statt 65–100 Ticks) | Nur Easy/Medium/Hard (`mapCatalog.ts`/`main.ts`), exakt 3 Stufen | P2 |
+| 7 | **Keine Kosmetik/Identität** | Nutzername, Flagge, Muster/Skin, Clan-Tags, seit v0.32 zusätzlich Territory-Skins | Farbe/Emoji rein deterministisch aus Spieler-Id (`rasterPalette.ts`), kein Namens-/Flaggen-/Skin-Picker im Menü | P2 |
+| 8 | **Kein PvP/Mehrspieler-Lobby** | Ranked 1v1, öffentliche Lobbys (FFA/Duos/Trios/Quads/HumansVsNations), Custom-Lobby erstellen/beitreten (`GameModeSelector.ts`) | Nur Solo-vs-Bots, ein „Start Run"-Button | P1 (bereits als offen dokumentiert) |
+| 9 | **Attack-Ratio-Slider weicht ab** | Bereich 1–100 %, Standard 20 %, Hotkey-Schrittweite 10 (`UserSettings.ts` `attackRatio`/`attackRatioIncrement`) | Bereich 10–90 %, Schritt 5, Standard 50 % (`index.html`) | P2 — leicht angleichbar |
+| 10 | **Zahlenformat weicht leicht ab** | Großbuchstaben-Suffixe „K"/„M"/„B", gestaffelte Nachkommastellen (1K–10K: 2 Dezimalstellen, 10K–100K: 1, ≥100K: ganzzahlig) | Kleinbuchstabe „k", andere Rundungsgrenzen (`formatCount` in `rasterClient.ts`) | P3 — kosmetisch |
+| 11 | **Zug-Tempo zu schnell** | `speed: 2` Tiles/Tick (Quelle: `TrainExecution.ts`, bereits im Balance-Plan §2.6 dokumentiert) | `TRAIN_TILES_PER_TICK = 3` (`buildings.ts:240`) — 50 % zu schnell | P3 — Ein-Zeilen-Fix |
+| 12 | **Tote, irreführende Konstanten** | — | `DEFENSE_POST_RADIUS=6`/`DEFENSE_POST_STRENGTH=3` in `rasterCombatConfig.ts` werden nirgends benutzt (Forts rufen `addDefensePost` immer mit den korrekten `FORT_DEFENSE_RADIUS=30`/`STRENGTH=5` aus `buildings.ts` auf) — verwirrend totes Code-Detail, kein Gameplay-Bug | P3 — Cleanup |
+| 13 | **Warship-Feinheiten unverifiziert/fehlend** | Health-Bar-Farbverlauf rot→grün, **Veterancy-Pips** (gestapelte Rechtecke pro Level), Ziel-Priorität Transport>Warship>Trade, Hafen-Heilung (`BarPass.ts`, `UnitPass.ts`) | Warship sinkt feindliche Transporter in Reichweite (`WARSHIP_INTERCEPT_RANGE=12`); Veterancy/Health-Bar-Politur laut alter Recherche weiterhin „mobile Warship-Jagd noch offen" | P2 |
+| 14 | **Kein Farbenblind-Modus, kein Tag/Nacht-Ambient-Licht** | Seit v0.32: Grafik-Einstellungen mit Colorblind-Theme (`colorblind-theme.json`); kontinuierlicher (nicht togglebarer) Ambient-Licht-Pass (`NightCompositePass.ts`) | Keines von beidem | P3 |
+
+### Fakten-Korrekturen an unseren eigenen bisherigen Annahmen
+
+- **Keine Krone bei OpenFront:** In `Leaderboard.ts`/`LeaderboardPlayerList.ts`/
+  `GameLeftSidebar.ts` gibt es **keinen** Krone-Marker für den
+  Populations-Führer. Der 👑-Marker in unserem Client (`rasterClient.ts:2147`,
+  bei Font-Größe ≥14px über dem Tile-Führer) ist eine **eigene Ergänzung**, kein
+  OF-Nachbau — funktional sinnvoll, aber kein „fehlendes" Feature.
+- **Keine Minimap bei OpenFront:** explizit in `MapRenderer.ts` und allen
+  `hud`/`render/gl`-Verzeichnissen nicht vorhanden. Unsere Minimap
+  (`drawMinimap`, `rasterClient.ts:1264-1287`) ist ebenfalls eine **eigene
+  Zugabe**. Beide Punkte sind reine Doku-Korrekturen — kein Handlungsbedarf,
+  aber spätere „1:1"-Vergleiche sollten nicht davon ausgehen, dass wir hier
+  etwas nachbauen müssten.
+
+### Erneut bestätigt (bereits nah an OpenFront, keine Lücke)
+
+Leaderboard-Spalten/Sortierung/Top-5+Ausklappen; Spawn-Phasen-Dauer 10 s (Solo)
+und Spawn-Immunität 5 s (beide exakt OpenFronts Singleplayer-/Default-Werte);
+Trade-Schiff-Gold-Sigmoid; Gebäude-Kostenrampe (125k verdoppelnd, Fort 50k
+linear, Silo 1M flach), Bauzeiten, `structureMinDist`, Küstenpflicht für
+Port/Warship; Nukes/Fallout/Silo-Cooldown für den implementierten Tier 1;
+Bot-Schwierigkeits-Skalierung (12.500/18.750/25.000 Start; 0.5/0.75/1× Cap;
+0.9/0.95/1× Wachstum für Easy/Medium/Hard) — deckt sich exakt mit OpenFronts
+`Nation`-Werten, nur die vierte Stufe „Impossible" fehlt (siehe Tabelle oben).
 
 ## 4) Architektur (Ist)
 
