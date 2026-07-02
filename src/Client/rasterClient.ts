@@ -24,6 +24,7 @@ import type {
   RasterTrain,
 } from "../Core/types.js";
 import { hideMenu, setStatus, type UiElements } from "./dom.js";
+import { formatCount, formatDuration, formatRate } from "./format.js";
 import { createWebSocketTransport, createWorkerTransport, type RasterTransport } from "./transport.js";
 import { paintRaster, paintTileInto } from "./rasterPaint.js";
 import { borderColor, playerColor, playerEmoji } from "./rasterPalette.js";
@@ -3145,35 +3146,6 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   resizeCanvas();
 
   requestAnimationFrame(renderFrame);
-};
-
-/**
- * Compact integer formatting for large counts (troops, tiles): 1234 → "1.2k",
- * 19595 → "20k", 1_250_000 → "1.3M". Keeps the sidebar and leaderboard legible
- * once empires reach tens of thousands of tiles/troops instead of showing raw
- * six-digit numbers.
- */
-const formatCount = (n: number): string => {
-  const v = Math.round(n);
-  if (Math.abs(v) >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
-  if (Math.abs(v) >= 10_000) return `${Math.round(v / 1000)}k`;
-  if (Math.abs(v) >= 1000) return `${(v / 1000).toFixed(1)}k`;
-  return String(v);
-};
-
-/**
- * Format a troops-per-second rate compactly: large rates use the compact
- * notation (k/M); small early-game rates keep one decimal so they don't read as
- * "+0/s".
- */
-const formatRate = (rate: number): string =>
-  rate >= 1000 ? formatCount(rate) : rate >= 10 ? String(Math.round(rate)) : rate.toFixed(1);
-
-/** Format whole seconds as m:ss for the stats screen. */
-const formatDuration = (seconds: number): string => {
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${m}:${String(s).padStart(2, "0")}`;
 };
 
 /**

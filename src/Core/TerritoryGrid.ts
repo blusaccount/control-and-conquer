@@ -1,8 +1,6 @@
 import type { GameMap, TileRef } from "./GameMap.js";
 import {
   CLICK_SNAP_RADIUS,
-  DEFENSE_POST_RADIUS,
-  DEFENSE_POST_STRENGTH,
   LAND_ATTACK_REACH,
   MAX_TRANSPORT_SHIPS_PER_PLAYER,
   SEA_TARGET_SCAN_BUDGET,
@@ -567,11 +565,7 @@ export class TerritoryGrid {
    * itself). Re-marking the same tile replaces its aura. Throws on non-capturable
    * terrain or an out-of-range strength/radius.
    */
-  addDefensePost(
-    ref: TileRef,
-    radius = DEFENSE_POST_RADIUS,
-    strength = DEFENSE_POST_STRENGTH,
-  ): void {
+  addDefensePost(ref: TileRef, radius: number, strength: number): void {
     if (!this.isCapturable(ref)) throw new Error(`Tile ${ref} cannot hold a defense post.`);
     if (radius < 0) throw new Error(`Defense-post radius must be >= 0, got ${radius}.`);
     if (strength < 1) throw new Error(`Defense-post strength must be >= 1, got ${strength}.`);

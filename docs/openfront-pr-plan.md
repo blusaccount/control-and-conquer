@@ -82,8 +82,8 @@ Defeat/Spectate.
 
 | # | Lücke | OpenFront | C&C heute | Feel-Gewicht |
 |---|---|---|---|---|
-| L1 | Attack-Ratio-Slider | 1–100 %, Default 20 %, Schritt 10 | 10–90 %, Default 50 %, Schritt 5 | hoch (jeder Klick) |
-| L2 | Boot-Kapazität | `floor(troops/5)` pro Boot | committet den vollen Slider-Anteil | mittel |
+| L1 | Attack-Ratio-Slider | 1–100 %, Default 20 %, Schritt 10 | **erledigt (PR A)** — 1–100 %, Default 20, T/Y ±10 | — |
+| L2 | Boot-Kapazität | `floor(troops/5)` pro Boot | **war bereits umgesetzt** (Session kappt auf `floor(pool/5)`; PR A pinnt das per Test) | — |
 | L3 | **Allianz-Lebenszyklus** | ~5 min Laufzeit, Renewal-Prompt ~30 s vor Ablauf, natürlicher Ablauf ≠ Verrat; Verrats-Zähler; Auto-Embargo | Allianzen laufen **nie** ab (`alliances.ts` kennt keine Zeit) | **hoch** — prägt die ganze Diplomatie-Dynamik |
 | L4 | **Struktur-Upgrades (Level)** | seit v24: Bau auf bestehendes Gebäude = Upgrade (City-Level ×250k Cap, Stations-Level etc.), Level-Ziffern im Render | Gebäude sind one-shot, kein Level-Feld | **hoch** — zentrales Spätspiel-Element |
 | L5 | **Win-Condition** | Prozent-Schwelle der Landfläche (FFA; Teams 95 %) → Spiele *enden* | Sieg erst bei 100 % aller Tiles bzw. Zeitlimit-Führung | **hoch** — Matches ziehen sich künstlich |
@@ -94,7 +94,7 @@ Defeat/Spectate.
 | L10 | Schwierigkeit „Impossible" + Nation-Confusion | 4 Stufen (Impossible: Start 31 250, Cap ×1.25, Wachstum ×1.05); Fehlangriffs-Chance 10/5/2.5/0 % | 3 Stufen, keine Confusion | niedrig-mittel |
 | L11 | Identität/Kosmetik | Name, Flagge, Muster/Skins, Clans | Farbe/Emoji deterministisch aus Id | mittel |
 | L12 | PvP/Lobby/Teams | FFA/Duos/Trios/Quads, Ranked 1v1, Custom-Lobbys | Solo vs. Bots | strukturell größte Lücke |
-| L13 | Kleinkram | Zugtempo 2 Tiles/Tick; K/M/B-Format; tote `DEFENSE_POST_*`-Konstanten; Warship-Veterancy-Pips; Colorblind-Theme; Tag/Nacht-Ambient | Zug 3; „k" klein; Konstanten tot; Pips fehlen | niedrig |
+| L13 | Kleinkram | Zugtempo 2 Tiles/Tick; K/M/B-Format; tote `DEFENSE_POST_*`-Konstanten; Warship-Veterancy-Pips; Colorblind-Theme; Tag/Nacht-Ambient | Zug/Format/Konstanten **erledigt (PR A)**; offen: Veterancy-Pips, Colorblind, Ambient | niedrig |
 
 **Quellen-Hinweis zu Zahlen:** Community-Wikis dokumentieren teils ältere
 Versionen (z. B. Defense-Post „Radius 40/×6", City „+25k") und widersprechen
@@ -130,7 +130,7 @@ getestet. Größen: S (<½ Tag), M (1–2 Tage), L (mehrere Tage), XL (Epic).
 | L | Politur: Veterancy-Pips, Colorblind-Palette, Ambient | L13 | M | P3 |
 | M1–M4 | PvP-Epic (geteilte Session → Lobby → Teams → Persistenz) | L12 | XL | P1 (parallel-Track) |
 
-### PR A — Quick-Wins Balance-/UI-Parität (S, P0)
+### PR A — Quick-Wins Balance-/UI-Parität (S, P0) — ✅ umgesetzt (2026-07-02)
 
 Bündelt alle Ein-Zeilen- bis Ein-Datei-Abweichungen; größter Feel-Effekt pro
 Zeile ist der Slider (OpenFront-Spieler committen reflexhaft 20 %).

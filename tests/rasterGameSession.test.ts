@@ -172,6 +172,9 @@ test("clicking a sea-only target dispatches a transport ship that lands", () => 
   const afterLaunch = lastSnapshot(messages);
   const myShips = afterLaunch.ships.filter((s) => s.playerId === 1);
   assert.equal(myShips.length, 1, "one click dispatches exactly one ship");
+  // OpenFront's boats carry at most a fifth of the pool: even this 100% click
+  // loads only floor(200 / 5) = 40 troops; the rest stays home to defend.
+  assert.equal(myShips[0].troops, 40, "a boat is capped at floor(pool/5) troops");
   assert.ok(afterLaunch.recentEvents.some((e) => e.includes("transport ship")), "the launch is logged");
 
   // Let the ship sail and disembark; it should capture its target tile.

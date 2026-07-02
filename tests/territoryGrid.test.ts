@@ -262,8 +262,8 @@ test("the strongest covering post wins where auras overlap (no stacking)", () =>
 
 test("addDefensePost rejects non-capturable terrain and bad parameters", () => {
   const grid = new TerritoryGrid(new GameMap(2, 1, new Uint8Array([WATER, ROCK])));
-  assert.throws(() => grid.addDefensePost(0), /cannot hold a defense post/);
+  assert.throws(() => grid.addDefensePost(0, 4, 3), /cannot hold a defense post/);
   const land = new TerritoryGrid(flatLand(3, 1));
-  assert.throws(() => land.addDefensePost(1, -1), /radius/);
+  assert.throws(() => land.addDefensePost(1, -1, 3), /radius/);
   assert.throws(() => land.addDefensePost(1, 2, 0.5), /strength/);
 });

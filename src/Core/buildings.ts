@@ -279,8 +279,8 @@ export const trainGold = (stopsVisited: number): number => {
   return Math.max(TRAIN_GOLD_FLOOR, TRAIN_GOLD_SELF_BASE - beyondFree * TRAIN_GOLD_STOP_DECAY);
 };
 
-/** Tiles of track a train advances per tick. */
-export const TRAIN_TILES_PER_TICK = 3;
+/** Tiles of track a train advances per tick (OpenFront's train `speed: 2`). */
+export const TRAIN_TILES_PER_TICK = 2;
 
 /**
  * OpenFront's `trainSpawnRate`: the mean number of per-tick spawn *attempts* a

@@ -7,7 +7,8 @@
 ## Tick Lifecycle
 
 The server simulation runs at a fixed tick rate configured in
-`src/Server/simulationConfig.ts` (`SIMULATION_TICK_RATE`, currently 20 TPS).
+`src/Server/simulationConfig.ts` (`SIMULATION_TICK_RATE`, currently 10 TPS —
+OpenFront's rate, so per-tick constants transfer without conversion).
 
 The scheduler in `src/Server/index.ts` is a fixed-step, catch-up loop. On each
 wake-up it advances as many whole ticks as wall-clock time has accrued (capped
@@ -32,13 +33,16 @@ The engine resolves a tick in this fixed order (see `src/Core/RasterConflict.ts`
 1. If the match already has a winner, short-circuit (no further mutation).
 2. Register validated intents (`launchAttack`): committed troops leave the
    attacker's pool immediately to prevent double-spend.
-3. `applyIncome()` — each player gains troops proportional to tiles held,
-   accumulated fractionally and flushed into the integer pool, capped at
-   `MAX_POOL_PER_TILE × tiles`.
-4. `advanceAttacks()` — each active attack spends a slice of its committed
-   troops (`EXPANSION_SPEND_FRACTION`) to capture frontier tiles, one BFS ring
-   per tick. Stalled attacks refund leftover troops.
-5. `checkVictory()` — a player owning every capturable tile is the winner.
+3. Finish due constructions, then `applyIncome()`/`applyGoldIncome()` — troop
+   growth follows the OpenFront bell curve (`troopGrowth` toward `maxTroops`);
+   gold accrues flat per tick plus trade/train payouts.
+4. Advance the moving systems in fixed order: rails/trains, trade ships,
+   warships, transport ships, SAM interceptions, nuke flights, fallout decay.
+5. `advanceAttacks()` — each active attack captures frontier tiles in priority
+   order under its per-tick tile budget (`attackTilesPerTick`), paying the
+   OpenFront loss model per tile (`attackerLossPerTile`/`defenderLossPerTile`).
+   Ended attacks refund leftovers (25% retreat malus against players).
+6. `checkVictory()`.
 
 This stable ordering is critical for reproducible outcomes.
 

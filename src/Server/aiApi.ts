@@ -82,7 +82,7 @@ export interface AiGameState {
   gameId: string;
   /** This agent's assigned player id. */
   playerId: number;
-  /** Current simulation tick (advances at 20 TPS). */
+  /** Current simulation tick (advances at 10 TPS). */
   tick: number;
   /** "spawn" — pick your start; "playing" — territory is live. */
   phase: string;

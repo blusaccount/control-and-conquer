@@ -204,7 +204,7 @@ export const ATTACK_DENSITY_FACTOR = 1.3;
  * stockpiled troop pool real *defensive* value.
  *
  * The {@link DEFENDER_STRENGTH_MAX} cap is **deliberately** tighter than the
- * fort/defense-post ceiling ({@link DEFENSE_POST_STRENGTH}×): this axis scales
+ * fort/defense-post ceiling (`FORT_DEFENSE_STRENGTH`× in `buildings.ts`): this axis scales
  * with a raw *troop advantage*, which the runaway leader has in abundance, so
  * capping it keeps a trailing player able to dislodge a stockpiled empire (an
  * uncapped troop-ratio defence would harden the snowball into an unbeatable
@@ -312,17 +312,6 @@ export const attackTilesPerTick = (
   const clamped = Math.min(ENEMY_TILES_PER_TICK_MAX, Math.max(ENEMY_TILES_PER_TICK_MIN, advantage));
   return clamped * border * ENEMY_TILES_BORDER_MULT;
 };
-
-/**
- * Defense-post aura. A defense post is a fortified location (e.g. a player's
- * capital) that makes capturing ground around it dearer, mirroring OpenFront's
- * defense posts that multiply attacker losses within a tile range. Capture cost
- * inside the aura is scaled up to {@link DEFENSE_POST_STRENGTH}× at the post
- * itself, falling off linearly to 1× at {@link DEFENSE_POST_RADIUS} tiles
- * (Chebyshev distance). Beyond the radius a post has no effect.
- */
-export const DEFENSE_POST_RADIUS = 6;
-export const DEFENSE_POST_STRENGTH = 3;
 
 /**
  * Floor on the troops a defender loses from their pool for each tile captured
@@ -466,7 +455,7 @@ export const MAX_TRANSPORT_SHIPS_PER_PLAYER = 3;
 
 /**
  * Tiles a transport ship advances along its water path each tick. The ship
- * crosses visibly over several ticks (at 20 TPS) rather than teleporting, so the
+ * crosses visibly over several ticks (at 10 TPS) rather than teleporting, so the
  * shortest route it takes is legible and interceptable in feel.
  */
 export const SHIP_TILES_PER_TICK = 1;
