@@ -13,6 +13,7 @@ import type {
   RasterMatchEndReason,
   RasterNuke,
   RasterNukeDetonation,
+  RasterNukeInterception,
   RasterNukeIntent,
   RasterRejectReason,
   RasterRail,
@@ -23,7 +24,7 @@ import type {
   RasterTrain,
 } from "../Core/types.js";
 import { LAND_ATTACK_REACH, RASTER_MATCH_DURATION_SECONDS, SPAWN_IMMUNITY_SECONDS } from "../Core/rasterCombatConfig.js";
-import { ATOM_BOMB_COST, SILO_RELOAD_TICKS } from "../Core/nukes.js";
+import { NUKE_DEFS, nukeCost, SILO_RELOAD_TICKS, type NukeKind } from "../Core/nukes.js";
 import { BUILDING_CONSTRUCTION_TICKS, BUILDING_DEFS, buildingCost, COASTAL_BUILDING_TYPES, COASTAL_SNAP_RADIUS, CONQUER_GOLD_FRACTION_AI, CONQUER_GOLD_FRACTION_HUMAN, costCounterTypes, STRUCTURE_MIN_DIST } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import type { RasterDifficulty } from "../Core/messages.js";
@@ -36,6 +37,9 @@ import {
 import type { RasterMatchPhase } from "../Core/types.js";
 import { attachOwnership, buildSharedSnapshot, encodeOwnerDelta, encodeOwners, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
 import type { RasterSnapshot } from "../Core/types.js";
+
+/** Human-readable, correctly-articled label for an event-log line, e.g. "an Atom Bomb". */
+const nukeLabel = (kind: NukeKind): string => `${NUKE_DEFS[kind].article} ${NUKE_DEFS[kind].name}`;
 
 export type RasterMessageHandler = (message: RasterServerMessage) => void;
 
@@ -279,10 +283,12 @@ export class RasterGameSession {
   private lastTrains: RasterTrain[] = [];
   /** Trade ships sailing between ports as of the most recent tick. */
   private lastTradeShips: RasterTrade[] = [];
-  /** Atom Bombs in flight as of the most recent tick, broadcast for animation. */
+  /** Warheads in flight as of the most recent tick, broadcast for animation. */
   private lastNukes: RasterNuke[] = [];
-  /** Atom Bomb detonations from the most recent tick, for the explosion flash. */
+  /** Warhead detonations from the most recent tick, for the explosion flash. */
   private lastNukeDetonations: RasterNukeDetonation[] = [];
+  /** Warhead interceptions from the most recent tick, for the interception flash. */
+  private lastNukeInterceptions: RasterNukeInterception[] = [];
   /** Determines spawn placement: each new subscriber takes the next slot. */
   private nextPlayerId: PlayerId = 1;
   private matchEndedBroadcast = false;
@@ -825,11 +831,19 @@ export class RasterGameSession {
       y: n.y,
       toX: n.toX,
       toY: n.toY,
+      kind: n.kind,
     }));
     this.lastNukeDetonations = tickResult.nukeDetonations.map((d) => ({
       playerId: d.attacker,
       x: d.targetX,
       y: d.targetY,
+      kind: d.kind,
+    }));
+    this.lastNukeInterceptions = tickResult.nukeInterceptions.map((i) => ({
+      playerId: i.attacker,
+      defenderId: i.defender,
+      x: i.x,
+      y: i.y,
     }));
     // A nuke that hits an ally severs the pact and marks the attacker a traitor,
     // exactly like breaking it from the diplomacy menu — nuking a friend is a
@@ -842,9 +856,14 @@ export class RasterGameSession {
           this.conflict.markTraitor(detonation.attacker);
           this.pushEvent(`${this.nameOf(detonation.attacker)} nuked their ally ${this.nameOf(victim)} — the pact is broken!`);
         } else {
-          this.pushEvent(`${this.nameOf(detonation.attacker)} detonated an Atom Bomb on ${this.nameOf(victim)}'s territory.`);
+          this.pushEvent(`${this.nameOf(detonation.attacker)} detonated ${nukeLabel(detonation.kind)} on ${this.nameOf(victim)}'s territory.`);
         }
       }
+    }
+    for (const interception of tickResult.nukeInterceptions) {
+      this.pushEvent(
+        `${this.nameOf(interception.defender)}'s SAM Launcher shot down a warhead from ${this.nameOf(interception.attacker)}.`,
+      );
     }
     // Active land-attack fronts → wire coordinates for the on-map troop labels,
     // so each contested border shows how many troops are fighting there.
@@ -1247,11 +1266,13 @@ export class RasterGameSession {
   }
 
   /**
-   * Validate and dispatch an Atom Bomb launch: the target must be land, the
+   * Validate and dispatch a warhead launch: the target must be land, the
    * attacker must own a Missile Silo that isn't under construction or
-   * reloading, and afford {@link ATOM_BOMB_COST}. On success the gold is spent,
-   * that silo starts reloading, and the flight is handed to
-   * {@link RasterConflict.launchNuke}; the blast itself lands on arrival.
+   * reloading, and afford the kind's cost (a MIRV's cost scales with how many
+   * silos the attacker owns, see {@link nukeCost}). On success the gold is
+   * spent, that silo starts reloading, and the flight is handed to
+   * {@link RasterConflict.launchNuke}; the blast(s) land on arrival, subject to
+   * any SAM Launcher interception along the way.
    */
   private processNuke(
     attacker: PlayerId,
@@ -1269,8 +1290,9 @@ export class RasterGameSession {
     }
     const targetRef = this.map.ref(intent.targetX, intent.targetY);
     if (!this.map.isLand(targetRef)) {
-      return { kind: "rejected", reason: "INVALID_TILE", message: "An Atom Bomb can only target land." };
+      return { kind: "rejected", reason: "INVALID_TILE", message: "A warhead can only target land." };
     }
+    const kind: NukeKind = intent.kind ?? "atom";
 
     let siloRef: TileRef | null = null;
     for (const [ref, type] of this.grid.buildingEntries()) {
@@ -1282,17 +1304,18 @@ export class RasterGameSession {
     if (siloRef === null) {
       return { kind: "rejected", reason: "NO_SILO_READY", message: "No Missile Silo is ready — build one or wait for it to reload." };
     }
-    if (this.grid.goldOf(attacker) < ATOM_BOMB_COST) {
-      return { kind: "rejected", reason: "INSUFFICIENT_GOLD", message: `Not enough gold — an Atom Bomb costs ${ATOM_BOMB_COST}.` };
+    const cost = nukeCost(kind, this.grid.buildingCountOf(attacker, "silo"));
+    if (this.grid.goldOf(attacker) < cost) {
+      return { kind: "rejected", reason: "INSUFFICIENT_GOLD", message: `Not enough gold — ${nukeLabel(kind)} costs ${cost}.` };
     }
 
-    this.grid.addGold(attacker, -ATOM_BOMB_COST);
+    this.grid.addGold(attacker, -cost);
     this.siloReadyAt.set(siloRef, this.conflict.tick + SILO_RELOAD_TICKS);
-    this.conflict.launchNuke(attacker, this.map.x(siloRef), this.map.y(siloRef), intent.targetX, intent.targetY);
+    this.conflict.launchNuke(attacker, this.map.x(siloRef), this.map.y(siloRef), intent.targetX, intent.targetY, kind);
 
     return {
       kind: "ok",
-      line: `${this.nameOf(attacker)} launched an Atom Bomb at (${intent.targetX}, ${intent.targetY}).`,
+      line: `${this.nameOf(attacker)} launched ${nukeLabel(kind)} at (${intent.targetX}, ${intent.targetY}).`,
     };
   }
 
@@ -1396,6 +1419,7 @@ export class RasterGameSession {
       ships: this.lastShips,
       nukes: this.lastNukes,
       nukeDetonations: this.lastNukeDetonations,
+      nukeInterceptions: this.lastNukeInterceptions,
       falloutTiles: this.grid.falloutTiles(),
       fronts: this.lastFronts,
       rails: this.lastRails,

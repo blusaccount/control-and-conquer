@@ -21,6 +21,7 @@ import type {
   RasterSpawnClientMessage,
 } from "./messages.js";
 import type { BuildingType } from "./buildings.js";
+import type { NukeKind } from "./nukes.js";
 
 /** An active alliance as a canonical `[lowId, highId]` player-id pair. */
 export type RasterAlliancePair = [number, number];
@@ -56,6 +57,12 @@ export interface RasterPlayerInfo {
   forts: number;
   /** Factories this player owns (railroad + train economy). */
   factories: number;
+  /** Missile Silos this player owns (nuke launch platforms). */
+  silos: number;
+  /** Warships this player owns (coastal transport interdiction). */
+  warships: number;
+  /** SAM Launchers this player owns (warhead interception). */
+  sams: number;
   /** Number of capturable tiles currently owned. */
   tiles: number;
   /**
@@ -107,9 +114,11 @@ export interface RasterShip {
 }
 
 /**
- * An Atom Bomb in flight this snapshot: launched by `playerId`, currently at
+ * A warhead in flight this snapshot: launched by `playerId`, currently at
  * (`x`,`y`) en route to (`toX`,`toY`). Sent every snapshot while airborne so
- * the client can draw it travelling toward its target.
+ * the client can draw it travelling toward its target. A MIRV launch appears
+ * as several independent entries (one per scattered warhead), each with its
+ * own `nukeId`.
  */
 export interface RasterNuke {
   nukeId: number;
@@ -118,14 +127,28 @@ export interface RasterNuke {
   y: number;
   toX: number;
   toY: number;
+  kind: NukeKind;
 }
 
 /**
- * An Atom Bomb detonation resolved this tick, at (`x`,`y`) — the client flashes
+ * A warhead detonation resolved this tick, at (`x`,`y`) — the client flashes
  * an explosion there, same idea as {@link RasterCrossing}'s landing flash.
  */
 export interface RasterNukeDetonation {
   playerId: number;
+  x: number;
+  y: number;
+  kind: NukeKind;
+}
+
+/**
+ * A warhead shot down by a SAM Launcher this tick, at (`x`,`y`) — the client
+ * plays a distinct interception flash/sound instead of a full blast.
+ */
+export interface RasterNukeInterception {
+  playerId: number;
+  /** Owner of the SAM Launcher that intercepted the warhead. */
+  defenderId: number;
   x: number;
   y: number;
 }
@@ -256,10 +279,12 @@ export interface RasterSnapshot {
   crossings: RasterCrossing[];
   /** Transport ships currently in flight (empty when none are at sea). */
   ships: RasterShip[];
-  /** Atom Bombs currently in flight (empty when none are airborne). */
+  /** Warheads currently in flight (empty when none are airborne). */
   nukes: RasterNuke[];
-  /** Atom Bomb detonations resolved this tick (empty on most ticks). */
+  /** Warhead detonations resolved this tick (empty on most ticks). */
   nukeDetonations: RasterNukeDetonation[];
+  /** Warheads shot down by a SAM Launcher this tick (empty on most ticks). */
+  nukeInterceptions: RasterNukeInterception[];
   /**
    * Base64-packed little-endian `Uint32Array` of tile indices currently under
    * radioactive fallout (nuked ground that recolours and can't be captured
@@ -335,12 +360,14 @@ export interface RasterBuildIntent {
   building: BuildingType;
 }
 
-/** Sent by the client to launch an Atom Bomb from a ready Missile Silo. */
+/** Sent by the client to launch a warhead from a ready Missile Silo. */
 export interface RasterNukeIntent {
   /** Tile column (0..width-1) of the target. */
   targetX: number;
   /** Tile row (0..height-1) of the target. */
   targetY: number;
+  /** Which warhead to launch. Defaults to `"atom"` when omitted. */
+  kind?: NukeKind;
 }
 
 export interface RasterActionRejectedEvent {

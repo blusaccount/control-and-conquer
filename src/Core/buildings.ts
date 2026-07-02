@@ -14,10 +14,10 @@
  */
 
 /** The kinds of structure a player can build on a tile they own. */
-export type BuildingType = "city" | "port" | "fort" | "factory" | "warship" | "silo";
+export type BuildingType = "city" | "port" | "fort" | "factory" | "warship" | "silo" | "sam";
 
 /** All building types, in menu order. */
-export const BUILDING_TYPES: readonly BuildingType[] = ["city", "port", "fort", "factory", "warship", "silo"];
+export const BUILDING_TYPES: readonly BuildingType[] = ["city", "port", "fort", "factory", "warship", "silo", "sam"];
 
 /** Building types that must sit on a coastal (shore) tile. */
 export const COASTAL_BUILDING_TYPES: readonly BuildingType[] = ["port", "warship"];
@@ -152,6 +152,7 @@ export const BUILDING_CONSTRUCTION_TICKS: Readonly<Record<BuildingType, number>>
   fort: 50,
   warship: 30,
   silo: 100,
+  sam: 300,
 };
 
 // --- Railroads + trains ----------------------------------------------------
@@ -375,10 +376,19 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
   silo: {
     type: "silo",
     name: "Missile Silo",
-    description: "Launches an Atom Bomb at a target you choose. Reloads after each launch.",
+    description: "Launches an Atom Bomb, Hydrogen Bomb or MIRV at a target you choose. Reloads after each launch.",
     baseCost: 1_000_000,
     costGrowth: 1,
     costCap: 1_000_000,
+  },
+  sam: {
+    type: "sam",
+    name: "SAM Launcher",
+    description: "Shoots down enemy missiles that fly within range. Reloads after each intercept attempt.",
+    baseCost: 1_500_000,
+    costGrowth: 1,
+    costCap: 3_000_000,
+    costLinear: true,
   },
 };
 

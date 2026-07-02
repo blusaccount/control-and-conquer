@@ -11,6 +11,7 @@ import type {
   RasterMatchPhase,
   RasterNuke,
   RasterNukeDetonation,
+  RasterNukeInterception,
   RasterPlayerAssignedPayload,
   RasterPlayerInfo,
   RasterRail,
@@ -37,7 +38,7 @@ import {
 import type { RasterDifficulty } from "../Core/messages.js";
 import { SIMULATION_TICK_RATE } from "../Server/simulationConfig.js";
 import { sfx } from "./sound.js";
-import { ATOM_BOMB_COST, ATOM_BOMB_INNER_RADIUS, ATOM_BOMB_OUTER_RADIUS } from "../Core/nukes.js";
+import { NUKE_DEFS, NUKE_KINDS, nukeBlast, nukeCost, type NukeKind } from "../Core/nukes.js";
 
 /** Options for starting a raster match: the chosen map and difficulty. */
 export interface RasterClientOptions {
@@ -105,11 +106,20 @@ interface Landing {
   start: number;
 }
 
-/** A blooming-and-fading ring marking an Atom Bomb's blast, centred on impact. */
+/** A blooming-and-fading ring marking a warhead's blast, centred on impact. */
 interface NukeExplosion {
   x: number;
   y: number;
+  kind: NukeKind;
   /** performance.now() timestamp when the explosion started animating. */
+  start: number;
+}
+
+/** A brief flash marking a warhead shot down by a SAM Launcher before impact. */
+interface NukeIntercept {
+  x: number;
+  y: number;
+  /** performance.now() timestamp when the interception started animating. */
   start: number;
 }
 
@@ -165,16 +175,19 @@ interface RasterRuntime {
   myPorts: number;
   myForts: number;
   myFactories: number;
+  mySilos: number;
+  myWarships: number;
+  mySams: number;
   /** The structure type the player is placing, or null when not in build mode. */
   buildMode: BuildingType | null;
-  /** True while the player is choosing where to target an Atom Bomb. */
-  nukeMode: boolean;
+  /** Which warhead the player is targeting, or null when not in nuke mode. */
+  nukeMode: NukeKind | null;
   /** Tile under the cursor, for the build-mode ghost preview. Null off-canvas. */
   hoverTileX: number | null;
   hoverTileY: number | null;
   /** Structures on the map this snapshot, drawn as icon markers. */
   buildings: RasterBuilding[];
-  /** Atom Bombs in flight this snapshot, drawn as travelling icons. */
+  /** Warheads in flight this snapshot, drawn as travelling icons. */
   nukes: RasterNuke[];
   /** Tile refs currently under radioactive fallout, drawn as a lingering tint. */
   fallout: Set<number>;
@@ -211,6 +224,8 @@ interface RasterRuntime {
   landings: Landing[];
   /** In-flight nuke explosion rings. */
   nukeExplosions: NukeExplosion[];
+  /** In-flight SAM-interception flashes. */
+  nukeIntercepts: NukeIntercept[];
   /** Active attack fronts this snapshot, drawn as on-map troop-count labels. */
   fronts: RasterAttackFront[];
   /** Active alliances as [lowId, highId] pairs, mirrored from the snapshot. */
@@ -407,8 +422,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     myPorts: 0,
     myForts: 0,
     myFactories: 0,
+    mySilos: 0,
+    myWarships: 0,
+    mySams: 0,
     buildMode: null,
-    nukeMode: false,
+    nukeMode: null,
     hoverTileX: null,
     hoverTileY: null,
     buildings: [],
@@ -431,6 +449,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     shipGeneration: 0,
     landings: [],
     nukeExplosions: [],
+    nukeIntercepts: [],
     fronts: [],
     alliances: [],
     allianceRequests: [],
@@ -474,10 +493,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     transport.send(message);
   };
 
-  const sendNuke = (targetX: number, targetY: number): void => {
+  const sendNuke = (targetX: number, targetY: number, kind: NukeKind): void => {
     const message: RasterClientMessage = {
       type: "CLIENT_RASTER_NUKE",
-      payload: { targetX, targetY },
+      payload: { targetX, targetY, kind },
     };
     transport.send(message);
   };
@@ -498,14 +517,24 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   /** How many of `type` we currently own — feeds the geometric cost ramp. */
-  const myBuildingCount = (type: BuildingType): number =>
-    type === "city"
-      ? runtime.myCities
-      : type === "port"
-        ? runtime.myPorts
-        : type === "factory"
-          ? runtime.myFactories
-          : runtime.myForts;
+  const myBuildingCount = (type: BuildingType): number => {
+    switch (type) {
+      case "city":
+        return runtime.myCities;
+      case "port":
+        return runtime.myPorts;
+      case "factory":
+        return runtime.myFactories;
+      case "fort":
+        return runtime.myForts;
+      case "warship":
+        return runtime.myWarships;
+      case "silo":
+        return runtime.mySilos;
+      case "sam":
+        return runtime.mySams;
+    }
+  };
 
   /**
    * Build the (static) build-menu buttons once and wire each to toggle build
@@ -543,7 +572,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       if (!canBuild) return;
     }
     runtime.buildMode = type === null || runtime.buildMode === type ? null : type;
-    if (runtime.buildMode) runtime.nukeMode = false;
+    if (runtime.buildMode) runtime.nukeMode = null;
     refreshBuildMenu();
     refreshWeaponsMenu();
     renderSidebar();
@@ -574,46 +603,68 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     }
   };
 
-  /** Build the (static) Atom Bomb button once and wire it to toggle nuke mode. */
+  /** Icon glyph shown on each weapon button — distinct at a glance, like the Atom Bomb's original radiation symbol. */
+  const NUKE_GLYPH: Readonly<Record<NukeKind, string>> = {
+    atom: "\u{2622}\u{FE0E}",
+    hydrogen: "\u{269B}\u{FE0F}",
+    mirv: "\u{2604}\u{FE0F}",
+  };
+
+  /** Build the (static) weapon buttons once and wire each to toggle nuke mode for its kind. */
   const renderWeaponsMenuOnce = (): void => {
     if (ui.weaponsMenu.children.length > 0) return;
-    ui.weaponsMenu.innerHTML =
-      `<button class="build-btn" type="button" data-weapon="atom-bomb">` +
-      `<span class="icon">\u{2622}\u{FE0E}</span>` +
-      `<span class="label">Atom Bomb<span class="sub">Requires a ready Missile Silo. Click any land tile to target it.</span></span>` +
-      `<span class="cost" data-cost></span>` +
-      `</button>`;
-    ui.weaponsMenu.querySelector<HTMLButtonElement>("[data-weapon]")?.addEventListener("click", () => toggleNukeMode());
+    ui.weaponsMenu.innerHTML = NUKE_KINDS.map((kind) => {
+      const def = NUKE_DEFS[kind];
+      return (
+        `<button class="build-btn" type="button" data-weapon="${kind}">` +
+        `<span class="icon">${NUKE_GLYPH[kind]}</span>` +
+        `<span class="label">${escapeHtml(def.name)}<span class="sub">${escapeHtml(def.description)}</span></span>` +
+        `<span class="cost" data-cost></span>` +
+        `</button>`
+      );
+    }).join("");
+    for (const btn of ui.weaponsMenu.querySelectorAll<HTMLButtonElement>("[data-weapon]")) {
+      btn.addEventListener("click", () => toggleNukeMode(btn.getAttribute("data-weapon") as NukeKind));
+    }
   };
 
   /**
-   * Enter (or toggle off) nuke-targeting mode, mutually exclusive with build
-   * mode — the next map click launches an Atom Bomb instead of expanding or
-   * building. No-op while we can't act (unspawned, spectating, ended).
+   * Enter (or toggle off) nuke-targeting mode for `kind`, mutually exclusive
+   * with build mode — the next map click launches that warhead instead of
+   * expanding or building. Re-selecting the armed kind cancels it, like
+   * {@link toggleBuildMode}. No-op while we can't act (unspawned, spectating,
+   * ended).
    */
-  const toggleNukeMode = (): void => {
+  const toggleNukeMode = (kind: NukeKind): void => {
     const canAct = runtime.spawned && runtime.phase === "playing" && !runtime.matchEnded && !runtime.myEliminated;
-    if (!canAct && !runtime.nukeMode) return;
-    runtime.nukeMode = !runtime.nukeMode;
+    if (!canAct && runtime.nukeMode === null) return;
+    runtime.nukeMode = runtime.nukeMode === kind ? null : kind;
     if (runtime.nukeMode) runtime.buildMode = null;
     refreshBuildMenu();
     refreshWeaponsMenu();
     renderSidebar();
-    setStatus(ui, runtime.nukeMode ? "Atom Bomb armed — click a land tile to launch." : "Atom Bomb cancelled.");
+    setStatus(
+      ui,
+      runtime.nukeMode
+        ? `${NUKE_DEFS[runtime.nukeMode].name} armed — click a land tile to launch.`
+        : "Launch cancelled.",
+    );
   };
 
-  /** Refresh the Atom Bomb button's cost, affordability and selected state. */
+  /** Refresh each weapon button's cost, affordability and selected state. */
   const refreshWeaponsMenu = (): void => {
     const canAct = runtime.spawned && runtime.phase === "playing" && !runtime.matchEnded && !runtime.myEliminated;
-    const btn = ui.weaponsMenu.querySelector<HTMLButtonElement>("[data-weapon]");
-    if (!btn) return;
-    const affordable = runtime.gold >= ATOM_BOMB_COST;
-    btn.classList.toggle("selected", runtime.nukeMode);
-    btn.disabled = !canAct;
-    const costEl = btn.querySelector<HTMLSpanElement>("[data-cost]");
-    if (costEl) {
-      costEl.textContent = `${formatCount(ATOM_BOMB_COST)}g`;
-      costEl.classList.toggle("unaffordable", !affordable);
+    for (const btn of ui.weaponsMenu.querySelectorAll<HTMLButtonElement>("[data-weapon]")) {
+      const kind = btn.getAttribute("data-weapon") as NukeKind;
+      const cost = nukeCost(kind, runtime.mySilos);
+      const affordable = runtime.gold >= cost;
+      btn.classList.toggle("selected", runtime.nukeMode === kind);
+      btn.disabled = !canAct;
+      const costEl = btn.querySelector<HTMLSpanElement>("[data-cost]");
+      if (costEl) {
+        costEl.textContent = `${formatCount(cost)}g`;
+        costEl.classList.toggle("unaffordable", !affordable);
+      }
     }
   };
 
@@ -788,9 +839,18 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     if (detonations.length === 0) return;
     const now = performance.now();
     for (const d of detonations) {
-      runtime.nukeExplosions.push({ x: d.x, y: d.y, start: now });
+      runtime.nukeExplosions.push({ x: d.x, y: d.y, kind: d.kind, start: now });
     }
     sfx.nukeDetonate();
+  };
+
+  const spawnNukeIntercepts = (interceptions: RasterNukeInterception[]): void => {
+    if (interceptions.length === 0) return;
+    const now = performance.now();
+    for (const i of interceptions) {
+      runtime.nukeIntercepts.push({ x: i.x, y: i.y, start: now });
+    }
+    sfx.nukeIntercepted();
   };
 
   const onSnapshot = (snapshot: RasterSnapshot): void => {
@@ -852,6 +912,9 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.myPorts = me?.ports ?? 0;
     runtime.myForts = me?.forts ?? 0;
     runtime.myFactories = me?.factories ?? 0;
+    runtime.mySilos = me?.silos ?? 0;
+    runtime.myWarships = me?.warships ?? 0;
+    runtime.mySams = me?.sams ?? 0;
     runtime.buildings = snapshot.buildings ?? [];
     runtime.nukes = snapshot.nukes ?? [];
     // Fallout is sent whole each snapshot (empty string = nowhere irradiated),
@@ -889,6 +952,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     updateShips(ships);
     spawnLandings(snapshot.crossings ?? []);
     spawnNukeExplosions(snapshot.nukeDetonations ?? []);
+    spawnNukeIntercepts(snapshot.nukeInterceptions ?? []);
     renderSidebar();
   };
 
@@ -1096,6 +1160,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       drawNukes(ctx, scale);
       drawLandings(now, ctx, scale);
       drawNukeExplosions(now, ctx, scale);
+      drawNukeIntercepts(now, ctx, scale);
       drawClickRipples(now, ctx, scale);
       drawFronts(ctx, scale);
       drawBuildGhost(ctx, scale);
@@ -1742,17 +1807,19 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   /**
-   * While nuke mode is armed, show the Atom Bomb's blast radii at the hovered
-   * tile — a dashed outer ring for the partial-destruction band, a solid inner
-   * ring for the fully-irradiated zone — so the player sees the strike's real
-   * footprint before committing.
+   * While nuke mode is armed, show the armed warhead's blast radii at the
+   * hovered tile — a dashed outer ring for the partial-destruction band, a
+   * solid inner ring for the fully-irradiated zone — so the player sees the
+   * strike's real footprint before committing. A MIRV shows one warhead's
+   * footprint at the aim point; the actual launch scatters several of them.
    */
   const drawNukeTargetPreview = (ctx: CanvasRenderingContext2D, scale: number): void => {
     if (!runtime.nukeMode || runtime.hoverTileX === null || runtime.hoverTileY === null) return;
     if (!runtime.map || !runtime.map.inBounds(runtime.hoverTileX, runtime.hoverTileY)) return;
     const c = worldToScreen(runtime.hoverTileX + 0.5, runtime.hoverTileY + 0.5);
-    const innerPx = ATOM_BOMB_INNER_RADIUS * scale;
-    const outerPx = ATOM_BOMB_OUTER_RADIUS * scale;
+    const { inner, outer } = nukeBlast(runtime.nukeMode);
+    const innerPx = inner * scale;
+    const outerPx = outer * scale;
     ctx.save();
     ctx.strokeStyle = "rgba(255, 120, 40, 0.75)";
     ctx.lineWidth = Math.max(1, scale * 0.06);
@@ -1793,7 +1860,18 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     }
   };
 
-  /** Draw each Atom Bomb in flight as a small travelling missile icon. */
+  /** Flight-icon fill colour per warhead kind — distinguishes them at a glance in the air. */
+  const NUKE_FLIGHT_COLOR: Readonly<Record<NukeKind, string>> = {
+    atom: "#f97316",
+    hydrogen: "#ef4444",
+    mirv: "#a855f7",
+  };
+
+  /**
+   * Draw each warhead in flight as a small travelling missile icon, tinted and
+   * glyphed by kind. A MIRV launch appears as several independent entries
+   * (one per scattered warhead), each drawn separately.
+   */
   const drawNukes = (ctx: CanvasRenderingContext2D, scale: number): void => {
     if (runtime.nukes.length === 0) return;
     const cw = ui.mapCanvas.width;
@@ -1811,30 +1889,31 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ctx.fill();
       ctx.beginPath();
       ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
-      ctx.fillStyle = "#f97316";
+      ctx.fillStyle = NUKE_FLIGHT_COLOR[nuke.kind];
       ctx.fill();
       ctx.font = `${Math.max(8, radius * 1.4)}px "Segoe UI Symbol", "Noto Sans Symbols2", system-ui, sans-serif`;
       ctx.fillStyle = "#fff";
-      ctx.fillText("\u{2622}\u{FE0E}", p.x, p.y);
+      ctx.fillText(NUKE_GLYPH[nuke.kind], p.x, p.y);
     }
     ctx.restore();
   };
 
   /**
-   * The bright flash at each Atom Bomb impact: a bloomed fireball + expanding
-   * shockwave ring over ~900ms, sized to the real blast radii. The *lasting*
-   * mark on the ground is the server-authoritative fallout tint (see
+   * The bright flash at each warhead's impact: a bloomed fireball + expanding
+   * shockwave ring over ~900ms, sized to that kind's real blast radii. The
+   * *lasting* mark on the ground is the server-authoritative fallout tint (see
    * {@link drawFallout}), not this transient flash.
    */
   const drawNukeExplosions = (now: number, ctx: CanvasRenderingContext2D, scale: number): void => {
     if (runtime.nukeExplosions.length === 0) return;
     const survivors: NukeExplosion[] = [];
-    const innerPx = ATOM_BOMB_INNER_RADIUS * scale;
-    const outerPx = ATOM_BOMB_OUTER_RADIUS * scale;
     for (const exp of runtime.nukeExplosions) {
       const t = (now - exp.start) / NUKE_EXPLOSION_DURATION_MS;
       if (t >= 1) continue;
       survivors.push(exp);
+      const { inner, outer } = nukeBlast(exp.kind);
+      const innerPx = inner * scale;
+      const outerPx = outer * scale;
       const ease = 1 - (1 - t) * (1 - t);
       const c = worldToScreen(exp.x + 0.5, exp.y + 0.5);
       ctx.save();
@@ -1855,6 +1934,37 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ctx.restore();
     }
     runtime.nukeExplosions = survivors;
+  };
+
+  /**
+   * A brief cyan "X" burst where a SAM Launcher shot down a warhead before
+   * impact — visually distinct from a real detonation's orange fireball, so
+   * the player can tell a launch was intercepted rather than landed.
+   */
+  const drawNukeIntercepts = (now: number, ctx: CanvasRenderingContext2D, scale: number): void => {
+    if (runtime.nukeIntercepts.length === 0) return;
+    const survivors: NukeIntercept[] = [];
+    const size = Math.max(4, scale * 0.35);
+    for (const hit of runtime.nukeIntercepts) {
+      const t = (now - hit.start) / NUKE_EXPLOSION_DURATION_MS;
+      if (t >= 1) continue;
+      survivors.push(hit);
+      const c = worldToScreen(hit.x + 0.5, hit.y + 0.5);
+      ctx.save();
+      ctx.globalAlpha = 1 - t;
+      ctx.strokeStyle = "rgba(56, 189, 248, 0.95)";
+      ctx.lineWidth = Math.max(1.5, scale * 0.12);
+      ctx.lineCap = "round";
+      const r = size * (0.6 + t * 0.6);
+      ctx.beginPath();
+      ctx.moveTo(c.x - r, c.y - r);
+      ctx.lineTo(c.x + r, c.y + r);
+      ctx.moveTo(c.x + r, c.y - r);
+      ctx.lineTo(c.x - r, c.y + r);
+      ctx.stroke();
+      ctx.restore();
+    }
+    runtime.nukeIntercepts = survivors;
   };
 
   /**
@@ -2289,14 +2399,15 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     }
 
     // Nuke mode takes priority over build mode (they're mutually exclusive
-    // anyway) — a click launches the armed Atom Bomb at the clicked tile.
+    // anyway) — a click launches the armed warhead at the clicked tile.
     if (runtime.nukeMode) {
-      sendNuke(tileX, tileY);
+      const kind = runtime.nukeMode;
+      sendNuke(tileX, tileY, kind);
       runtime.clickRipples.push({ x: tileX, y: tileY, color: "rgba(255,120,40,0.9)", start: performance.now() });
       sfx.nukeLaunch();
-      runtime.nukeMode = false;
+      runtime.nukeMode = null;
       refreshWeaponsMenu();
-      setStatus(ui, `Atom Bomb launched at (${tileX}, ${tileY}).`);
+      setStatus(ui, `${NUKE_DEFS[kind].name} launched at (${tileX}, ${tileY}).`);
       return;
     }
 
@@ -2399,7 +2510,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     switch (event.key.toLowerCase()) {
       case "escape":
         toggleBuildMode(null);
-        if (runtime.nukeMode) toggleNukeMode();
+        if (runtime.nukeMode) toggleNukeMode(runtime.nukeMode);
         break;
       case "t": nudgeAttackRatio(-10); break; // OpenFront: attack ratio down
       case "y": nudgeAttackRatio(10); break; //  and up

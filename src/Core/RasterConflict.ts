@@ -3,11 +3,15 @@ import { NEUTRAL_PLAYER, type PlayerId, type TerritoryGrid } from "./TerritoryGr
 import { NO_ALLIANCES, type AllianceView } from "./alliances.js";
 import { GOLD_BASE_PER_TICK, WARSHIP_INTERCEPT_RANGE } from "./buildings.js";
 import {
-  ATOM_BOMB_INNER_RADIUS,
-  ATOM_BOMB_OUTER_DESTROY_CHANCE,
-  ATOM_BOMB_OUTER_RADIUS,
   FALLOUT_DURATION_TICKS,
+  MIRV_SCATTER_RADIUS,
+  MIRV_WARHEAD_COUNT,
   NUKE_TILES_PER_TICK,
+  nukeBlast,
+  SAM_INTERCEPT_CHANCE,
+  SAM_RANGE,
+  SAM_RELOAD_TICKS,
+  type NukeKind,
 } from "./nukes.js";
 import { RailSystem, type RailView, type TrainView } from "./railSystem.js";
 import { TradeSystem, type TradeView } from "./tradeSystem.js";
@@ -107,6 +111,7 @@ export interface NukeState {
   y: number;
   toX: number;
   toY: number;
+  kind: NukeKind;
 }
 
 /**
@@ -118,8 +123,23 @@ export interface NukeDetonation {
   attacker: PlayerId;
   targetX: number;
   targetY: number;
+  kind: NukeKind;
   /** Every player who lost territory in the blast (excluding neutral land). */
   victims: PlayerId[];
+}
+
+/**
+ * A warhead shot down by a SAM Launcher before it could detonate — surfaced so
+ * the session can react (event log line, distinct client sound/flash from a
+ * real detonation).
+ */
+export interface NukeInterception {
+  attacker: PlayerId;
+  /** Owner of the SAM Launcher that shot the warhead down. */
+  defender: PlayerId;
+  /** Tile-space position the interception happened at. */
+  x: number;
+  y: number;
 }
 
 /**
@@ -150,6 +170,8 @@ export interface RasterTickResult {
   crossings: SeaCrossing[];
   /** Nukes that detonated this tick (empty on most ticks). */
   nukeDetonations: NukeDetonation[];
+  /** Warheads shot down by a SAM Launcher this tick (empty on most ticks). */
+  nukeInterceptions: NukeInterception[];
 }
 
 /** An in-flight expansion. `committed` troops are drained as tiles are taken. */
@@ -193,7 +215,16 @@ interface Nuke {
   toY: number;
   ticksTotal: number;
   ticksElapsed: number;
+  kind: NukeKind;
 }
+
+/**
+ * Deterministic [0,1) draw from a cheap integer hash of two seeds — the same
+ * technique the nuke-blast outer-ring roll and the frontier jitter use, so
+ * replays stay exact (no `Math.random`).
+ */
+const pseudoRandom01 = (a: number, b: number): number =>
+  ((a * 2654435761 + b * 40503) >>> 0) / 0x100000000;
 
 /**
  * Autonomous border-expansion conflict engine over a {@link TerritoryGrid}.
@@ -226,6 +257,10 @@ export class RasterConflict {
   private nextNukeId = 1;
   /** Detonations resolved during the current tick. */
   private nukeDetonations: NukeDetonation[] = [];
+  /** Interceptions resolved during the current tick. */
+  private nukeInterceptions: NukeInterception[] = [];
+  /** Tick (exclusive) each SAM Launcher, keyed by tile, is ready to fire again. */
+  private readonly samCooldownUntil = new Map<TileRef, number>();
   private readonly incomeAccumulator = new Map<PlayerId, number>();
   /**
    * Tick (exclusive) until which a freshly-seated player is immune from attack.
@@ -310,6 +345,7 @@ export class RasterConflict {
         y: n.fromY + (n.toY - n.fromY) * t,
         toX: n.toX,
         toY: n.toY,
+        kind: n.kind,
       };
     });
   }
@@ -434,34 +470,59 @@ export class RasterConflict {
   }
 
   /**
-   * Launch an Atom Bomb from `(fromX, fromY)` — a silo tile the caller has
-   * already confirmed `attacker` owns and is off cooldown — toward
+   * Launch a warhead of `kind` from `(fromX, fromY)` — a silo tile the caller
+   * has already confirmed `attacker` owns and is off cooldown — toward
    * `(targetX, targetY)`. Gold and silo-selection are the session's concern
-   * (mirroring building purchases); this only enqueues the flight. Combat
+   * (mirroring building purchases); this only enqueues the flight(s). A MIRV
+   * splits into {@link MIRV_WARHEAD_COUNT} independent warheads that scatter
+   * around the aim point (each flies its own straight-line course and can be
+   * intercepted separately); every other kind is a single flight. Combat
    * effects (troop loss, territory clearing) land on impact in
    * {@link detonateNuke}.
    */
-  launchNuke(attacker: PlayerId, fromX: number, fromY: number, targetX: number, targetY: number): void {
+  launchNuke(
+    attacker: PlayerId,
+    fromX: number,
+    fromY: number,
+    targetX: number,
+    targetY: number,
+    kind: NukeKind = "atom",
+  ): void {
+    if (kind === "mirv") {
+      for (let i = 0; i < MIRV_WARHEAD_COUNT; i += 1) {
+        const id = this.nextNukeId++;
+        const angle = pseudoRandom01(id, 17) * Math.PI * 2;
+        const dist = pseudoRandom01(id, 31) * MIRV_SCATTER_RADIUS;
+        const wx = targetX + Math.cos(angle) * dist;
+        const wy = targetY + Math.sin(angle) * dist;
+        this.enqueueNuke(id, attacker, fromX, fromY, wx, wy, "mirv");
+      }
+      return;
+    }
+    this.enqueueNuke(this.nextNukeId++, attacker, fromX, fromY, targetX, targetY, kind);
+  }
+
+  /** Enqueue a single warhead flight (shared by {@link launchNuke}'s single- and multi-warhead paths). */
+  private enqueueNuke(
+    id: number,
+    attacker: PlayerId,
+    fromX: number,
+    fromY: number,
+    targetX: number,
+    targetY: number,
+    kind: NukeKind,
+  ): void {
     const dx = targetX - fromX;
     const dy = targetY - fromY;
     const dist = Math.sqrt(dx * dx + dy * dy);
     const ticksTotal = Math.max(1, Math.round(dist / NUKE_TILES_PER_TICK));
-    this.nukes.push({
-      id: this.nextNukeId++,
-      attacker,
-      fromX,
-      fromY,
-      toX: targetX,
-      toY: targetY,
-      ticksTotal,
-      ticksElapsed: 0,
-    });
+    this.nukes.push({ id, attacker, fromX, fromY, toX: targetX, toY: targetY, ticksTotal, ticksElapsed: 0, kind });
   }
 
   /**
-   * Resolve one nuke's impact: clear tiles in its blast (fully inside
-   * {@link ATOM_BOMB_INNER_RADIUS}, a per-tile deterministic chance out to
-   * {@link ATOM_BOMB_OUTER_RADIUS}) back to neutral — razing any building — and
+   * Resolve one warhead's impact: clear tiles in its blast (fully inside the
+   * kind's inner radius, a per-tile deterministic chance out to its outer
+   * radius, see {@link nukeBlast}) back to neutral — razing any building — and
    * bleed each affected owner's troop pool by the fraction of *their* territory
    * just destroyed, mirroring OpenFront's "troops lost proportional to land
    * taken". A blast can span more than one nation; each is debited independently.
@@ -473,12 +534,13 @@ export class RasterConflict {
     const tilesBefore = new Map<PlayerId, number>();
     const tilesCleared = new Map<PlayerId, number>();
 
-    const minX = Math.max(0, cx - ATOM_BOMB_OUTER_RADIUS);
-    const maxX = Math.min(map.width - 1, cx + ATOM_BOMB_OUTER_RADIUS);
-    const minY = Math.max(0, cy - ATOM_BOMB_OUTER_RADIUS);
-    const maxY = Math.min(map.height - 1, cy + ATOM_BOMB_OUTER_RADIUS);
-    const outerSq = ATOM_BOMB_OUTER_RADIUS * ATOM_BOMB_OUTER_RADIUS;
-    const innerSq = ATOM_BOMB_INNER_RADIUS * ATOM_BOMB_INNER_RADIUS;
+    const { inner, outer, outerChance } = nukeBlast(nuke.kind);
+    const minX = Math.max(0, cx - outer);
+    const maxX = Math.min(map.width - 1, cx + outer);
+    const minY = Math.max(0, cy - outer);
+    const maxY = Math.min(map.height - 1, cy + outer);
+    const outerSq = outer * outer;
+    const innerSq = inner * inner;
 
     for (let y = minY; y <= maxY; y += 1) {
       for (let x = minX; x <= maxX; x += 1) {
@@ -493,8 +555,7 @@ export class RasterConflict {
         if (!destroy) {
           // Deterministic [0,1) draw from a cheap integer hash of (ref, nuke id) —
           // same wobble technique as the frontier jitter, so replays stay exact.
-          const hash = ((ref * 2654435761 + nuke.id * 40503) >>> 0) / 0x100000000;
-          destroy = hash < ATOM_BOMB_OUTER_DESTROY_CHANCE;
+          destroy = pseudoRandom01(ref, nuke.id) < outerChance;
         }
         if (!destroy) continue;
 
@@ -519,7 +580,54 @@ export class RasterConflict {
       this.grid.addTroops(owner, -this.grid.troopsOf(owner) * fraction);
     }
 
-    this.nukeDetonations.push({ attacker: nuke.attacker, targetX: nuke.toX, targetY: nuke.toY, victims });
+    this.nukeDetonations.push({ attacker: nuke.attacker, targetX: nuke.toX, targetY: nuke.toY, kind: nuke.kind, victims });
+  }
+
+  /**
+   * Sweep every in-flight warhead against active, non-allied SAM Launchers:
+   * a SAM within {@link SAM_RANGE} of a warhead's current position fires an
+   * interceptor if it's off cooldown, consuming the cooldown whether or not
+   * the deterministic roll ({@link SAM_INTERCEPT_CHANCE}) hits. A SAM engages
+   * at most one warhead per tick; an intercepted warhead is removed before it
+   * can detonate. Run before {@link advanceNukes} so a shoot-down happens
+   * mid-flight rather than on the same tick as an already-resolved impact.
+   */
+  private interceptNukes(): void {
+    if (this.nukes.length === 0) return;
+    const sams: TileRef[] = [];
+    for (const [ref, type] of this.grid.activeBuildingEntries()) {
+      if (type === "sam") sams.push(ref);
+    }
+    if (sams.length === 0) return;
+
+    const map = this.grid.map;
+    const engagedThisTick = new Set<TileRef>();
+    const survivors: Nuke[] = [];
+    for (const nuke of this.nukes) {
+      const t = nuke.ticksTotal > 0 ? nuke.ticksElapsed / nuke.ticksTotal : 1;
+      const cx = nuke.fromX + (nuke.toX - nuke.fromX) * t;
+      const cy = nuke.fromY + (nuke.toY - nuke.fromY) * t;
+      let intercepted = false;
+      for (const sam of sams) {
+        if (engagedThisTick.has(sam)) continue;
+        const owner = this.grid.ownerOf(sam);
+        if (owner === nuke.attacker) continue;
+        if (owner !== NEUTRAL_PLAYER && this.allies.areAllied(nuke.attacker, owner)) continue;
+        if ((this.samCooldownUntil.get(sam) ?? 0) > this.tickCount) continue;
+        if (Math.max(Math.abs(map.x(sam) - cx), Math.abs(map.y(sam) - cy)) > SAM_RANGE) continue;
+
+        engagedThisTick.add(sam);
+        this.samCooldownUntil.set(sam, this.tickCount + SAM_RELOAD_TICKS);
+        if (pseudoRandom01(sam, nuke.id) < SAM_INTERCEPT_CHANCE) {
+          intercepted = true;
+          this.nukeInterceptions.push({ attacker: nuke.attacker, defender: owner, x: cx, y: cy });
+        }
+        break;
+      }
+      if (!intercepted) survivors.push(nuke);
+    }
+    this.nukes.length = 0;
+    this.nukes.push(...survivors);
   }
 
   /** Advance every nuke in flight one tick; detonate any that just arrived. */
@@ -550,6 +658,7 @@ export class RasterConflict {
         activeAttacks: 0,
         crossings: [],
         nukeDetonations: [],
+        nukeInterceptions: [],
       };
     }
 
@@ -560,6 +669,7 @@ export class RasterConflict {
 
     this.crossings = [];
     this.nukeDetonations = [];
+    this.nukeInterceptions = [];
     // Switch on any structures whose construction window has elapsed, so their
     // effects (city cap, stations, fort aura) count from this tick on.
     this.grid.activateDue(this.tickCount);
@@ -573,6 +683,8 @@ export class RasterConflict {
     // Warship coastal batteries sink enemy transports before they advance/land.
     this.interceptTransports();
     this.advanceShips();
+    // SAM Launchers shoot down in-flight warheads before they can detonate.
+    this.interceptNukes();
     this.advanceNukes();
     // Decay fallout before attacks advance, so ground that recovered this tick
     // is immediately available to the frontier again.
@@ -588,6 +700,7 @@ export class RasterConflict {
       activeAttacks: this.attacks.length,
       crossings: this.crossings,
       nukeDetonations: this.nukeDetonations,
+      nukeInterceptions: this.nukeInterceptions,
     };
   }
 

@@ -9,6 +9,7 @@ import {
 } from "../Core/messages.js";
 import { isMapChoiceId } from "../Core/mapCatalog.js";
 import { isBuildingType } from "../Core/buildings.js";
+import { isNukeKind } from "../Core/nukes.js";
 
 /** Validate a diplomacy counterparty id: a positive integer player id. */
 const parseTargetId = (payload: unknown, label: string): number => {
@@ -84,7 +85,10 @@ const parseRasterNuke = (payload: unknown): RasterNukeIntent => {
   if (typeof intent.targetY !== "number" || !Number.isInteger(intent.targetY) || intent.targetY < 0) {
     throw new Error("targetY must be a non-negative integer.");
   }
-  return { targetX: intent.targetX, targetY: intent.targetY };
+  if (intent.kind !== undefined && !isNukeKind(intent.kind)) {
+    throw new Error("kind must be a known warhead kind.");
+  }
+  return { targetX: intent.targetX, targetY: intent.targetY, ...(intent.kind !== undefined ? { kind: intent.kind } : {}) };
 };
 
 const parseRasterSpawn = (payload: unknown): RasterSpawnPayload => {

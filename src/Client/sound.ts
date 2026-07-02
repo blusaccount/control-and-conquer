@@ -79,4 +79,9 @@ export const sfx = {
     tone(55, 0, 0.5, 0.22);
     tone(90, 0, 0.35, 0.16);
   },
+  /** A SAM Launcher shooting down an incoming warhead — a quick falling fizzle. */
+  nukeIntercepted: (): void => {
+    tone(900, 0, 0.08, 0.1);
+    tone(500, 0.05, 0.14, 0.09);
+  },
 };
