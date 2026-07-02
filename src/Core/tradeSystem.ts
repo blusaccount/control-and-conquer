@@ -58,6 +58,14 @@ export interface TradeView {
   y: number;
 }
 
+/** Targeting view of one live trade ship — id + position, for a warship's target scan. */
+export interface TradeShipTarget {
+  id: number;
+  owner: PlayerId;
+  x: number;
+  y: number;
+}
+
 export class TradeSystem {
   private readonly grid: TerritoryGrid;
   private ports: TradePort[] = [];
@@ -98,6 +106,21 @@ export class TradeSystem {
   /** Number of live trade ships (for tests). */
   get shipCount(): number {
     return this.ships.length;
+  }
+
+  /** Every live trade ship's id, owner and current position — a warship's target scan reads this. */
+  targetableShips(): TradeShipTarget[] {
+    return this.ships.map((ship) => {
+      const { x, y } = this.shipPosition(ship);
+      return { id: ship.id, owner: ship.owner, x, y };
+    });
+  }
+
+  /** Sink a trade ship by id (e.g. a warship's kill) — no payout, it just vanishes. Returns whether one was removed. */
+  destroyShip(id: number): boolean {
+    const before = this.ships.length;
+    this.ships = this.ships.filter((s) => s.id !== id);
+    return this.ships.length < before;
   }
 
   /** Rebuild the port roster only when the port set actually changed. */

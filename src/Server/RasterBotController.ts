@@ -4,6 +4,7 @@ import { NEUTRAL_PLAYER, type PlayerId, type TerritoryGrid } from "../Core/Terri
 import { maxTroops } from "../Core/rasterCombatConfig.js";
 import { buildingCost } from "../Core/buildings.js";
 import type { RasterServerMessage, RasterSnapshot } from "../Core/types.js";
+import type { RasterPlayerKind } from "./botField.js";
 
 /**
  * Behavioural knobs for a raster bot. A {@link RasterBotController}'s whole
@@ -53,15 +54,44 @@ export const RASTER_BOT_PERSONALITIES: readonly RasterBotPersonality[] = [
   { id: "turtle", decisionCooldownTicks: 18, minPool: 12, reserveFraction: 0.4, expandCommit: 0.7, attackCommit: 0.55, attackPoolRatio: 1.8, aggression: 0.15 },
 ];
 
+/**
+ * The passive **Bot** ("Tribe") personality: OpenFront's low-threat map
+ * filler. It reacts slowly, commits only a sliver of its pool per attack
+ * (mirroring OpenFront's `attackAmount` for `PlayerType.Bot`, `troops/20` —
+ * a fifth of a Nation's `troops/5`), and almost never picks a fight it isn't
+ * heavily favoured to win. Paired with `kind: "bot"` (see
+ * {@link RasterBotConfig.kind}), which additionally skips building and
+ * always accepts alliance offers rather than weighing them — see
+ * {@link RasterBotController.maybeBuild}/{@link RasterBotController.manageDiplomacy}.
+ */
+export const FILLER_PERSONALITY: RasterBotPersonality = {
+  id: "filler",
+  decisionCooldownTicks: 60,
+  minPool: 20,
+  reserveFraction: 0.6,
+  expandCommit: 0.25,
+  attackCommit: 0.05,
+  attackPoolRatio: 2.5,
+  aggression: 0.05,
+};
+
 export interface RasterBotConfig {
   readonly botId: string;
   readonly personality: RasterBotPersonality;
+  /**
+   * Which AI tier this seat plays as — a full-strategy **Nation** (the
+   * default; OpenFront-style difficulty handicaps, builds/allies/expands) or
+   * a passive **Bot** filler (flat handicap, no building, always-accept
+   * diplomacy). See {@link RasterPlayerKind}.
+   */
+  readonly kind?: RasterPlayerKind;
 }
 
 export const DEFAULT_RASTER_BOT_CONFIG: RasterBotConfig = {
   botId: "raster-bot-1",
   // Default to the all-rounder so a lone bot plays a sensible, readable game.
   personality: RASTER_BOT_PERSONALITIES[2],
+  kind: "nation",
 };
 
 /**
@@ -119,9 +149,16 @@ export class RasterBotController {
     // Subscribe headless (wantsRaster=false): the bot reads engine state via
     // peekGrid and never decodes the wire ownership, so the session skips the
     // costly per-tick owner encoding for it.
-    // isBot=true so the session applies the per-difficulty AI handicaps and the
-    // full conquer bounty when this nation is beaten.
-    const unsubscribe = session.subscribe(this.config.botId, (message) => this.onMessage(message), true, false, undefined, true);
+    // kind (default "nation") so the session applies the right AI handicap
+    // tier and the full conquer bounty when this seat is beaten.
+    const unsubscribe = session.subscribe(
+      this.config.botId,
+      (message) => this.onMessage(message),
+      true,
+      false,
+      undefined,
+      this.config.kind ?? "nation",
+    );
     if (!unsubscribe) {
       // The session is already full (e.g. exhausted MAX_PLAYERS seats) — this
       // bot simply never takes the field rather than crashing the caller.
@@ -146,6 +183,10 @@ export class RasterBotController {
 
   public getPersonality(): RasterBotPersonality {
     return this.config.personality;
+  }
+
+  public getKind(): RasterPlayerKind {
+    return this.config.kind ?? "nation";
   }
 
   public getLastDecisionTick(): number {
@@ -175,15 +216,20 @@ export class RasterBotController {
 
     const grid = this.session.peekGrid();
     const map = this.session.peekMap();
+    const kind = this.config.kind ?? "nation";
 
     // Reinvest banked gold into structures independent of the troop decision
     // below, so a maturing bot economy keeps compounding without stalling
-    // expansion.
-    this.maybeBuild(grid, map);
+    // expansion. A passive Bot filler builds nothing — OpenFront's Tribe is a
+    // stationary map-filler, not an economic player.
+    if (kind !== "bot") this.maybeBuild(grid, map);
 
     // Diplomacy: answer pending offers, sue for peace with a dangerous rival, or
     // (for the ruthless) betray a pact that has boxed it in. One move per tick.
-    this.manageDiplomacy(grid);
+    // A Bot filler only ever does the first half of that — it auto-accepts
+    // any offer and never proposes or betrays (OpenFront's Tribe "accepts
+    // every incoming alliance request").
+    this.manageDiplomacy(grid, kind);
 
     if (grid.troopsOf(this.myPlayerId) < this.config.personality.minPool) return;
 
@@ -246,9 +292,12 @@ export class RasterBotController {
    *  3. **Betray:** a ruthless bot hemmed in *only* by allies (no neutral land,
    *     no other rival to fight) turns on the weakest ally it decisively outguns
    *     rather than stagnate behind its own pacts.
+   * A passive Bot filler (`kind: "bot"`) only ever does step 1, and
+   * unconditionally accepts — OpenFront's Tribe welcomes every offer and
+   * never proposes or betrays on its own.
    * Deterministic throughout (ascending-id tiebreaks, no RNG).
    */
-  private manageDiplomacy(grid: TerritoryGrid): void {
+  private manageDiplomacy(grid: TerritoryGrid, kind: RasterPlayerKind): void {
     const me = this.myPlayerId;
     const session = this.session;
     if (me === null || !session) return;
@@ -260,10 +309,11 @@ export class RasterBotController {
     const incoming = alliances.incomingProposals(me);
     if (incoming.length > 0) {
       const from = incoming[0];
-      const accept = p.aggression < 0.5 || grid.troopsOf(from) >= myPool;
+      const accept = kind === "bot" || p.aggression < 0.5 || grid.troopsOf(from) >= myPool;
       session.respondAlliance(this.config.botId, from, accept);
       return;
     }
+    if (kind === "bot") return;
 
     const bordering = grid.frontierTargets(me).filter((t) => t.target !== NEUTRAL_PLAYER);
 

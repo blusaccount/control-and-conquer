@@ -13,6 +13,7 @@ import type {
   RasterMatchEndReason,
   RasterNuke,
   RasterNukeDetonation,
+  RasterNukeInterception,
   RasterNukeIntent,
   RasterRejectReason,
   RasterRail,
@@ -21,21 +22,30 @@ import type {
   RasterShip,
   RasterTrade,
   RasterTrain,
+  RasterWarship,
 } from "../Core/types.js";
 import { LAND_ATTACK_REACH, RASTER_MATCH_DURATION_SECONDS, SPAWN_IMMUNITY_SECONDS } from "../Core/rasterCombatConfig.js";
-import { ATOM_BOMB_COST, SILO_RELOAD_TICKS } from "../Core/nukes.js";
+import { NUKE_DEFS, nukeCost, SILO_RELOAD_TICKS, type NukeKind } from "../Core/nukes.js";
 import { BUILDING_CONSTRUCTION_TICKS, BUILDING_DEFS, buildingCost, COASTAL_BUILDING_TYPES, COASTAL_SNAP_RADIUS, CONQUER_GOLD_FRACTION_AI, CONQUER_GOLD_FRACTION_HUMAN, costCounterTypes, STRUCTURE_MIN_DIST } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import type { RasterDifficulty } from "../Core/messages.js";
 import { IDENTITY_MODIFIERS } from "../Core/playerModifiers.js";
 import {
+  BOT_GROWTH_MULTIPLIER,
+  BOT_START_MANPOWER,
+  BOT_TROOP_CAP_MULTIPLIER,
   NATION_GROWTH_MULTIPLIER,
   NATION_START_MANPOWER,
   NATION_TROOP_CAP_MULTIPLIER,
+  tribeName,
+  type RasterPlayerKind,
 } from "./botField.js";
 import type { RasterMatchPhase } from "../Core/types.js";
 import { attachOwnership, buildSharedSnapshot, encodeOwnerDelta, encodeOwners, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
 import type { RasterSnapshot } from "../Core/types.js";
+
+/** Human-readable, correctly-articled label for an event-log line, e.g. "an Atom Bomb". */
+const nukeLabel = (kind: NukeKind): string => `${NUKE_DEFS[kind].article} ${NUKE_DEFS[kind].name}`;
 
 export type RasterMessageHandler = (message: RasterServerMessage) => void;
 
@@ -55,11 +65,12 @@ interface RasterSubscriber {
    */
   wantsRaster: boolean;
   /**
-   * Whether this player is an AI nation (a server-side bot) rather than a human
-   * client. Drives the post-spawn difficulty handicaps and the conquer bounty
+   * Which AI tier this player is (or `"human"` for a real client). Drives the
+   * post-spawn handicaps (Bot: flat OpenFront filler numbers; Nation: the
+   * per-difficulty handicaps; human: full strength) and the conquer bounty
    * (an AI's whole treasury is seized; a human's only half).
    */
-  isBot: boolean;
+  kind: RasterPlayerKind;
   /**
    * Per-subscriber owner baseline: the ownership raster this client last
    * received. Owner snapshots after the first are encoded as a delta against
@@ -160,9 +171,13 @@ const NATION_NAMES: readonly string[] = [
 /** Maximum nations a single session can seat (1 human + up to N-1 bots). */
 const MAX_PLAYERS = NATION_NAMES.length;
 
-/** Display name + colour for a player id (the name wraps for ids beyond the list). */
-const metaForPlayer = (id: PlayerId): { name: string; color: string } => ({
-  name: NATION_NAMES[(id - 1) % NATION_NAMES.length],
+/**
+ * Display name + colour for a player id. A Bot seat gets a procedural
+ * two-word tribal name (see {@link tribeName}); a human or Nation seat draws
+ * from the curated {@link NATION_NAMES} list (wrapping for ids beyond it).
+ */
+const metaForPlayer = (id: PlayerId, kind: RasterPlayerKind): { name: string; color: string } => ({
+  name: kind === "bot" ? tribeName(id - 1) : NATION_NAMES[(id - 1) % NATION_NAMES.length],
   color: colorForPlayer(id),
 });
 
@@ -271,6 +286,8 @@ export class RasterGameSession {
   private lastCrossings: RasterCrossing[] = [];
   /** Transport ships in flight as of the most recent tick, broadcast for animation. */
   private lastShips: RasterShip[] = [];
+  /** Live mobile warships as of the most recent tick, broadcast for animation. */
+  private lastWarships: RasterWarship[] = [];
   /** Active land-attack fronts from the most recent tick, for on-map troop labels. */
   private lastFronts: RasterAttackFront[] = [];
   /** Auto-routed railroads as of the most recent tick, for the client to draw. */
@@ -279,10 +296,12 @@ export class RasterGameSession {
   private lastTrains: RasterTrain[] = [];
   /** Trade ships sailing between ports as of the most recent tick. */
   private lastTradeShips: RasterTrade[] = [];
-  /** Atom Bombs in flight as of the most recent tick, broadcast for animation. */
+  /** Warheads in flight as of the most recent tick, broadcast for animation. */
   private lastNukes: RasterNuke[] = [];
-  /** Atom Bomb detonations from the most recent tick, for the explosion flash. */
+  /** Warhead detonations from the most recent tick, for the explosion flash. */
   private lastNukeDetonations: RasterNukeDetonation[] = [];
+  /** Warhead interceptions from the most recent tick, for the interception flash. */
+  private lastNukeInterceptions: RasterNukeInterception[] = [];
   /** Determines spawn placement: each new subscriber takes the next slot. */
   private nextPlayerId: PlayerId = 1;
   private matchEndedBroadcast = false;
@@ -448,14 +467,14 @@ export class RasterGameSession {
     autoSpawn = true,
     wantsRaster = true,
     playerName?: string,
-    isBot = false,
+    kind: RasterPlayerKind = "human",
   ): (() => void) | null {
     if (this.nextPlayerId > MAX_PLAYERS) {
       return null;
     }
     const playerId = this.nextPlayerId;
     this.nextPlayerId += 1;
-    const meta = metaForPlayer(playerId);
+    const meta = metaForPlayer(playerId, kind);
     if (playerName) meta.name = playerName;
     this.playerMeta.set(playerId, meta);
 
@@ -465,7 +484,7 @@ export class RasterGameSession {
       send,
       hasTerrain: false,
       wantsRaster,
-      isBot,
+      kind,
       lastOwner: null,
     };
     this.subscribers.set(clientId, subscriber);
@@ -475,7 +494,7 @@ export class RasterGameSession {
     // {@link selectSpawn}, so the player chooses where their empire begins.
     if (autoSpawn) {
       const spawn = this.spawnTiles[playerId - 1] ?? this.firstFreeSpawn();
-      if (spawn !== undefined) this.seatPlayer(playerId, spawn, isBot);
+      if (spawn !== undefined) this.seatPlayer(playerId, spawn, kind);
     }
 
     send({
@@ -507,14 +526,23 @@ export class RasterGameSession {
    * instant, only) tile. There is no capital — a nation is beaten only once its
    * whole territory is captured — so the spawn tile carries no special status.
    *
-   * An AI nation (`isBot`) is seated with OpenFront's per-difficulty handicaps:
-   * a smaller starting army, a lower population ceiling and slower growth, so
-   * easier games field weaker rivals. The human always plays at full strength.
+   * A **Nation** is seated with OpenFront's per-difficulty handicaps: a
+   * smaller starting army, a lower population ceiling and slower growth, so
+   * easier games field weaker rivals. A **Bot** filler instead takes
+   * OpenFront's flat, difficulty-independent Tribe numbers. The human always
+   * plays at full strength.
    */
-  private seatPlayer(playerId: PlayerId, spawnRef: TileRef, isBot = false): void {
-    const startTroops = isBot ? NATION_START_MANPOWER[this.difficulty] : this.startingTroops;
+  private seatPlayer(playerId: PlayerId, spawnRef: TileRef, kind: RasterPlayerKind = "human"): void {
+    const startTroops =
+      kind === "human" ? this.startingTroops : kind === "bot" ? BOT_START_MANPOWER : NATION_START_MANPOWER[this.difficulty];
     this.grid.addPlayer(playerId, startTroops);
-    if (isBot) {
+    if (kind === "bot") {
+      this.grid.setModifiers(playerId, {
+        ...IDENTITY_MODIFIERS,
+        income: BOT_GROWTH_MULTIPLIER,
+        troopCapMultiplier: BOT_TROOP_CAP_MULTIPLIER,
+      });
+    } else if (kind === "nation") {
       this.grid.setModifiers(playerId, {
         ...IDENTITY_MODIFIERS,
         income: NATION_GROWTH_MULTIPLIER[this.difficulty],
@@ -593,7 +621,7 @@ export class RasterGameSession {
     for (const subscriber of this.subscribers.values()) {
       if (this.grid.hasPlayer(subscriber.playerId)) continue;
       const spawn = this.spawnTiles[subscriber.playerId - 1] ?? this.firstFreeSpawn();
-      if (spawn !== undefined) this.seatPlayer(subscriber.playerId, spawn, subscriber.isBot);
+      if (spawn !== undefined) this.seatPlayer(subscriber.playerId, spawn, subscriber.kind);
     }
     // Grant every seated nation a post-spawn immunity window so the opening of
     // the live game is a protected land-grab — nobody can be attacked until it
@@ -818,6 +846,15 @@ export class RasterGameSession {
       y: this.map.y(s.tile),
       troops: s.troops,
     }));
+    this.lastWarships = this.conflict.activeWarships().map((w) => ({
+      warshipId: w.id,
+      playerId: w.owner,
+      x: w.x,
+      y: w.y,
+      hp: w.hp,
+      maxHp: w.maxHp,
+      retreating: w.retreating,
+    }));
     this.lastNukes = this.conflict.activeNukes().map((n) => ({
       nukeId: n.id,
       playerId: n.attacker,
@@ -825,11 +862,19 @@ export class RasterGameSession {
       y: n.y,
       toX: n.toX,
       toY: n.toY,
+      kind: n.kind,
     }));
     this.lastNukeDetonations = tickResult.nukeDetonations.map((d) => ({
       playerId: d.attacker,
       x: d.targetX,
       y: d.targetY,
+      kind: d.kind,
+    }));
+    this.lastNukeInterceptions = tickResult.nukeInterceptions.map((i) => ({
+      playerId: i.attacker,
+      defenderId: i.defender,
+      x: i.x,
+      y: i.y,
     }));
     // A nuke that hits an ally severs the pact and marks the attacker a traitor,
     // exactly like breaking it from the diplomacy menu — nuking a friend is a
@@ -842,9 +887,14 @@ export class RasterGameSession {
           this.conflict.markTraitor(detonation.attacker);
           this.pushEvent(`${this.nameOf(detonation.attacker)} nuked their ally ${this.nameOf(victim)} — the pact is broken!`);
         } else {
-          this.pushEvent(`${this.nameOf(detonation.attacker)} detonated an Atom Bomb on ${this.nameOf(victim)}'s territory.`);
+          this.pushEvent(`${this.nameOf(detonation.attacker)} detonated ${nukeLabel(detonation.kind)} on ${this.nameOf(victim)}'s territory.`);
         }
       }
+    }
+    for (const interception of tickResult.nukeInterceptions) {
+      this.pushEvent(
+        `${this.nameOf(interception.defender)}'s SAM Launcher shot down a warhead from ${this.nameOf(interception.attacker)}.`,
+      );
     }
     // Active land-attack fronts → wire coordinates for the on-map troop labels,
     // so each contested border shows how many troops are fighting there.
@@ -1013,9 +1063,9 @@ export class RasterGameSession {
    * (newest first) plus the ids eliminated this call. Pure bookkeeping
    * otherwise — no broadcast here.
    */
-  /** Whether `id` is a human (a non-bot subscriber) rather than an AI nation. */
+  /** Whether `id` is a human (a real client) rather than an AI (Bot or Nation) seat. */
   private isHuman(id: PlayerId): boolean {
-    for (const sub of this.subscribers.values()) if (sub.playerId === id) return !sub.isBot;
+    for (const sub of this.subscribers.values()) if (sub.playerId === id) return sub.kind === "human";
     return false;
   }
 
@@ -1084,6 +1134,12 @@ export class RasterGameSession {
     if (!Number.isInteger(intent.percent) || intent.percent < 1 || intent.percent > 100) {
       return { kind: "rejected", reason: "INVALID_PERCENT", message: "Percent must be an integer 1..100." };
     }
+    // B(oat)/G(round) hotkeys force the route instead of the automatic choice
+    // below: "land" requires a shared land border (never crosses water, even
+    // if a crossing would reach the target); "sea" always launches a transport
+    // ship, even where a land border also exists — letting a player flank an
+    // enemy from the water instead of grinding through a defended frontier.
+    const mode = intent.mode ?? "auto";
 
     const rawRef = this.map.ref(intent.targetX, intent.targetY);
     const pool = this.grid.troopsOf(attacker);
@@ -1102,6 +1158,9 @@ export class RasterGameSession {
     // a mountain pixel inside enemy land resolves to the obvious land.
     const ref = this.grid.nearestCapturable(rawRef);
     if (ref === null) {
+      if (mode === "land") {
+        return { kind: "rejected", reason: "NO_FRONTIER", message: "No land route reaches that area." };
+      }
       // The click landed on open water (or rock) too far from any land to snap to
       // — but the snap radius is much shorter than how far a boat can cross, so a
       // tap mid-channel toward a far coast would otherwise die as "no land there".
@@ -1136,11 +1195,23 @@ export class RasterGameSession {
     //   • anything else routes to a transport ship if the water reaches it.
     // An enemy wedged between our two coasts fails both land tests (no border,
     // and the corridor isn't neutral), so it correctly becomes a boat.
-    const canMarch = target === NEUTRAL_PLAYER
-      ? this.grid.canReachByLand(attacker, ref, LAND_ATTACK_REACH)
-      : this.grid.hasLandBorderWith(attacker, target);
+    // `mode` overrides this default: "sea" skips the land check entirely (even
+    // a bordering enemy can be flanked from the water); "land" never falls
+    // through to a boat.
+    const canMarch = mode === "sea"
+      ? false
+      : target === NEUTRAL_PLAYER
+        ? this.grid.canReachByLand(attacker, ref, LAND_ATTACK_REACH)
+        : this.grid.hasLandBorderWith(attacker, target);
     if (canMarch) {
       return { kind: "land", intent: { attacker, target, troops, toward: ref } };
+    }
+    if (mode === "land") {
+      return {
+        kind: "rejected",
+        reason: "NO_FRONTIER",
+        message: "No land route reaches that area.",
+      };
     }
     // Not marchable → a transport ship to the reachable shore nearest the click
     // (its own tile wins when that tile is itself reachable). Rather than demand
@@ -1247,11 +1318,13 @@ export class RasterGameSession {
   }
 
   /**
-   * Validate and dispatch an Atom Bomb launch: the target must be land, the
+   * Validate and dispatch a warhead launch: the target must be land, the
    * attacker must own a Missile Silo that isn't under construction or
-   * reloading, and afford {@link ATOM_BOMB_COST}. On success the gold is spent,
-   * that silo starts reloading, and the flight is handed to
-   * {@link RasterConflict.launchNuke}; the blast itself lands on arrival.
+   * reloading, and afford the kind's cost (a MIRV's cost scales with how many
+   * silos the attacker owns, see {@link nukeCost}). On success the gold is
+   * spent, that silo starts reloading, and the flight is handed to
+   * {@link RasterConflict.launchNuke}; the blast(s) land on arrival, subject to
+   * any SAM Launcher interception along the way.
    */
   private processNuke(
     attacker: PlayerId,
@@ -1269,8 +1342,9 @@ export class RasterGameSession {
     }
     const targetRef = this.map.ref(intent.targetX, intent.targetY);
     if (!this.map.isLand(targetRef)) {
-      return { kind: "rejected", reason: "INVALID_TILE", message: "An Atom Bomb can only target land." };
+      return { kind: "rejected", reason: "INVALID_TILE", message: "A warhead can only target land." };
     }
+    const kind: NukeKind = intent.kind ?? "atom";
 
     let siloRef: TileRef | null = null;
     for (const [ref, type] of this.grid.buildingEntries()) {
@@ -1282,17 +1356,18 @@ export class RasterGameSession {
     if (siloRef === null) {
       return { kind: "rejected", reason: "NO_SILO_READY", message: "No Missile Silo is ready — build one or wait for it to reload." };
     }
-    if (this.grid.goldOf(attacker) < ATOM_BOMB_COST) {
-      return { kind: "rejected", reason: "INSUFFICIENT_GOLD", message: `Not enough gold — an Atom Bomb costs ${ATOM_BOMB_COST}.` };
+    const cost = nukeCost(kind, this.grid.buildingCountOf(attacker, "silo"));
+    if (this.grid.goldOf(attacker) < cost) {
+      return { kind: "rejected", reason: "INSUFFICIENT_GOLD", message: `Not enough gold — ${nukeLabel(kind)} costs ${cost}.` };
     }
 
-    this.grid.addGold(attacker, -ATOM_BOMB_COST);
+    this.grid.addGold(attacker, -cost);
     this.siloReadyAt.set(siloRef, this.conflict.tick + SILO_RELOAD_TICKS);
-    this.conflict.launchNuke(attacker, this.map.x(siloRef), this.map.y(siloRef), intent.targetX, intent.targetY);
+    this.conflict.launchNuke(attacker, this.map.x(siloRef), this.map.y(siloRef), intent.targetX, intent.targetY, kind);
 
     return {
       kind: "ok",
-      line: `${this.nameOf(attacker)} launched an Atom Bomb at (${intent.targetX}, ${intent.targetY}).`,
+      line: `${this.nameOf(attacker)} launched ${nukeLabel(kind)} at (${intent.targetX}, ${intent.targetY}).`,
     };
   }
 
@@ -1394,8 +1469,10 @@ export class RasterGameSession {
       recentEvents: this.recentEvents,
       crossings: this.lastCrossings,
       ships: this.lastShips,
+      warships: this.lastWarships,
       nukes: this.lastNukes,
       nukeDetonations: this.lastNukeDetonations,
+      nukeInterceptions: this.lastNukeInterceptions,
       falloutTiles: this.grid.falloutTiles(),
       fronts: this.lastFronts,
       rails: this.lastRails,
@@ -1404,6 +1481,7 @@ export class RasterGameSession {
       eliminated: this.eliminated,
       alliances: this.alliances.pairs(),
       allianceRequests: this.alliances.proposals(),
+      lastAttackerOf: (playerId) => this.conflict.lastAttackerOf(playerId) ?? 0,
     });
   }
 

@@ -60,10 +60,15 @@ Difficulty shifts the whole curve — harder games pack a denser, more aggressiv
 field onto the same land. Set a fixed count instead with `RASTER_BOTS` (max 47),
 e.g. `RASTER_BOTS=12 npm run dev`, which overrides the per-map scaling.
 
-Each bot is seated with a distinct personality (land-grabber, warmonger,
-all-rounder, opportunist, turtle) and plays a strategic game: it races for cheap
-neutral land to compound its income, strikes the weakest rival it can beat, and
-uses amphibious crossings to attack across narrow seas.
+The AI field is a two-tier mix, like OpenFront's Bot/Nation split: two seats in
+three are full-strategy **Nations**, each seated with a distinct personality
+(land-grabber, warmonger, all-rounder, opportunist, turtle) that races for
+cheap neutral land to compound its income, strikes the weakest rival it can
+beat, and uses amphibious crossings to attack across narrow seas. The
+remaining third are passive **Bot** filler — a low-threat, difficulty-flat
+tribal nation (e.g. "Roman Empire") that barely attacks, never builds, and
+accepts any alliance offered to it — padding out the world without every
+opponent being a serious threat.
 
 ## Combat model
 

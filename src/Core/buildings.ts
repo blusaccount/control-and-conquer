@@ -14,22 +14,64 @@
  */
 
 /** The kinds of structure a player can build on a tile they own. */
-export type BuildingType = "city" | "port" | "fort" | "factory" | "warship" | "silo";
+export type BuildingType = "city" | "port" | "fort" | "factory" | "warship" | "silo" | "sam";
 
 /** All building types, in menu order. */
-export const BUILDING_TYPES: readonly BuildingType[] = ["city", "port", "fort", "factory", "warship", "silo"];
+export const BUILDING_TYPES: readonly BuildingType[] = ["city", "port", "fort", "factory", "warship", "silo", "sam"];
 
 /** Building types that must sit on a coastal (shore) tile. */
 export const COASTAL_BUILDING_TYPES: readonly BuildingType[] = ["port", "warship"];
 
 /**
- * How far (Chebyshev tiles) a warship's guns reach: an enemy transport ship
- * passing within this range of a warship is sunk. A coast-defence rendition of
- * OpenFront's warship, which patrols and engages hostile shipping — here it holds
- * its harbour and interdicts amphibious assaults rather than roaming (mobile
- * patrol + trade-raiding is a documented follow-up).
+ * A Warship is built like any other structure (cost/coastal/construction as
+ * usual, see {@link BUILDING_DEFS.warship}), but once construction finishes it
+ * launches as a **mobile unit** — this is OpenFront's own model (Warship is a
+ * `UnitType`, not a static defense post). Losing the home tile (captured or
+ * the unit destroyed) tears down the structure too — one warship in, one
+ * warship out.
+ *
+ * Values sourced from `docs/openfront-balance-replication-plan.md` §2.7
+ * (maxHealth, patrol/target range, shellRate, shell damage, passiveHeal,
+ * retreat threshold). Two figures aren't in our source material and are this
+ * project's own clean-room approximations, called out below.
  */
-export const WARSHIP_INTERCEPT_RANGE = 12;
+export const WARSHIP_MAX_HP = 1000;
+
+/** Tiles (Chebyshev) a warship roams from its home port while it has no target. */
+export const WARSHIP_PATROL_RANGE = 100;
+
+/** Tiles (Chebyshev) a warship searches for a hostile target to engage. */
+export const WARSHIP_TARGET_RANGE = 130;
+
+/** Ticks between a warship's shots at its current target ("shellRate"). */
+export const WARSHIP_SHELL_RATE_TICKS = 20;
+
+/** Damage one shell deals — enough to sink an unarmoured ship in one hit, or take four hits off another warship. */
+export const WARSHIP_SHELL_DAMAGE = 250;
+
+/** HP a warship regenerates every tick, whether docked or at sea. */
+export const WARSHIP_PASSIVE_HEAL_PER_TICK = 1;
+
+/** HP threshold below which a warship breaks off and heads home instead of pressing an attack. */
+export const WARSHIP_RETREAT_HP = 750;
+
+/**
+ * HP a retreating warship must heal back up to before it re-engages — our own
+ * hysteresis band (not sourced) so a ship sitting exactly at the retreat
+ * threshold doesn't flicker between fighting and fleeing tick to tick.
+ */
+export const WARSHIP_RETREAT_RECOVER_HP = 900;
+
+/**
+ * Tiles (Chebyshev) a warship must close to before it opens fire. Not a
+ * sourced figure — `targetRange`(130) reads as a search/pursuit radius, not a
+ * weapon range, so this project uses its own closer approximation (matching
+ * the coast-defence radius this replaces).
+ */
+export const WARSHIP_ENGAGE_RANGE = 12;
+
+/** Tiles a warship advances per tick while moving — not a sourced figure; matches every other ship's cruising speed. */
+export const WARSHIP_TILES_PER_TICK = 1;
 
 /** Runtime guard: is `value` a known building type id? */
 export const isBuildingType = (value: unknown): value is BuildingType =>
@@ -152,6 +194,7 @@ export const BUILDING_CONSTRUCTION_TICKS: Readonly<Record<BuildingType, number>>
   fort: 50,
   warship: 30,
   silo: 100,
+  sam: 300,
 };
 
 // --- Railroads + trains ----------------------------------------------------
@@ -375,10 +418,19 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
   silo: {
     type: "silo",
     name: "Missile Silo",
-    description: "Launches an Atom Bomb at a target you choose. Reloads after each launch.",
+    description: "Launches an Atom Bomb, Hydrogen Bomb or MIRV at a target you choose. Reloads after each launch.",
     baseCost: 1_000_000,
     costGrowth: 1,
     costCap: 1_000_000,
+  },
+  sam: {
+    type: "sam",
+    name: "SAM Launcher",
+    description: "Shoots down enemy missiles that fly within range. Reloads after each intercept attempt.",
+    baseCost: 1_500_000,
+    costGrowth: 1,
+    costCap: 3_000_000,
+    costLinear: true,
   },
 };
 

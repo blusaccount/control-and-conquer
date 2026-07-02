@@ -25,6 +25,8 @@ export interface UiElements {
   startBanner: HTMLDivElement;
   /** Elapsed-match-time readout in the top-right frame bar. */
   matchTimer: HTMLSpanElement;
+  /** Right-click contextual pie menu, positioned at the click point. */
+  radialMenu: HTMLDivElement;
 }
 
 export type StatusKind = "info" | "error" | "victory";
@@ -47,6 +49,7 @@ export const getUiElements = (): UiElements => {
   const statsOverlay = document.querySelector<HTMLDivElement>("#statsOverlay");
   const startBanner = document.querySelector<HTMLDivElement>("#startBanner");
   const matchTimer = document.querySelector<HTMLSpanElement>("#matchTimer");
+  const radialMenu = document.querySelector<HTMLDivElement>("#radialMenu");
 
   if (
     !mapCanvas ||
@@ -65,7 +68,8 @@ export const getUiElements = (): UiElements => {
     !menuOverlay ||
     !statsOverlay ||
     !startBanner ||
-    !matchTimer
+    !matchTimer ||
+    !radialMenu
   ) {
     throw new Error("UI failed to initialize.");
   }
@@ -96,6 +100,7 @@ export const getUiElements = (): UiElements => {
     statsOverlay,
     startBanner,
     matchTimer,
+    radialMenu,
   };
 };
 

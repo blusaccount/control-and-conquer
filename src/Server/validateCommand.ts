@@ -1,4 +1,4 @@
-import { RasterBuildIntent, RasterClientMessage, RasterExpandIntent, RasterNukeIntent } from "../Core/types.js";
+import { RasterBuildIntent, RasterClientMessage, RasterExpandIntent, RasterExpandMode, RasterNukeIntent } from "../Core/types.js";
 import {
   isRasterDifficulty,
   RasterAllyBreakPayload,
@@ -9,6 +9,7 @@ import {
 } from "../Core/messages.js";
 import { isMapChoiceId } from "../Core/mapCatalog.js";
 import { isBuildingType } from "../Core/buildings.js";
+import { isNukeKind } from "../Core/nukes.js";
 
 /** Validate a diplomacy counterparty id: a positive integer player id. */
 const parseTargetId = (payload: unknown, label: string): number => {
@@ -39,6 +40,9 @@ const parseAllyRespond = (payload: unknown): RasterAllyRespondPayload => {
   return { targetId, accept };
 };
 
+const isRasterExpandMode = (value: unknown): value is RasterExpandMode =>
+  value === "auto" || value === "land" || value === "sea";
+
 const parseRasterExpand = (payload: unknown): RasterExpandIntent => {
   if (typeof payload !== "object" || payload === null) {
     throw new Error("CLIENT_RASTER_EXPAND.payload must be an object.");
@@ -53,7 +57,15 @@ const parseRasterExpand = (payload: unknown): RasterExpandIntent => {
   if (typeof intent.percent !== "number" || !Number.isInteger(intent.percent) || intent.percent < 1 || intent.percent > 100) {
     throw new Error("percent must be an integer 1..100.");
   }
-  return { targetX: intent.targetX, targetY: intent.targetY, percent: intent.percent };
+  if (intent.mode !== undefined && !isRasterExpandMode(intent.mode)) {
+    throw new Error('mode must be "auto", "land" or "sea".');
+  }
+  return {
+    targetX: intent.targetX,
+    targetY: intent.targetY,
+    percent: intent.percent,
+    ...(intent.mode !== undefined ? { mode: intent.mode } : {}),
+  };
 };
 
 const parseRasterBuild = (payload: unknown): RasterBuildIntent => {
@@ -84,7 +96,10 @@ const parseRasterNuke = (payload: unknown): RasterNukeIntent => {
   if (typeof intent.targetY !== "number" || !Number.isInteger(intent.targetY) || intent.targetY < 0) {
     throw new Error("targetY must be a non-negative integer.");
   }
-  return { targetX: intent.targetX, targetY: intent.targetY };
+  if (intent.kind !== undefined && !isNukeKind(intent.kind)) {
+    throw new Error("kind must be a known warhead kind.");
+  }
+  return { targetX: intent.targetX, targetY: intent.targetY, ...(intent.kind !== undefined ? { kind: intent.kind } : {}) };
 };
 
 const parseRasterSpawn = (payload: unknown): RasterSpawnPayload => {

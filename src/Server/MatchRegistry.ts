@@ -1,4 +1,5 @@
 import {
+  FILLER_PERSONALITY,
   RasterBotController,
   RASTER_BOT_PERSONALITIES,
 } from "./RasterBotController.js";
@@ -8,7 +9,7 @@ import { RasterBuildIntent, RasterExpandIntent, RasterNukeIntent } from "../Core
 import type { RasterDifficulty } from "../Core/messages.js";
 import { SIMULATION_TICK_RATE, SPAWN_PHASE_SECONDS } from "./simulationConfig.js";
 import { AiGameSession } from "./aiApi.js";
-import { DIFFICULTY_BOT_COUNT, MAX_RASTER_BOTS, scaleBotCount, scalePersonality } from "./botField.js";
+import { DIFFICULTY_BOT_COUNT, kindForSeat, MAX_RASTER_BOTS, scaleBotCount, scalePersonality } from "./botField.js";
 
 // Re-exported for callers (e.g. the server entry) that import the field rules
 // from here; the rules themselves live in the Node-free `botField` module so a
@@ -74,11 +75,17 @@ export class MatchRegistry {
     // the map actually offers (read straight off the freshly built grid).
     const botCount = botOverride ?? scaleBotCount(session.peekGrid().capturableCount, difficulty);
     const seats = Math.max(0, Math.min(Math.floor(botCount) || 0, MAX_RASTER_BOTS));
+    // Every seat is either a full-strategy Nation (OpenFront's per-difficulty
+    // handicaps + one of the five personalities) or a passive Bot filler
+    // (flat handicap, the single FILLER_PERSONALITY) — see
+    // {@link kindForSeat}. Only Nation personalities are difficulty-scaled;
+    // a Bot's numbers are already flat by design (see `seatPlayer`).
     const unsubBots: Array<() => void> = [];
     for (let i = 0; i < seats; i += 1) {
-      const base = RASTER_BOT_PERSONALITIES[i % RASTER_BOT_PERSONALITIES.length];
-      const personality = scalePersonality(base, difficulty);
-      const bot = new RasterBotController({ botId: `${matchId}-bot-${i + 1}`, personality });
+      const kind = kindForSeat(i);
+      const personality =
+        kind === "bot" ? FILLER_PERSONALITY : scalePersonality(RASTER_BOT_PERSONALITIES[i % RASTER_BOT_PERSONALITIES.length], difficulty);
+      const bot = new RasterBotController({ botId: `${matchId}-bot-${i + 1}`, personality, kind });
       unsubBots.push(bot.attach(session));
     }
 

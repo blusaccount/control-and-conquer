@@ -20,9 +20,9 @@
 | **P0 — Maßstab & Takt** (10 TPS, Start 25 000, `maxTroops`/`troopGrowth`, Glockenkurve, City→+250k Cap) | ✅ **umgesetzt & getestet** |
 | **P1 — Land-Kampf-Port** (`attackLogic`: mag/speed 80·100·120, Verlust-Blend, `attackTilesPerTick`, emergente Mehrfront-Verdünnung, Terrain-Bänder 9/19) | ✅ **umgesetzt & getestet** |
 | **P2 — Gebäude/Gold/Defense-Post/Platzierung** (City/Port/Factory `2^n·125k` Cap 1M; Fort `(n+1)·50k` Cap 250k; flaches Gold-Base + skalierte Dividenden; Fort Stärke 5/Radius 30; Port nur Küste; `structureMinDist 15`) | ✅ **umgesetzt & getestet** |
-| **P3 — Trade-Schiffe + Warships** (Trade: Port→Port-Gold-Sigmoid, beide Häfen kassieren, Flotten-Cap; Warship: küstengebundene Struktur versenkt feindliche Transporter in Reichweite) | ✅ **umgesetzt & getestet** · mobile Warship-Jagd auf Trade, Boote-`floor(troops/5)` noch offen |
+| **P3 — Trade-Schiffe + Warships** (Trade: Port→Port-Gold-Sigmoid, beide Häfen kassieren, Flotten-Cap; Warship: mobile Einheit mit HP/Patrol/Ziel-Reichweite, Schuss-Rate/-Schaden, passiver Heilung, Rückzug-Schwelle, fester Ziel-Priorität Transport>Warship>Trade) | ✅ **umgesetzt & getestet (2026-07-02)** · Warship ist jetzt eine echte mobile Kampfeinheit (nicht mehr nur ein statisches Gebäude, das in Reichweite versenkt) — HP 1000, Patrol/Ziel-Reichweite, Schussrate/-Schaden, passive Heilung, Rückzug-Hysterese, Ziel-Priorität über alle drei Tiers; Boote-`floor(troops/5)` und Warship-Veterancy-Pips bleiben offen |
 | **P3b — Nukes, Tier 1** (Missile Silo 1M flach, Cooldown 90 Ticks, Bauzeit 100 Ticks; Atom Bomb 750k, Radius 15/40 (100 % / 50 %-Chance), Truppen-Verlust proportional zur zerstörten Landfläche; nukt man einen Verbündeten bricht das Bündnis + Verräter-Debuff) | ✅ **Atom Bomb umgesetzt & getestet** · Hydrogen Bomb, MIRV, SAM-Abfang noch offen; zerstörtes Land wird neutral statt (wie im Original) zu Wasser — Terrain ist in dieser Engine nach der Generierung unveränderlich, siehe `src/Core/nukes.ts` |
-| **P4 — Spawn-Immunität** (geschütztes Eröffnungsfenster `SPAWN_IMMUNITY_SECONDS`, Angriffe/Boote auf immune Nationen abgewiesen) | ✅ **umgesetzt & getestet** · Bot/Nation-Split, Radial-UI/Hotkeys, Visualisierung noch offen (UI-/Render-lastig) |
+| **P4 — Spawn-Immunität** (geschütztes Eröffnungsfenster `SPAWN_IMMUNITY_SECONDS`, Angriffe/Boote auf immune Nationen abgewiesen) | ✅ **umgesetzt & getestet** · Bot/Nation-Split ✅, Radial-Menü ✅, Hotkey-Parität ✅ (siehe Update 2026-07-02 unten) · übrige Visualisierung (WebGL-Look-Feinschliff) noch offen |
 
 > **Update (Ökonomie-Angleichung):** Gold ist jetzt **flach wie OpenFront** —
 > `goldAdditionRate` = 100/Tick, **unabhängig** von Tiles/Städten/Häfen. Städte
@@ -40,6 +40,26 @@ damit wertgenau auf OpenFront umgestellt; 238 Unit-Tests grün. P3/P4 sind als
 eigenständige Folge-PRs vorgesehen, weil sie neue Systeme (Trade/Warship/Nukes)
 bzw. die UI-/Render-Schicht betreffen und nicht ungetestet eingeschoben werden
 sollten.
+
+> **Update (2026-07-02 — frischer Quellcode-Abgleich):** siehe
+> `openfront-gap-analysis.md` §3c für den Detail-Abgleich gegen den aktuellen
+> `openfrontio/OpenFrontIO`-main-Branch (Tag v0.32.6). Kurzfassung der neuen
+> Funde mit Bezug zu diesem Plan: (1) **SAM Launcher/Hydrogen Bomb/MIRV** —
+> **erledigt**, siehe §3c #3 im Gap-Analysis-Dokument; (2)
+> **Zug-Tempo** ist mit `TRAIN_TILES_PER_TICK=3` (`buildings.ts:240`) 50 % zu
+> schnell — OpenFronts `speed:2` (§2.6) noch nicht exakt umgesetzt, einfacher
+> Fix, weiterhin offen; (3) **Bot/Nation-Zweiklassen-KI** (§2.9, „zwei
+> getrennte KI-Typen") — **erledigt**: jeder dritte KI-Sitz ist jetzt ein
+> passiver Bot-Filler (flache OpenFront-Tribe-Zahlen, baut nichts, nimmt jede
+> Allianz an) mit eigenem Zwei-Wort-Namensgenerator, der Rest bleibt volle
+> Nation-KI mit den 5 Persönlichkeiten — weiterhin ohne Slider-Konfigurierbarkeit
+> (Feldgröße bleibt kartenskaliert); (4) Schwierigkeit **„Impossible"** (§2.9)
+> fehlt als vierte Stufe; (5) tote, irreführende Konstanten
+> `DEFENSE_POST_RADIUS`/`DEFENSE_POST_STRENGTH` in
+> `rasterCombatConfig.ts` (nie benutzt — Forts nutzen korrekt
+> `FORT_DEFENSE_RADIUS`/`STRENGTH` aus `buildings.ts`) sollten aufgeräumt
+> werden. Phase 4 (UI/Radial-Menü/Hotkeys/Karten-Katalog) bleibt der größte
+> offene Block fürs Look-and-Feel-Ziel dieses Plans.
 
 ## 0) Methodik & Lizenz-Grenze (wichtig)
 

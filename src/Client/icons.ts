@@ -12,7 +12,7 @@
  *    `color`.
  */
 
-export type IconKey = "city" | "port" | "factory" | "fort" | "warship" | "silo" | "ship";
+export type IconKey = "city" | "port" | "factory" | "fort" | "warship" | "silo" | "sam" | "ship";
 
 type Seg =
   | { op: "M"; x: number; y: number }
@@ -217,6 +217,56 @@ const siloDef = (): Group[] => [
   },
 ];
 
+/**
+ * SAM Launcher: a satellite/radar dish angled skyward on a short mast, with a
+ * feed-horn strut at its focus — reads as "detects and intercepts" at a
+ * glance, distinct from the silo's rocket.
+ */
+const samDef = (): Group[] => {
+  const toRad = (d: number): number => (d * Math.PI) / 180;
+  const arcPoint = (deg: number, r: number, cx: number, cy: number): { x: number; y: number } => {
+    const a = toRad(deg);
+    return { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r };
+  };
+  const dishCx = 0;
+  const dishCy = 0.15;
+  const outerR = 0.62;
+  const innerR = 0.38;
+  const startDeg = 200;
+  const endDeg = 340;
+  const steps = 10;
+  const bowl: Seg[] = [];
+  const start = arcPoint(startDeg, outerR, dishCx, dishCy);
+  bowl.push({ op: "M", x: start.x, y: start.y });
+  for (let i = 1; i <= steps; i += 1) {
+    const p = arcPoint(startDeg + ((endDeg - startDeg) * i) / steps, outerR, dishCx, dishCy);
+    bowl.push({ op: "L", x: p.x, y: p.y });
+  }
+  for (let i = steps; i >= 0; i -= 1) {
+    const p = arcPoint(startDeg + ((endDeg - startDeg) * i) / steps, innerR, dishCx, dishCy);
+    bowl.push({ op: "L", x: p.x, y: p.y });
+  }
+  bowl.push({ op: "Z" });
+  return [
+    {
+      rule: "nonzero",
+      segs: [
+        // Mast/base.
+        { op: "M", x: -0.14, y: 0.95 },
+        { op: "L", x: 0.14, y: 0.95 },
+        { op: "L", x: 0.08, y: 0.32 },
+        { op: "L", x: -0.08, y: 0.32 },
+        { op: "Z" },
+        // Dish bowl, angled skyward.
+        ...bowl,
+        // Feed-horn strut, rising from the dish's focus.
+        ...rectSegs(-0.045, -0.62, 0.045, 0.05),
+      ],
+    },
+    { rule: "nonzero", segs: [{ op: "CIRCLE", cx: 0, cy: -0.68, r: 0.1 }] },
+  ];
+};
+
 /** Hull + mast + sail — the plain transport/trade ship. */
 const shipDef = (): Group[] => [
   {
@@ -243,6 +293,7 @@ const ICONS: Record<IconKey, () => Group[]> = {
   fort: fortDef,
   warship: warshipDef,
   silo: siloDef,
+  sam: samDef,
   ship: shipDef,
 };
 

@@ -7,15 +7,18 @@ import type {
   RasterBuilding,
   RasterClientMessage,
   RasterCrossing,
+  RasterExpandMode,
   RasterMatchEndedPayload,
   RasterMatchPhase,
   RasterNuke,
   RasterNukeDetonation,
+  RasterNukeInterception,
   RasterPlayerAssignedPayload,
   RasterPlayerInfo,
   RasterRail,
   RasterServerMessage,
   RasterShip,
+  RasterWarship,
   RasterSnapshot,
   RasterTrade,
   RasterTrain,
@@ -37,7 +40,7 @@ import {
 import type { RasterDifficulty } from "../Core/messages.js";
 import { SIMULATION_TICK_RATE } from "../Server/simulationConfig.js";
 import { sfx } from "./sound.js";
-import { ATOM_BOMB_COST, ATOM_BOMB_INNER_RADIUS, ATOM_BOMB_OUTER_RADIUS } from "../Core/nukes.js";
+import { NUKE_DEFS, NUKE_KINDS, nukeBlast, nukeCost, type NukeKind } from "../Core/nukes.js";
 
 /** Options for starting a raster match: the chosen map and difficulty. */
 export interface RasterClientOptions {
@@ -80,6 +83,24 @@ interface ShipDot {
 }
 
 /**
+ * A mobile warship being drawn — same eased-position idea as {@link ShipDot},
+ * plus the current/max HP (for the health bar, drawn only while damaged) and
+ * whether it's currently retreating home to heal (a distinct visual cue from
+ * an "angry"/engaging one).
+ */
+interface WarshipDot {
+  rx: number;
+  ry: number;
+  tx: number;
+  ty: number;
+  color: string;
+  hp: number;
+  maxHp: number;
+  retreating: boolean;
+  seen: number;
+}
+
+/**
  * A brief expanding ring drawn at the world-space tile the player just clicked
  * to order an expansion (or a spawn). Gives immediate visual confirmation that
  * the click registered before the server responds. Fades and grows outward like
@@ -105,11 +126,20 @@ interface Landing {
   start: number;
 }
 
-/** A blooming-and-fading ring marking an Atom Bomb's blast, centred on impact. */
+/** A blooming-and-fading ring marking a warhead's blast, centred on impact. */
 interface NukeExplosion {
   x: number;
   y: number;
+  kind: NukeKind;
   /** performance.now() timestamp when the explosion started animating. */
+  start: number;
+}
+
+/** A brief flash marking a warhead shot down by a SAM Launcher before impact. */
+interface NukeIntercept {
+  x: number;
+  y: number;
+  /** performance.now() timestamp when the interception started animating. */
   start: number;
 }
 
@@ -165,16 +195,29 @@ interface RasterRuntime {
   myPorts: number;
   myForts: number;
   myFactories: number;
+  mySilos: number;
+  myWarships: number;
+  mySams: number;
   /** The structure type the player is placing, or null when not in build mode. */
   buildMode: BuildingType | null;
-  /** True while the player is choosing where to target an Atom Bomb. */
-  nukeMode: boolean;
+  /** Which warhead the player is targeting, or null when not in nuke mode. */
+  nukeMode: NukeKind | null;
+  /** Forced route for the next expand click (B/G hotkeys), reset to "auto" after use. */
+  expandMode: RasterExpandMode;
+  /** Player id who most recently attacked us (0 = nobody yet), for Shift+R "retaliate". */
+  lastAttackedBy: number;
+  /** True while the terrain-only "alt view" (Space) is active — hides the ownership tint. */
+  showTerrainOnly: boolean;
+  /** True while the coordinate grid overlay (M) is shown. */
+  showCoordinateGrid: boolean;
+  /** Offscreen 1px-per-tile render of terrain alone (no ownership), built lazily for the alt view. */
+  terrainOnlyBase: HTMLCanvasElement | null;
   /** Tile under the cursor, for the build-mode ghost preview. Null off-canvas. */
   hoverTileX: number | null;
   hoverTileY: number | null;
   /** Structures on the map this snapshot, drawn as icon markers. */
   buildings: RasterBuilding[];
-  /** Atom Bombs in flight this snapshot, drawn as travelling icons. */
+  /** Warheads in flight this snapshot, drawn as travelling icons. */
   nukes: RasterNuke[];
   /** Tile refs currently under radioactive fallout, drawn as a lingering tint. */
   fallout: Set<number>;
@@ -207,10 +250,16 @@ interface RasterRuntime {
   ships: Map<number, ShipDot>;
   /** Monotonic counter bumped per snapshot to expire ships that have landed. */
   shipGeneration: number;
+  /** Mobile warships currently being drawn, keyed by server warship id. */
+  warships: Map<number, WarshipDot>;
+  /** Monotonic counter bumped per snapshot to expire warships that were sunk. */
+  warshipGeneration: number;
   /** In-flight landing flashes. */
   landings: Landing[];
   /** In-flight nuke explosion rings. */
   nukeExplosions: NukeExplosion[];
+  /** In-flight SAM-interception flashes. */
+  nukeIntercepts: NukeIntercept[];
   /** Active attack fronts this snapshot, drawn as on-map troop-count labels. */
   fronts: RasterAttackFront[];
   /** Active alliances as [lowId, highId] pairs, mirrored from the snapshot. */
@@ -407,8 +456,16 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     myPorts: 0,
     myForts: 0,
     myFactories: 0,
+    mySilos: 0,
+    myWarships: 0,
+    mySams: 0,
     buildMode: null,
-    nukeMode: false,
+    nukeMode: null,
+    expandMode: "auto",
+    lastAttackedBy: 0,
+    showTerrainOnly: false,
+    showCoordinateGrid: false,
+    terrainOnlyBase: null,
     hoverTileX: null,
     hoverTileY: null,
     buildings: [],
@@ -429,8 +486,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     view: { scale: 1, x: 0, y: 0, initialized: false },
     ships: new Map(),
     shipGeneration: 0,
+    warships: new Map(),
+    warshipGeneration: 0,
     landings: [],
     nukeExplosions: [],
+    nukeIntercepts: [],
     fronts: [],
     alliances: [],
     allianceRequests: [],
@@ -449,10 +509,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   const transport: RasterTransport =
     options.transport === "websocket" ? createWebSocketTransport() : createWorkerTransport();
 
-  const sendExpand = (targetX: number, targetY: number, percent: number): void => {
+  const sendExpand = (targetX: number, targetY: number, percent: number, mode: RasterExpandMode = "auto"): void => {
     const message: RasterClientMessage = {
       type: "CLIENT_RASTER_EXPAND",
-      payload: { targetX, targetY, percent },
+      payload: { targetX, targetY, percent, ...(mode !== "auto" ? { mode } : {}) },
     };
     transport.send(message);
   };
@@ -474,10 +534,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     transport.send(message);
   };
 
-  const sendNuke = (targetX: number, targetY: number): void => {
+  const sendNuke = (targetX: number, targetY: number, kind: NukeKind): void => {
     const message: RasterClientMessage = {
       type: "CLIENT_RASTER_NUKE",
-      payload: { targetX, targetY },
+      payload: { targetX, targetY, kind },
     };
     transport.send(message);
   };
@@ -498,14 +558,24 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   /** How many of `type` we currently own — feeds the geometric cost ramp. */
-  const myBuildingCount = (type: BuildingType): number =>
-    type === "city"
-      ? runtime.myCities
-      : type === "port"
-        ? runtime.myPorts
-        : type === "factory"
-          ? runtime.myFactories
-          : runtime.myForts;
+  const myBuildingCount = (type: BuildingType): number => {
+    switch (type) {
+      case "city":
+        return runtime.myCities;
+      case "port":
+        return runtime.myPorts;
+      case "factory":
+        return runtime.myFactories;
+      case "fort":
+        return runtime.myForts;
+      case "warship":
+        return runtime.myWarships;
+      case "silo":
+        return runtime.mySilos;
+      case "sam":
+        return runtime.mySams;
+    }
+  };
 
   /**
    * Build the (static) build-menu buttons once and wire each to toggle build
@@ -543,7 +613,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       if (!canBuild) return;
     }
     runtime.buildMode = type === null || runtime.buildMode === type ? null : type;
-    if (runtime.buildMode) runtime.nukeMode = false;
+    if (runtime.buildMode) {
+      runtime.nukeMode = null;
+      runtime.expandMode = "auto";
+    }
     refreshBuildMenu();
     refreshWeaponsMenu();
     renderSidebar();
@@ -574,47 +647,99 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     }
   };
 
-  /** Build the (static) Atom Bomb button once and wire it to toggle nuke mode. */
+  /** Icon glyph shown on each weapon button — distinct at a glance, like the Atom Bomb's original radiation symbol. */
+  const NUKE_GLYPH: Readonly<Record<NukeKind, string>> = {
+    atom: "\u{2622}\u{FE0E}",
+    hydrogen: "\u{269B}\u{FE0F}",
+    mirv: "\u{2604}\u{FE0F}",
+  };
+
+  /** Build the (static) weapon buttons once and wire each to toggle nuke mode for its kind. */
   const renderWeaponsMenuOnce = (): void => {
     if (ui.weaponsMenu.children.length > 0) return;
-    ui.weaponsMenu.innerHTML =
-      `<button class="build-btn" type="button" data-weapon="atom-bomb">` +
-      `<span class="icon">\u{2622}\u{FE0E}</span>` +
-      `<span class="label">Atom Bomb<span class="sub">Requires a ready Missile Silo. Click any land tile to target it.</span></span>` +
-      `<span class="cost" data-cost></span>` +
-      `</button>`;
-    ui.weaponsMenu.querySelector<HTMLButtonElement>("[data-weapon]")?.addEventListener("click", () => toggleNukeMode());
+    ui.weaponsMenu.innerHTML = NUKE_KINDS.map((kind) => {
+      const def = NUKE_DEFS[kind];
+      return (
+        `<button class="build-btn" type="button" data-weapon="${kind}">` +
+        `<span class="icon">${NUKE_GLYPH[kind]}</span>` +
+        `<span class="label">${escapeHtml(def.name)}<span class="sub">${escapeHtml(def.description)}</span></span>` +
+        `<span class="cost" data-cost></span>` +
+        `</button>`
+      );
+    }).join("");
+    for (const btn of ui.weaponsMenu.querySelectorAll<HTMLButtonElement>("[data-weapon]")) {
+      btn.addEventListener("click", () => toggleNukeMode(btn.getAttribute("data-weapon") as NukeKind));
+    }
   };
 
   /**
-   * Enter (or toggle off) nuke-targeting mode, mutually exclusive with build
-   * mode — the next map click launches an Atom Bomb instead of expanding or
-   * building. No-op while we can't act (unspawned, spectating, ended).
+   * Enter (or toggle off) nuke-targeting mode for `kind`, mutually exclusive
+   * with build mode — the next map click launches that warhead instead of
+   * expanding or building. Re-selecting the armed kind cancels it, like
+   * {@link toggleBuildMode}. No-op while we can't act (unspawned, spectating,
+   * ended).
    */
-  const toggleNukeMode = (): void => {
+  const toggleNukeMode = (kind: NukeKind): void => {
     const canAct = runtime.spawned && runtime.phase === "playing" && !runtime.matchEnded && !runtime.myEliminated;
-    if (!canAct && !runtime.nukeMode) return;
-    runtime.nukeMode = !runtime.nukeMode;
-    if (runtime.nukeMode) runtime.buildMode = null;
+    if (!canAct && runtime.nukeMode === null) return;
+    runtime.nukeMode = runtime.nukeMode === kind ? null : kind;
+    if (runtime.nukeMode) {
+      runtime.buildMode = null;
+      runtime.expandMode = "auto";
+    }
     refreshBuildMenu();
     refreshWeaponsMenu();
     renderSidebar();
-    setStatus(ui, runtime.nukeMode ? "Atom Bomb armed — click a land tile to launch." : "Atom Bomb cancelled.");
+    setStatus(
+      ui,
+      runtime.nukeMode
+        ? `${NUKE_DEFS[runtime.nukeMode].name} armed — click a land tile to launch.`
+        : "Launch cancelled.",
+    );
   };
 
-  /** Refresh the Atom Bomb button's cost, affordability and selected state. */
+  /** Refresh each weapon button's cost, affordability and selected state. */
   const refreshWeaponsMenu = (): void => {
     const canAct = runtime.spawned && runtime.phase === "playing" && !runtime.matchEnded && !runtime.myEliminated;
-    const btn = ui.weaponsMenu.querySelector<HTMLButtonElement>("[data-weapon]");
-    if (!btn) return;
-    const affordable = runtime.gold >= ATOM_BOMB_COST;
-    btn.classList.toggle("selected", runtime.nukeMode);
-    btn.disabled = !canAct;
-    const costEl = btn.querySelector<HTMLSpanElement>("[data-cost]");
-    if (costEl) {
-      costEl.textContent = `${formatCount(ATOM_BOMB_COST)}g`;
-      costEl.classList.toggle("unaffordable", !affordable);
+    for (const btn of ui.weaponsMenu.querySelectorAll<HTMLButtonElement>("[data-weapon]")) {
+      const kind = btn.getAttribute("data-weapon") as NukeKind;
+      const cost = nukeCost(kind, runtime.mySilos);
+      const affordable = runtime.gold >= cost;
+      btn.classList.toggle("selected", runtime.nukeMode === kind);
+      btn.disabled = !canAct;
+      const costEl = btn.querySelector<HTMLSpanElement>("[data-cost]");
+      if (costEl) {
+        costEl.textContent = `${formatCount(cost)}g`;
+        costEl.classList.toggle("unaffordable", !affordable);
+      }
     }
+  };
+
+  /**
+   * Arm (or toggle off) a forced route for the next expand click — OpenFront's
+   * B(oat)/G(round) hotkeys. Mutually exclusive with build/nuke mode, and with
+   * each other (arming one clears the other); re-pressing the armed mode's key
+   * cancels it back to `"auto"`. No-op while we can't act.
+   */
+  const toggleExpandMode = (mode: "land" | "sea"): void => {
+    const canAct = runtime.spawned && runtime.phase === "playing" && !runtime.matchEnded && !runtime.myEliminated;
+    if (!canAct) return;
+    runtime.expandMode = runtime.expandMode === mode ? "auto" : mode;
+    if (runtime.expandMode !== "auto") {
+      runtime.buildMode = null;
+      runtime.nukeMode = null;
+      refreshBuildMenu();
+      refreshWeaponsMenu();
+      renderSidebar();
+    }
+    setStatus(
+      ui,
+      runtime.expandMode === "sea"
+        ? "Boat attack armed — the next click always sails, even across a land border."
+        : runtime.expandMode === "land"
+          ? "Ground attack armed — the next click requires a land route."
+          : "Forced route cancelled.",
+    );
   };
 
   // Seat ourselves on the chosen map as soon as the transport is ready.
@@ -771,6 +896,41 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     }
   };
 
+  // Same reconciliation as updateShips, but a warship's own tile-space (x,y)
+  // is already itself smoothly interpolated server-side (fractional
+  // movement, not a discrete tile hop like transports), so the client eases
+  // on top of that for an extra-smooth glide; hp/maxHp/retreating are just
+  // copied straight through (no interpolation needed for a health bar).
+  const updateWarships = (warships: RasterWarship[]): void => {
+    const generation = (runtime.warshipGeneration += 1);
+    for (const w of warships) {
+      const existing = runtime.warships.get(w.warshipId);
+      if (existing) {
+        existing.tx = w.x;
+        existing.ty = w.y;
+        existing.hp = w.hp;
+        existing.maxHp = w.maxHp;
+        existing.retreating = w.retreating;
+        existing.seen = generation;
+      } else {
+        runtime.warships.set(w.warshipId, {
+          rx: w.x,
+          ry: w.y,
+          tx: w.x,
+          ty: w.y,
+          color: rgbaToCss(playerColor(w.playerId)),
+          hp: w.hp,
+          maxHp: w.maxHp,
+          retreating: w.retreating,
+          seen: generation,
+        });
+      }
+    }
+    for (const [id, dot] of runtime.warships) {
+      if (dot.seen !== generation) runtime.warships.delete(id);
+    }
+  };
+
   const spawnLandings = (crossings: RasterCrossing[]): void => {
     if (crossings.length === 0) return;
     const now = performance.now();
@@ -788,9 +948,18 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     if (detonations.length === 0) return;
     const now = performance.now();
     for (const d of detonations) {
-      runtime.nukeExplosions.push({ x: d.x, y: d.y, start: now });
+      runtime.nukeExplosions.push({ x: d.x, y: d.y, kind: d.kind, start: now });
     }
     sfx.nukeDetonate();
+  };
+
+  const spawnNukeIntercepts = (interceptions: RasterNukeInterception[]): void => {
+    if (interceptions.length === 0) return;
+    const now = performance.now();
+    for (const i of interceptions) {
+      runtime.nukeIntercepts.push({ x: i.x, y: i.y, start: now });
+    }
+    sfx.nukeIntercepted();
   };
 
   const onSnapshot = (snapshot: RasterSnapshot): void => {
@@ -852,6 +1021,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.myPorts = me?.ports ?? 0;
     runtime.myForts = me?.forts ?? 0;
     runtime.myFactories = me?.factories ?? 0;
+    runtime.mySilos = me?.silos ?? 0;
+    runtime.myWarships = me?.warships ?? 0;
+    runtime.mySams = me?.sams ?? 0;
+    runtime.lastAttackedBy = me?.lastAttackedBy ?? 0;
     runtime.buildings = snapshot.buildings ?? [];
     runtime.nukes = snapshot.nukes ?? [];
     // Fallout is sent whole each snapshot (empty string = nowhere irradiated),
@@ -887,8 +1060,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const ships = snapshot.ships ?? [];
     runtime.myShips = ships.reduce((n, s) => (s.playerId === runtime.myPlayerId ? n + 1 : n), 0);
     updateShips(ships);
+    updateWarships(snapshot.warships ?? []);
     spawnLandings(snapshot.crossings ?? []);
     spawnNukeExplosions(snapshot.nukeDetonations ?? []);
+    spawnNukeIntercepts(snapshot.nukeInterceptions ?? []);
     renderSidebar();
   };
 
@@ -1059,10 +1234,34 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     y: (ty - runtime.view.y) * runtime.view.scale,
   });
 
+  /**
+   * Ensure a terrain-only offscreen base (no ownership tint/borders) exists
+   * for the Space "alt view" — built once from a computed all-neutral owner
+   * array and cached forever, since terrain never changes after generation.
+   */
+  const ensureTerrainOnlyBase = (): HTMLCanvasElement | null => {
+    const map = runtime.map;
+    if (!map) return null;
+    let tbase = runtime.terrainOnlyBase;
+    if (!tbase || tbase.width !== map.width || tbase.height !== map.height) {
+      tbase = document.createElement("canvas");
+      tbase.width = map.width;
+      tbase.height = map.height;
+      const ctx = tbase.getContext("2d");
+      if (ctx) {
+        const image = ctx.createImageData(map.width, map.height);
+        paintRaster(map, new Uint16Array(map.size), image.data);
+        ctx.putImageData(image, 0, 0);
+      }
+      runtime.terrainOnlyBase = tbase;
+    }
+    return tbase;
+  };
+
   /** Composite the base map plus transport ships and landings onto the canvas. */
   const renderFrame = (now: number): void => {
     const map = runtime.map;
-    const base = runtime.base;
+    const base = runtime.showTerrainOnly ? ensureTerrainOnlyBase() ?? runtime.base : runtime.base;
     const ctx = ui.mapContext;
     const cw = ui.mapCanvas.width;
     const ch = ui.mapCanvas.height;
@@ -1086,6 +1285,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ctx.imageSmoothingEnabled = true;
       drawFallout(ctx, scale);
       drawBorders(ctx, scale);
+      drawCoordinateGrid(ctx, scale);
       recomputeNames(now);
       drawNames(ctx, scale);
       drawRails(ctx, scale);
@@ -1093,9 +1293,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       drawTrains(ctx, scale);
       drawTradeShips(ctx, scale);
       drawShips(ctx, scale);
+      drawWarships(ctx, scale);
       drawNukes(ctx, scale);
       drawLandings(now, ctx, scale);
       drawNukeExplosions(now, ctx, scale);
+      drawNukeIntercepts(now, ctx, scale);
       drawClickRipples(now, ctx, scale);
       drawFronts(ctx, scale);
       drawBuildGhost(ctx, scale);
@@ -1742,17 +1944,19 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   /**
-   * While nuke mode is armed, show the Atom Bomb's blast radii at the hovered
-   * tile — a dashed outer ring for the partial-destruction band, a solid inner
-   * ring for the fully-irradiated zone — so the player sees the strike's real
-   * footprint before committing.
+   * While nuke mode is armed, show the armed warhead's blast radii at the
+   * hovered tile — a dashed outer ring for the partial-destruction band, a
+   * solid inner ring for the fully-irradiated zone — so the player sees the
+   * strike's real footprint before committing. A MIRV shows one warhead's
+   * footprint at the aim point; the actual launch scatters several of them.
    */
   const drawNukeTargetPreview = (ctx: CanvasRenderingContext2D, scale: number): void => {
     if (!runtime.nukeMode || runtime.hoverTileX === null || runtime.hoverTileY === null) return;
     if (!runtime.map || !runtime.map.inBounds(runtime.hoverTileX, runtime.hoverTileY)) return;
     const c = worldToScreen(runtime.hoverTileX + 0.5, runtime.hoverTileY + 0.5);
-    const innerPx = ATOM_BOMB_INNER_RADIUS * scale;
-    const outerPx = ATOM_BOMB_OUTER_RADIUS * scale;
+    const { inner, outer } = nukeBlast(runtime.nukeMode);
+    const innerPx = inner * scale;
+    const outerPx = outer * scale;
     ctx.save();
     ctx.strokeStyle = "rgba(255, 120, 40, 0.75)";
     ctx.lineWidth = Math.max(1, scale * 0.06);
@@ -1793,7 +1997,58 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     }
   };
 
-  /** Draw each Atom Bomb in flight as a small travelling missile icon. */
+  /**
+   * Ease and draw every mobile warship: the hull icon (owner-tinted, like a
+   * transport ship), a health bar above it once damaged (OpenFront: "only
+   * warships have health bars"), and a cyan halo instead of white while
+   * retreating home to heal — a distinct "fleeing" cue from its normal/
+   * engaging look.
+   */
+  const drawWarships = (ctx: CanvasRenderingContext2D, scale: number): void => {
+    if (runtime.warships.size === 0) return;
+    const radius = Math.max(3, scale * 0.5);
+    for (const w of runtime.warships.values()) {
+      w.rx += (w.tx - w.rx) * SHIP_EASE;
+      w.ry += (w.ty - w.ry) * SHIP_EASE;
+      const p = worldToScreen(w.rx, w.ry);
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, radius + 1.5, 0, Math.PI * 2);
+      ctx.fillStyle = w.retreating ? "rgba(56, 189, 248, 0.9)" : "rgba(255, 255, 255, 0.85)";
+      ctx.fill();
+      ctx.fillStyle = w.color;
+      drawIcon(ctx, "warship", p.x, p.y, radius);
+
+      if (w.hp < w.maxHp) {
+        const barW = Math.max(14, radius * 2.2);
+        const barH = Math.max(2, scale * 0.12);
+        const barX = p.x - barW / 2;
+        const barY = p.y - radius - barH - 3;
+        const frac = Math.max(0, Math.min(1, w.hp / w.maxHp));
+        // Red at 0hp, amber at half, green at full — a smooth two-segment lerp.
+        const hue = frac < 0.5 ? frac * 2 * 45 : 45 + (frac - 0.5) * 2 * 75;
+        ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
+        ctx.fillRect(barX - 1, barY - 1, barW + 2, barH + 2);
+        ctx.fillStyle = `hsl(${hue}, 85%, 50%)`;
+        ctx.fillRect(barX, barY, barW * frac, barH);
+      }
+      ctx.restore();
+    }
+  };
+
+  /** Flight-icon fill colour per warhead kind — distinguishes them at a glance in the air. */
+  const NUKE_FLIGHT_COLOR: Readonly<Record<NukeKind, string>> = {
+    atom: "#f97316",
+    hydrogen: "#ef4444",
+    mirv: "#a855f7",
+  };
+
+  /**
+   * Draw each warhead in flight as a small travelling missile icon, tinted and
+   * glyphed by kind. A MIRV launch appears as several independent entries
+   * (one per scattered warhead), each drawn separately.
+   */
   const drawNukes = (ctx: CanvasRenderingContext2D, scale: number): void => {
     if (runtime.nukes.length === 0) return;
     const cw = ui.mapCanvas.width;
@@ -1811,30 +2066,31 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ctx.fill();
       ctx.beginPath();
       ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
-      ctx.fillStyle = "#f97316";
+      ctx.fillStyle = NUKE_FLIGHT_COLOR[nuke.kind];
       ctx.fill();
       ctx.font = `${Math.max(8, radius * 1.4)}px "Segoe UI Symbol", "Noto Sans Symbols2", system-ui, sans-serif`;
       ctx.fillStyle = "#fff";
-      ctx.fillText("\u{2622}\u{FE0E}", p.x, p.y);
+      ctx.fillText(NUKE_GLYPH[nuke.kind], p.x, p.y);
     }
     ctx.restore();
   };
 
   /**
-   * The bright flash at each Atom Bomb impact: a bloomed fireball + expanding
-   * shockwave ring over ~900ms, sized to the real blast radii. The *lasting*
-   * mark on the ground is the server-authoritative fallout tint (see
+   * The bright flash at each warhead's impact: a bloomed fireball + expanding
+   * shockwave ring over ~900ms, sized to that kind's real blast radii. The
+   * *lasting* mark on the ground is the server-authoritative fallout tint (see
    * {@link drawFallout}), not this transient flash.
    */
   const drawNukeExplosions = (now: number, ctx: CanvasRenderingContext2D, scale: number): void => {
     if (runtime.nukeExplosions.length === 0) return;
     const survivors: NukeExplosion[] = [];
-    const innerPx = ATOM_BOMB_INNER_RADIUS * scale;
-    const outerPx = ATOM_BOMB_OUTER_RADIUS * scale;
     for (const exp of runtime.nukeExplosions) {
       const t = (now - exp.start) / NUKE_EXPLOSION_DURATION_MS;
       if (t >= 1) continue;
       survivors.push(exp);
+      const { inner, outer } = nukeBlast(exp.kind);
+      const innerPx = inner * scale;
+      const outerPx = outer * scale;
       const ease = 1 - (1 - t) * (1 - t);
       const c = worldToScreen(exp.x + 0.5, exp.y + 0.5);
       ctx.save();
@@ -1855,6 +2111,71 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ctx.restore();
     }
     runtime.nukeExplosions = survivors;
+  };
+
+  /**
+   * A brief cyan "X" burst where a SAM Launcher shot down a warhead before
+   * impact — visually distinct from a real detonation's orange fireball, so
+   * the player can tell a launch was intercepted rather than landed.
+   */
+  const drawNukeIntercepts = (now: number, ctx: CanvasRenderingContext2D, scale: number): void => {
+    if (runtime.nukeIntercepts.length === 0) return;
+    const survivors: NukeIntercept[] = [];
+    const size = Math.max(4, scale * 0.35);
+    for (const hit of runtime.nukeIntercepts) {
+      const t = (now - hit.start) / NUKE_EXPLOSION_DURATION_MS;
+      if (t >= 1) continue;
+      survivors.push(hit);
+      const c = worldToScreen(hit.x + 0.5, hit.y + 0.5);
+      ctx.save();
+      ctx.globalAlpha = 1 - t;
+      ctx.strokeStyle = "rgba(56, 189, 248, 0.95)";
+      ctx.lineWidth = Math.max(1.5, scale * 0.12);
+      ctx.lineCap = "round";
+      const r = size * (0.6 + t * 0.6);
+      ctx.beginPath();
+      ctx.moveTo(c.x - r, c.y - r);
+      ctx.lineTo(c.x + r, c.y + r);
+      ctx.moveTo(c.x + r, c.y - r);
+      ctx.lineTo(c.x - r, c.y + r);
+      ctx.stroke();
+      ctx.restore();
+    }
+    runtime.nukeIntercepts = survivors;
+  };
+
+  /**
+   * Draw faint tile-boundary lines over the visible viewport when the M
+   * coordinate-grid toggle is on — OpenFront's `CoordinateGridPass`. Screen
+   * space (drawn after the camera transform is reset), and skipped when
+   * zoomed too far out for the lines to read as anything but noise.
+   */
+  const drawCoordinateGrid = (ctx: CanvasRenderingContext2D, scale: number): void => {
+    if (!runtime.showCoordinateGrid || !runtime.map || scale < 3) return;
+    const map = runtime.map;
+    const view = runtime.view;
+    const cw = ui.mapCanvas.width;
+    const ch = ui.mapCanvas.height;
+    const x0 = Math.max(0, Math.floor(view.x));
+    const y0 = Math.max(0, Math.floor(view.y));
+    const x1 = Math.min(map.width, Math.ceil(view.x + cw / scale));
+    const y1 = Math.min(map.height, Math.ceil(view.y + ch / scale));
+    ctx.save();
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.25)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let gx = x0; gx <= x1; gx += 1) {
+      const sx = Math.round((gx - view.x) * scale) + 0.5;
+      ctx.moveTo(sx, 0);
+      ctx.lineTo(sx, ch);
+    }
+    for (let gy = y0; gy <= y1; gy += 1) {
+      const sy = Math.round((gy - view.y) * scale) + 0.5;
+      ctx.moveTo(0, sy);
+      ctx.lineTo(cw, sy);
+    }
+    ctx.stroke();
+    ctx.restore();
   };
 
   /**
@@ -2213,6 +2534,239 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     return { x: (event.clientX - bounds.left) * sx, y: (event.clientY - bounds.top) * sy };
   };
 
+  // ---- Right-click radial menu (OpenFront-style contextual pie menu) ------
+  //
+  // A generic two-level pie: right-clicking a tile opens a ring of icon
+  // buttons around a centre "Attack" button; two of those (Build/Nuke) morph
+  // the ring into a sub-menu of building/weapon icons with a "Back" centre
+  // button, mirroring OpenFront's nested `RadialMenu`. Every leaf reuses the
+  // exact same send*/state functions the sidebar buttons already call,
+  // targeted at the tile that was right-clicked — so choosing e.g. a
+  // building here places it immediately, no second click required.
+
+  interface RadialItem {
+    label: string;
+    html: string;
+    className?: string;
+    disabled?: boolean;
+    onClick: () => void;
+  }
+
+  /** Which tile the currently-open radial menu targets, and which ring it's showing. */
+  let radial: { tileX: number; tileY: number; owner: number; level: "root" | "build" | "nuke" } | null = null;
+
+  const RADIAL_RADIUS = 78;
+
+  /** Close the radial menu if one is open. Returns whether it was (so callers can swallow the closing click). */
+  const closeRadialMenu = (): boolean => {
+    if (!radial) return false;
+    radial = null;
+    ui.radialMenu.classList.add("hidden");
+    ui.radialMenu.innerHTML = "";
+    return true;
+  };
+
+  /** Render `center` plus `ring` (evenly spaced) into the radial menu DOM, replacing whatever was there. */
+  const renderRadialSlices = (center: RadialItem, ring: RadialItem[]): void => {
+    ui.radialMenu.innerHTML = "";
+    const place = (item: RadialItem, dx: number, dy: number): void => {
+      const slice = document.createElement("div");
+      slice.className = "radial-slice";
+      slice.style.left = `${dx}px`;
+      slice.style.top = `${dy}px`;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `radial-btn${item.className ? ` ${item.className}` : ""}`;
+      btn.innerHTML = item.html;
+      btn.disabled = !!item.disabled;
+      btn.title = item.label;
+      btn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (item.disabled) return;
+        item.onClick();
+      });
+      slice.appendChild(btn);
+      const label = document.createElement("span");
+      label.className = "radial-label";
+      label.textContent = item.label;
+      slice.appendChild(label);
+      ui.radialMenu.appendChild(slice);
+    };
+    place(center, 0, 0);
+    // A denser ring (the Build sub-menu's 7 structures) needs more spread so
+    // neighbouring labels don't overlap; a sparse root ring stays compact.
+    const radius = Math.max(RADIAL_RADIUS, 46 + ring.length * 12);
+    ring.forEach((item, i) => {
+      const angle = (i / ring.length) * Math.PI * 2 - Math.PI / 2;
+      place(item, Math.cos(angle) * radius, Math.sin(angle) * radius);
+    });
+  };
+
+  /** Root ring: Attack (centre) + Boat/Ground/Build/Nuke + diplomacy actions for the tile's owner. */
+  const renderRadialRoot = (): void => {
+    if (!radial) return;
+    const { tileX, tileY, owner } = radial;
+    const percent = (): number => Number(ui.attackPercentInput.value);
+    const ripple = (): void => {
+      runtime.clickRipples.push({ x: tileX, y: tileY, color: runtime.myColor, start: performance.now() });
+      sfx.click();
+    };
+    const expandFrom = (mode: RasterExpandMode, routeLabel: string): void => {
+      sendExpand(tileX, tileY, percent(), mode);
+      ripple();
+      setStatus(ui, `Expanding toward (${tileX}, ${tileY})${routeLabel} with ${percent()}% of pool.`);
+      closeRadialMenu();
+    };
+
+    const center: RadialItem = {
+      label: "Attack",
+      className: "center",
+      html: `<span class="glyph">⚔️</span>`,
+      onClick: () => expandFrom("auto", ""),
+    };
+    const ring: RadialItem[] = [
+      { label: "Boat", html: `<span class="glyph">⛴️</span>`, onClick: () => expandFrom("sea", " by boat") },
+      { label: "Ground", html: `<span class="glyph">\u{1F6E1}️</span>`, onClick: () => expandFrom("land", " by land") },
+      {
+        label: "Build",
+        html: `<span class="glyph">\u{1F528}</span>`,
+        onClick: () => {
+          radial!.level = "build";
+          renderRadialBuild();
+        },
+      },
+      {
+        label: "Nuke",
+        html: `<span class="glyph">☢️</span>`,
+        onClick: () => {
+          radial!.level = "nuke";
+          renderRadialNuke();
+        },
+      },
+    ];
+
+    if (owner !== 0 && owner !== runtime.myPlayerId) {
+      const { allies, incoming } = diplomacyState();
+      if (incoming.has(owner)) {
+        ring.push({
+          label: "Accept",
+          className: "ally-action",
+          html: `<span class="glyph">✓</span>`,
+          onClick: () => { sendAllyRespond(owner, true); closeRadialMenu(); },
+        });
+        ring.push({
+          label: "Decline",
+          className: "break-action",
+          html: `<span class="glyph">✕</span>`,
+          onClick: () => { sendAllyRespond(owner, false); closeRadialMenu(); },
+        });
+      } else if (allies.has(owner)) {
+        ring.push({
+          label: "Break ally",
+          className: "break-action",
+          html: `<span class="glyph">\u{1F494}</span>`,
+          onClick: () => { sendAllyBreak(owner); closeRadialMenu(); },
+        });
+      } else {
+        ring.push({
+          label: "Ally",
+          className: "ally-action",
+          html: `<span class="glyph">\u{1F91D}</span>`,
+          onClick: () => { sendAllyPropose(owner); closeRadialMenu(); },
+        });
+      }
+    }
+    renderRadialSlices(center, ring);
+  };
+
+  /** Build sub-ring: every building type, placed immediately at the right-clicked tile. */
+  const renderRadialBuild = (): void => {
+    if (!radial) return;
+    const { tileX, tileY } = radial;
+    const center: RadialItem = {
+      label: "Back",
+      className: "center",
+      html: `<span class="glyph">←</span>`,
+      onClick: () => { radial!.level = "root"; renderRadialRoot(); },
+    };
+    const ring: RadialItem[] = BUILDING_TYPES.map((type) => {
+      const def = BUILDING_DEFS[type];
+      const owned = costCounterTypes(type).reduce((s, t) => s + myBuildingCount(t), 0);
+      const cost = buildingCost(type, owned);
+      return {
+        label: `${def.name} (${formatCount(cost)}g)`,
+        html: iconSvgMarkup(type, 22),
+        disabled: runtime.gold < cost,
+        onClick: () => {
+          sendBuild(tileX, tileY, type);
+          runtime.clickRipples.push({ x: tileX, y: tileY, color: runtime.myColor, start: performance.now() });
+          sfx.click();
+          setStatus(ui, `Building ${def.name} at (${tileX}, ${tileY})…`);
+          closeRadialMenu();
+        },
+      };
+    });
+    renderRadialSlices(center, ring);
+  };
+
+  /** Nuke sub-ring: every warhead kind, launched immediately at the right-clicked tile. */
+  const renderRadialNuke = (): void => {
+    if (!radial) return;
+    const { tileX, tileY } = radial;
+    const center: RadialItem = {
+      label: "Back",
+      className: "center",
+      html: `<span class="glyph">←</span>`,
+      onClick: () => { radial!.level = "root"; renderRadialRoot(); },
+    };
+    const ring: RadialItem[] = NUKE_KINDS.map((kind) => {
+      const def = NUKE_DEFS[kind];
+      const cost = nukeCost(kind, runtime.mySilos);
+      return {
+        label: `${def.name} (${formatCount(cost)}g)`,
+        html: `<span class="glyph">${NUKE_GLYPH[kind]}</span>`,
+        disabled: runtime.gold < cost,
+        onClick: () => {
+          sendNuke(tileX, tileY, kind);
+          runtime.clickRipples.push({ x: tileX, y: tileY, color: "rgba(255,120,40,0.9)", start: performance.now() });
+          sfx.nukeLaunch();
+          setStatus(ui, `${def.name} launched at (${tileX}, ${tileY}).`);
+          closeRadialMenu();
+        },
+      };
+    });
+    renderRadialSlices(center, ring);
+  };
+
+  /** Right-click opens the radial menu on the clicked tile, suppressing the browser's own context menu. */
+  ui.mapCanvas.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    if (!runtime.map || !runtime.owner) return;
+    const canAct = runtime.spawned && runtime.phase === "playing" && !runtime.matchEnded && !runtime.myEliminated;
+    if (!canAct) return;
+    const { x, y } = toCanvasPixels(event);
+    const tileX = Math.floor(runtime.view.x + x / runtime.view.scale);
+    const tileY = Math.floor(runtime.view.y + y / runtime.view.scale);
+    if (!runtime.map.inBounds(tileX, tileY)) return;
+    radial = { tileX, tileY, owner: runtime.owner[runtime.map.ref(tileX, tileY)], level: "root" };
+    ui.radialMenu.style.left = `${event.clientX}px`;
+    ui.radialMenu.style.top = `${event.clientY}px`;
+    ui.radialMenu.classList.remove("hidden");
+    renderRadialRoot();
+  });
+
+  // Dismiss the radial menu on any click elsewhere — the map canvas handles
+  // its own dismissal (so the same click that closes it doesn't also fire an
+  // expand), and clicks on the menu's own buttons are handled by their click
+  // listeners, so both are excluded here.
+  document.addEventListener("pointerdown", (event) => {
+    if (!radial) return;
+    const target = event.target;
+    if (target === ui.mapCanvas) return;
+    if (target instanceof Node && ui.radialMenu.contains(target)) return;
+    closeRadialMenu();
+  });
+
   // Drag-to-pan, with a small movement threshold separating a pan from a click
   // so a stationary press still registers as an expand command.
   let dragging = false;
@@ -2223,6 +2777,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   let downY = 0;
 
   ui.mapCanvas.addEventListener("pointerdown", (event) => {
+    // Only the primary (left) button drives pan/expand; the right button is
+    // reserved for the radial menu's own `contextmenu` handler below.
+    if (event.button !== 0) return;
+    if (closeRadialMenu()) return;
     dragging = true;
     moved = false;
     lastX = downX = event.clientX;
@@ -2289,14 +2847,15 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     }
 
     // Nuke mode takes priority over build mode (they're mutually exclusive
-    // anyway) — a click launches the armed Atom Bomb at the clicked tile.
+    // anyway) — a click launches the armed warhead at the clicked tile.
     if (runtime.nukeMode) {
-      sendNuke(tileX, tileY);
+      const kind = runtime.nukeMode;
+      sendNuke(tileX, tileY, kind);
       runtime.clickRipples.push({ x: tileX, y: tileY, color: "rgba(255,120,40,0.9)", start: performance.now() });
       sfx.nukeLaunch();
-      runtime.nukeMode = false;
+      runtime.nukeMode = null;
       refreshWeaponsMenu();
-      setStatus(ui, `Atom Bomb launched at (${tileX}, ${tileY}).`);
+      setStatus(ui, `${NUKE_DEFS[kind].name} launched at (${tileX}, ${tileY}).`);
       return;
     }
 
@@ -2311,10 +2870,13 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     }
 
     const percent = Number(ui.attackPercentInput.value);
-    sendExpand(tileX, tileY, percent);
+    const mode = runtime.expandMode;
+    sendExpand(tileX, tileY, percent, mode);
+    runtime.expandMode = "auto";
     runtime.clickRipples.push({ x: tileX, y: tileY, color: runtime.myColor, start: performance.now() });
     sfx.click();
-    setStatus(ui, `Expanding toward (${tileX}, ${tileY}) with ${percent}% of pool.`);
+    const routeLabel = mode === "sea" ? " by boat" : mode === "land" ? " by land" : "";
+    setStatus(ui, `Expanding toward (${tileX}, ${tileY})${routeLabel} with ${percent}% of pool.`);
   };
 
   ui.mapCanvas.addEventListener("pointerup", endDrag);
@@ -2341,6 +2903,70 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   );
 
   // ---- Keyboard shortcuts (OpenFront-style) --------------------------------
+
+  /** Owner id of the tile currently under the cursor, or null off-canvas/before terrain loads. */
+  const hoveredOwner = (): number | null => {
+    const map = runtime.map;
+    const owner = runtime.owner;
+    if (!map || !owner || runtime.hoverTileX === null || runtime.hoverTileY === null) return null;
+    if (!map.inBounds(runtime.hoverTileX, runtime.hoverTileY)) return null;
+    return owner[map.ref(runtime.hoverTileX, runtime.hoverTileY)];
+  };
+
+  const playerName = (id: number): string => runtime.players.find((p) => p.playerId === id)?.name ?? `Player ${id}`;
+
+  /** K hotkey: propose an alliance with whoever's territory is under the cursor. */
+  const proposeAllianceAtCursor = (): void => {
+    const target = hoveredOwner();
+    if (target === null || target === 0 || target === runtime.myPlayerId) {
+      setStatus(ui, "Hover a rival's territory, then press K to propose an alliance.");
+      return;
+    }
+    const { allies, outgoing } = diplomacyState();
+    if (allies.has(target)) { setStatus(ui, `Already allied with ${playerName(target)}.`); return; }
+    if (outgoing.has(target)) { setStatus(ui, `Already offered an alliance to ${playerName(target)}.`); return; }
+    sendAllyPropose(target);
+    setStatus(ui, `Alliance offered to ${playerName(target)}.`);
+  };
+
+  /** L hotkey: break the alliance with whoever's territory is under the cursor. */
+  const breakAllianceAtCursor = (): void => {
+    const target = hoveredOwner();
+    if (target === null || target === 0) {
+      setStatus(ui, "Hover an ally's territory, then press L to break the alliance.");
+      return;
+    }
+    const { allies } = diplomacyState();
+    if (!allies.has(target)) { setStatus(ui, `Not allied with ${playerName(target)}.`); return; }
+    sendAllyBreak(target);
+    setStatus(ui, `Alliance with ${playerName(target)} broken.`);
+  };
+
+  /**
+   * Shift+R hotkey: expand toward whoever last attacked us — OpenFront's
+   * "retaliate". Scans the owner raster for any tile the attacker still
+   * holds (a one-off O(map size) scan on a rare, user-triggered keypress,
+   * not a per-frame cost) since the client has no per-player tile index.
+   */
+  const retaliate = (): void => {
+    const map = runtime.map;
+    const owner = runtime.owner;
+    if (!map || !owner || runtime.matchEnded || runtime.myEliminated || !runtime.spawned) return;
+    const attackerId = runtime.lastAttackedBy;
+    if (!attackerId) { setStatus(ui, "No one has attacked you yet."); return; }
+    let ref = -1;
+    for (let i = 0; i < owner.length; i += 1) {
+      if (owner[i] === attackerId) { ref = i; break; }
+    }
+    if (ref < 0) { setStatus(ui, `${playerName(attackerId)} no longer holds any territory.`); return; }
+    const tx = map.x(ref);
+    const ty = map.y(ref);
+    const percent = Number(ui.attackPercentInput.value);
+    sendExpand(tx, ty, percent);
+    runtime.clickRipples.push({ x: tx, y: ty, color: runtime.myColor, start: performance.now() });
+    sfx.click();
+    setStatus(ui, `Retaliating against ${playerName(attackerId)} with ${percent}% of pool.`);
+  };
 
   /** Zoom about the viewport centre, mirroring the wheel-zoom anchoring. */
   const zoomBy = (factor: number): void => {
@@ -2387,11 +3013,23 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
     if (event.metaKey || event.ctrlKey || event.altKey) return;
 
-    // 1..N select/toggle the matching build type (menu order).
-    if (event.key >= "1" && event.key <= String(BUILDING_TYPES.length)) {
-      toggleBuildMode(BUILDING_TYPES[Number(event.key) - 1]);
-      event.preventDefault();
-      return;
+    // 1..0 select/toggle a buildable/launchable item — OpenFront binds every
+    // structure and weapon across the digit row. Building types fill 1..N
+    // first (menu order); any digits left over continue into the weapon
+    // kinds (so with 7 building types, 8/9/0 arm Atom/Hydrogen/MIRV).
+    if (/^[0-9]$/.test(event.key)) {
+      const slot = event.key === "0" ? 9 : Number(event.key) - 1;
+      if (slot < BUILDING_TYPES.length) {
+        toggleBuildMode(BUILDING_TYPES[slot]);
+        event.preventDefault();
+        return;
+      }
+      const weaponIndex = slot - BUILDING_TYPES.length;
+      if (weaponIndex < NUKE_KINDS.length) {
+        toggleNukeMode(NUKE_KINDS[weaponIndex]);
+        event.preventDefault();
+        return;
+      }
     }
 
     let handled = true;
@@ -2399,10 +3037,19 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     switch (event.key.toLowerCase()) {
       case "escape":
         toggleBuildMode(null);
-        if (runtime.nukeMode) toggleNukeMode();
+        if (runtime.nukeMode) toggleNukeMode(runtime.nukeMode);
+        runtime.expandMode = "auto";
+        closeRadialMenu();
         break;
       case "t": nudgeAttackRatio(-10); break; // OpenFront: attack ratio down
       case "y": nudgeAttackRatio(10); break; //  and up
+      case "b": toggleExpandMode("sea"); break; // OpenFront: force a boat attack
+      case "g": toggleExpandMode("land"); break; //          force a ground attack
+      case "k": proposeAllianceAtCursor(); break; // OpenFront: request alliance
+      case "l": breakAllianceAtCursor(); break; //             break alliance
+      case "r": if (event.shiftKey) retaliate(); else handled = false; break; // Shift+R: retaliate
+      case " ": runtime.showTerrainOnly = !runtime.showTerrainOnly; break; // alt terrain view
+      case "m": runtime.showCoordinateGrid = !runtime.showCoordinateGrid; break; // coordinate grid
       case "q": zoomBy(1 / 1.2); break; // zoom out
       case "e": zoomBy(1.2); break; //     zoom in
       case "c": centerCamera(); break; // centre on home

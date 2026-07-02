@@ -5,7 +5,17 @@ import type { GameMap } from "../src/Core/GameMap.js";
 import { NEUTRAL_PLAYER, TerritoryGrid } from "../src/Core/TerritoryGrid.js";
 import { RasterConflict } from "../src/Core/RasterConflict.js";
 import { RasterGameSession } from "../src/Server/RasterGameSession.js";
-import { ATOM_BOMB_COST, ATOM_BOMB_INNER_RADIUS } from "../src/Core/nukes.js";
+import {
+  ATOM_BOMB_COST,
+  ATOM_BOMB_INNER_RADIUS,
+  HYDROGEN_BOMB_COST,
+  MIRV_BASE_COST,
+  MIRV_COST_PER_SILO,
+  MIRV_SCATTER_RADIUS,
+  MIRV_WARHEAD_COUNT,
+  nukeBlast,
+  nukeCost,
+} from "../src/Core/nukes.js";
 import { BUILDING_CONSTRUCTION_TICKS, BUILDING_DEFS } from "../src/Core/buildings.js";
 import { IDENTITY_MODIFIERS } from "../src/Core/playerModifiers.js";
 import type { RasterServerMessage, RasterSnapshot } from "../src/Core/types.js";
@@ -331,4 +341,207 @@ test("nuking an ally severs the alliance and marks the nuker a traitor", () => {
     snap.recentEvents.some((line) => line.includes("nuked their ally")),
     "the betrayal is recorded in the event log",
   );
+});
+
+// --- Hydrogen Bomb / MIRV: pure formulas ------------------------------------
+
+test("nukeCost matches each warhead tier's documented formula", () => {
+  assert.equal(nukeCost("atom", 0), ATOM_BOMB_COST);
+  assert.equal(nukeCost("atom", 7), ATOM_BOMB_COST, "atom cost doesn't scale with silos owned");
+  assert.equal(nukeCost("hydrogen", 3), HYDROGEN_BOMB_COST);
+  assert.equal(nukeCost("mirv", 0), MIRV_BASE_COST);
+  assert.equal(nukeCost("mirv", 1), MIRV_BASE_COST + MIRV_COST_PER_SILO);
+  assert.equal(nukeCost("mirv", 4), MIRV_BASE_COST + 4 * MIRV_COST_PER_SILO);
+});
+
+test("nukeBlast gives the Hydrogen Bomb a bigger footprint than the Atom Bomb, and a MIRV warhead the Atom Bomb's own", () => {
+  const atom = nukeBlast("atom");
+  const hydrogen = nukeBlast("hydrogen");
+  const mirv = nukeBlast("mirv");
+  assert.ok(hydrogen.inner > atom.inner && hydrogen.outer > atom.outer, "Hydrogen Bomb blasts a larger area");
+  assert.deepEqual(mirv, atom, "a MIRV's individual warheads are atom-sized");
+});
+
+// --- MIRV: engine-level warhead split ---------------------------------------
+
+test("launchNuke with kind 'mirv' splits into MIRV_WARHEAD_COUNT independent, scattered warheads", () => {
+  const grid = landSquare(200);
+  grid.addPlayer(1, 1);
+  claimBlock(grid, 1, 10, 10, 2);
+  const conflict = new RasterConflict(grid);
+
+  conflict.launchNuke(1, 10, 10, 100, 100, "mirv");
+  const warheads = conflict.activeNukes();
+  assert.equal(warheads.length, MIRV_WARHEAD_COUNT, "the launch produced one flight per warhead");
+
+  const seenIds = new Set<number>();
+  for (const w of warheads) {
+    assert.equal(w.kind, "mirv");
+    assert.equal(w.attacker, 1);
+    seenIds.add(w.id);
+    const dx = w.toX - 100;
+    const dy = w.toY - 100;
+    assert.ok(
+      Math.sqrt(dx * dx + dy * dy) <= MIRV_SCATTER_RADIUS + 0.001,
+      "each warhead's aim point lands within the scatter radius of the target",
+    );
+  }
+  assert.equal(seenIds.size, MIRV_WARHEAD_COUNT, "every warhead has a distinct id");
+});
+
+test("a MIRV's scattered warheads can detonate on separate ticks, each with the Atom Bomb's blast", () => {
+  const grid = landSquare(220);
+  grid.addPlayer(1, 1);
+  grid.addPlayer(2, 1);
+  claimBlock(grid, 2, 150, 150, 60);
+  const conflict = new RasterConflict(grid);
+
+  conflict.launchNuke(1, 0, 0, 150, 150, "mirv");
+  let detonations = 0;
+  for (let i = 0; i < 120 && detonations < MIRV_WARHEAD_COUNT; i += 1) {
+    const result = conflict.processTick();
+    for (const d of result.nukeDetonations) {
+      assert.equal(d.kind, "mirv");
+      detonations += 1;
+    }
+  }
+  assert.equal(detonations, MIRV_WARHEAD_COUNT, "every scattered warhead eventually detonates");
+});
+
+// --- SAM Launcher: building + interception ----------------------------------
+
+test("a SAM Launcher never intercepts its own owner's warhead", () => {
+  const grid = landSquare(100);
+  grid.addPlayer(1, 1);
+  const samRef = grid.map.ref(50, 50);
+  grid.claim(samRef, 1);
+  grid.placeBuilding(samRef, "sam");
+  const conflict = new RasterConflict(grid);
+
+  conflict.launchNuke(1, 0, 0, 50, 50, "atom");
+  let result;
+  for (let i = 0; i < 60; i += 1) {
+    result = conflict.processTick();
+    if (result.nukeDetonations.length > 0 || result.nukeInterceptions.length > 0) break;
+  }
+  assert.equal(result!.nukeInterceptions.length, 0, "an own SAM never engages its owner's warhead");
+  assert.equal(result!.nukeDetonations.length, 1, "the warhead detonates unimpeded");
+});
+
+test("a hostile SAM Launcher can intercept an incoming warhead before it detonates", () => {
+  // Deterministic hashing means a single trial's hit/miss depends on the exact
+  // (SAM tile, warhead id) pair; run several independent trials (varying the
+  // SAM's position, which varies the hash) so the test isn't flaky on an
+  // unlucky draw while still proving interception actually happens.
+  let intercepted = 0;
+  let resolved = 0;
+  for (let trial = 0; trial < 10; trial += 1) {
+    const grid = landSquare(100);
+    grid.addPlayer(1, 1); // attacker
+    grid.addPlayer(2, 1); // SAM owner
+    const samX = 40 + trial;
+    const samY = 50;
+    const samRef = grid.map.ref(samX, samY);
+    grid.claim(samRef, 2);
+    grid.placeBuilding(samRef, "sam");
+    const conflict = new RasterConflict(grid);
+
+    conflict.launchNuke(1, 0, 0, samX, samY, "atom");
+    for (let i = 0; i < 60; i += 1) {
+      const result = conflict.processTick();
+      if (result.nukeInterceptions.length > 0) {
+        intercepted += 1;
+        resolved += 1;
+        break;
+      }
+      if (result.nukeDetonations.length > 0) {
+        resolved += 1;
+        break;
+      }
+    }
+  }
+  assert.equal(resolved, 10, "every trial resolved one way or the other");
+  assert.ok(intercepted > 0, "at least one of 10 trials was shot down by the SAM");
+});
+
+test("a SAM Launcher's cooldown is consumed on its first attempt, letting a second warhead through unimpeded", () => {
+  const grid = landSquare(100);
+  grid.addPlayer(1, 1); // attacker
+  grid.addPlayer(2, 1); // SAM owner
+  const samRef = grid.map.ref(50, 50);
+  grid.claim(samRef, 2);
+  grid.placeBuilding(samRef, "sam");
+  const conflict = new RasterConflict(grid);
+
+  conflict.launchNuke(1, 0, 0, 50, 50, "atom");
+  let firstResolved = false;
+  for (let i = 0; i < 60 && !firstResolved; i += 1) {
+    const result = conflict.processTick();
+    firstResolved = result.nukeDetonations.length > 0 || result.nukeInterceptions.length > 0;
+  }
+  assert.ok(firstResolved, "the first warhead resolves (hit or miss)");
+
+  conflict.launchNuke(1, 0, 0, 50, 50, "atom");
+  let secondDetonated = false;
+  for (let i = 0; i < 60 && !secondDetonated; i += 1) {
+    const result = conflict.processTick();
+    assert.equal(result.nukeInterceptions.length, 0, "the SAM is still reloading and can't engage the second warhead");
+    if (result.nukeDetonations.length > 0) secondDetonated = true;
+  }
+  assert.ok(secondDetonated, "the second warhead detonates unimpeded while the SAM reloads");
+});
+
+// --- RasterGameSession: Hydrogen Bomb / MIRV launch flow --------------------
+
+test("a Hydrogen Bomb launch spends HYDROGEN_BOMB_COST and is recorded by name", () => {
+  const { session, messages, origin } = stageSiloSession(31);
+  const grid = session.peekGrid();
+  grid.setGold(1, 20_000_000);
+  session.queueBuild("human", { targetX: origin.x, targetY: origin.y, building: "silo" });
+  session.tick();
+  for (let i = 0; i < SILO_READY_TICKS; i += 1) session.tick();
+
+  const goldBeforeLaunch = grid.goldOf(1);
+  const targetX = Math.min(session.peekMap().width - 5, origin.x + 50);
+  session.queueNuke("human", { targetX, targetY: origin.y, kind: "hydrogen" });
+  session.tick();
+
+  assert.ok(!rejections(messages).slice(-1).includes("NO_SILO_READY"));
+  assert.ok(grid.goldOf(1) <= goldBeforeLaunch - HYDROGEN_BOMB_COST + 1000, "the Hydrogen Bomb's gold cost was spent");
+  const snap = lastSnapshot(messages);
+  assert.ok(snap.recentEvents.some((line) => line.includes("launched a Hydrogen Bomb")));
+});
+
+test("a MIRV launch's cost scales with how many silos the attacker owns", () => {
+  const { session, messages, origin } = stageSiloSession(32);
+  const grid = session.peekGrid();
+  grid.setGold(1, 100_000_000);
+  session.queueBuild("human", { targetX: origin.x, targetY: origin.y, building: "silo" });
+  session.tick();
+  for (let i = 0; i < SILO_READY_TICKS; i += 1) session.tick();
+
+  // A second silo, for the cost formula's silo count: claimed and placed
+  // directly (the human owns only their single spawn tile in this bare
+  // session, with no expansion, so a second build order via the normal
+  // click flow would have nowhere legal to land).
+  const map = session.peekMap();
+  const secondSiloX = Math.min(map.width - 2, origin.x + 30);
+  const secondSiloRef = map.ref(secondSiloX, origin.y);
+  grid.claim(secondSiloRef, 1);
+  grid.placeBuilding(secondSiloRef, "silo");
+  assert.equal(grid.buildingCountOf(1, "silo"), 2, "both silos are placed");
+
+  const goldBeforeLaunch = grid.goldOf(1);
+  const targetX = Math.min(session.peekMap().width - 5, origin.x + 60);
+  session.queueNuke("human", { targetX, targetY: origin.y, kind: "mirv" });
+  session.tick();
+
+  assert.ok(!rejections(messages).slice(-1).includes("NO_SILO_READY"));
+  const expectedCost = MIRV_BASE_COST + 2 * MIRV_COST_PER_SILO;
+  assert.ok(
+    grid.goldOf(1) <= goldBeforeLaunch - expectedCost + 1000,
+    "the MIRV's gold cost reflects both owned silos",
+  );
+  const snap = lastSnapshot(messages);
+  assert.ok(snap.recentEvents.some((line) => line.includes("launched a MIRV")));
 });

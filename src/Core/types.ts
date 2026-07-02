@@ -21,6 +21,7 @@ import type {
   RasterSpawnClientMessage,
 } from "./messages.js";
 import type { BuildingType } from "./buildings.js";
+import type { NukeKind } from "./nukes.js";
 
 /** An active alliance as a canonical `[lowId, highId]` player-id pair. */
 export type RasterAlliancePair = [number, number];
@@ -56,8 +57,20 @@ export interface RasterPlayerInfo {
   forts: number;
   /** Factories this player owns (railroad + train economy). */
   factories: number;
+  /** Missile Silos this player owns (nuke launch platforms). */
+  silos: number;
+  /** Warships this player owns (coastal transport interdiction). */
+  warships: number;
+  /** SAM Launchers this player owns (warhead interception). */
+  sams: number;
   /** Number of capturable tiles currently owned. */
   tiles: number;
+  /**
+   * Player id who most recently launched a land or sea attack against this
+   * player (0 if nobody has yet). Public — combat is visible on the map
+   * anyway — and drives the client's Shift+R "retaliate" hotkey.
+   */
+  lastAttackedBy: number;
   /**
    * Troops generated per second at the current territory size — what the
    * leaderboard renders as "(+N/s)". Server-computed from tile count so every
@@ -107,9 +120,27 @@ export interface RasterShip {
 }
 
 /**
- * An Atom Bomb in flight this snapshot: launched by `playerId`, currently at
+ * A mobile warship this snapshot: belonging to `playerId`, at fractional tile
+ * position (`x`,`y`), with its current/max HP for the client's health bar
+ * (drawn only while `hp < maxHp`) and whether it's currently retreating home
+ * to heal instead of pressing an attack.
+ */
+export interface RasterWarship {
+  warshipId: number;
+  playerId: number;
+  x: number;
+  y: number;
+  hp: number;
+  maxHp: number;
+  retreating: boolean;
+}
+
+/**
+ * A warhead in flight this snapshot: launched by `playerId`, currently at
  * (`x`,`y`) en route to (`toX`,`toY`). Sent every snapshot while airborne so
- * the client can draw it travelling toward its target.
+ * the client can draw it travelling toward its target. A MIRV launch appears
+ * as several independent entries (one per scattered warhead), each with its
+ * own `nukeId`.
  */
 export interface RasterNuke {
   nukeId: number;
@@ -118,14 +149,28 @@ export interface RasterNuke {
   y: number;
   toX: number;
   toY: number;
+  kind: NukeKind;
 }
 
 /**
- * An Atom Bomb detonation resolved this tick, at (`x`,`y`) — the client flashes
+ * A warhead detonation resolved this tick, at (`x`,`y`) — the client flashes
  * an explosion there, same idea as {@link RasterCrossing}'s landing flash.
  */
 export interface RasterNukeDetonation {
   playerId: number;
+  x: number;
+  y: number;
+  kind: NukeKind;
+}
+
+/**
+ * A warhead shot down by a SAM Launcher this tick, at (`x`,`y`) — the client
+ * plays a distinct interception flash/sound instead of a full blast.
+ */
+export interface RasterNukeInterception {
+  playerId: number;
+  /** Owner of the SAM Launcher that intercepted the warhead. */
+  defenderId: number;
   x: number;
   y: number;
 }
@@ -256,10 +301,14 @@ export interface RasterSnapshot {
   crossings: RasterCrossing[];
   /** Transport ships currently in flight (empty when none are at sea). */
   ships: RasterShip[];
-  /** Atom Bombs currently in flight (empty when none are airborne). */
+  /** Live mobile warships (empty until one finishes construction). */
+  warships: RasterWarship[];
+  /** Warheads currently in flight (empty when none are airborne). */
   nukes: RasterNuke[];
-  /** Atom Bomb detonations resolved this tick (empty on most ticks). */
+  /** Warhead detonations resolved this tick (empty on most ticks). */
   nukeDetonations: RasterNukeDetonation[];
+  /** Warheads shot down by a SAM Launcher this tick (empty on most ticks). */
+  nukeInterceptions: RasterNukeInterception[];
   /**
    * Base64-packed little-endian `Uint32Array` of tile indices currently under
    * radioactive fallout (nuked ground that recolours and can't be captured
@@ -315,6 +364,17 @@ export type RasterRejectReason =
   /** No owned Missile Silo is off cooldown to launch from. */
   | "NO_SILO_READY";
 
+/**
+ * How an expand order routes to its target, mirroring OpenFront's B(oat)/G(round)
+ * hotkeys: `"auto"` (default) picks a land push across a shared border or a
+ * transport ship otherwise, exactly as before; `"land"` requires a land route
+ * and rejects if none exists (even if a sea crossing would reach it); `"sea"`
+ * always launches a transport ship, even where a land border also exists —
+ * letting a player flank behind a defended frontier instead of grinding
+ * through it.
+ */
+export type RasterExpandMode = "auto" | "land" | "sea";
+
 /** Sent by the client to expand its border toward a clicked tile. */
 export interface RasterExpandIntent {
   /** Tile column (0..width-1) the player clicked. */
@@ -323,6 +383,8 @@ export interface RasterExpandIntent {
   targetY: number;
   /** Percentage of the player's pool to commit (1..100). */
   percent: number;
+  /** Forces a land or sea route instead of the default automatic choice. */
+  mode?: RasterExpandMode;
 }
 
 /** Sent by the client to build a structure on a tile it owns. */
@@ -335,12 +397,14 @@ export interface RasterBuildIntent {
   building: BuildingType;
 }
 
-/** Sent by the client to launch an Atom Bomb from a ready Missile Silo. */
+/** Sent by the client to launch a warhead from a ready Missile Silo. */
 export interface RasterNukeIntent {
   /** Tile column (0..width-1) of the target. */
   targetX: number;
   /** Tile row (0..height-1) of the target. */
   targetY: number;
+  /** Which warhead to launch. Defaults to `"atom"` when omitted. */
+  kind?: NukeKind;
 }
 
 export interface RasterActionRejectedEvent {
