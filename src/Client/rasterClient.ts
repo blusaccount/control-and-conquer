@@ -7,6 +7,7 @@ import type {
   RasterBuilding,
   RasterClientMessage,
   RasterCrossing,
+  RasterExpandMode,
   RasterMatchEndedPayload,
   RasterMatchPhase,
   RasterNuke,
@@ -182,6 +183,16 @@ interface RasterRuntime {
   buildMode: BuildingType | null;
   /** Which warhead the player is targeting, or null when not in nuke mode. */
   nukeMode: NukeKind | null;
+  /** Forced route for the next expand click (B/G hotkeys), reset to "auto" after use. */
+  expandMode: RasterExpandMode;
+  /** Player id who most recently attacked us (0 = nobody yet), for Shift+R "retaliate". */
+  lastAttackedBy: number;
+  /** True while the terrain-only "alt view" (Space) is active — hides the ownership tint. */
+  showTerrainOnly: boolean;
+  /** True while the coordinate grid overlay (M) is shown. */
+  showCoordinateGrid: boolean;
+  /** Offscreen 1px-per-tile render of terrain alone (no ownership), built lazily for the alt view. */
+  terrainOnlyBase: HTMLCanvasElement | null;
   /** Tile under the cursor, for the build-mode ghost preview. Null off-canvas. */
   hoverTileX: number | null;
   hoverTileY: number | null;
@@ -427,6 +438,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     mySams: 0,
     buildMode: null,
     nukeMode: null,
+    expandMode: "auto",
+    lastAttackedBy: 0,
+    showTerrainOnly: false,
+    showCoordinateGrid: false,
+    terrainOnlyBase: null,
     hoverTileX: null,
     hoverTileY: null,
     buildings: [],
@@ -468,10 +484,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   const transport: RasterTransport =
     options.transport === "websocket" ? createWebSocketTransport() : createWorkerTransport();
 
-  const sendExpand = (targetX: number, targetY: number, percent: number): void => {
+  const sendExpand = (targetX: number, targetY: number, percent: number, mode: RasterExpandMode = "auto"): void => {
     const message: RasterClientMessage = {
       type: "CLIENT_RASTER_EXPAND",
-      payload: { targetX, targetY, percent },
+      payload: { targetX, targetY, percent, ...(mode !== "auto" ? { mode } : {}) },
     };
     transport.send(message);
   };
@@ -572,7 +588,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       if (!canBuild) return;
     }
     runtime.buildMode = type === null || runtime.buildMode === type ? null : type;
-    if (runtime.buildMode) runtime.nukeMode = null;
+    if (runtime.buildMode) {
+      runtime.nukeMode = null;
+      runtime.expandMode = "auto";
+    }
     refreshBuildMenu();
     refreshWeaponsMenu();
     renderSidebar();
@@ -639,7 +658,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const canAct = runtime.spawned && runtime.phase === "playing" && !runtime.matchEnded && !runtime.myEliminated;
     if (!canAct && runtime.nukeMode === null) return;
     runtime.nukeMode = runtime.nukeMode === kind ? null : kind;
-    if (runtime.nukeMode) runtime.buildMode = null;
+    if (runtime.nukeMode) {
+      runtime.buildMode = null;
+      runtime.expandMode = "auto";
+    }
     refreshBuildMenu();
     refreshWeaponsMenu();
     renderSidebar();
@@ -666,6 +688,33 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         costEl.classList.toggle("unaffordable", !affordable);
       }
     }
+  };
+
+  /**
+   * Arm (or toggle off) a forced route for the next expand click — OpenFront's
+   * B(oat)/G(round) hotkeys. Mutually exclusive with build/nuke mode, and with
+   * each other (arming one clears the other); re-pressing the armed mode's key
+   * cancels it back to `"auto"`. No-op while we can't act.
+   */
+  const toggleExpandMode = (mode: "land" | "sea"): void => {
+    const canAct = runtime.spawned && runtime.phase === "playing" && !runtime.matchEnded && !runtime.myEliminated;
+    if (!canAct) return;
+    runtime.expandMode = runtime.expandMode === mode ? "auto" : mode;
+    if (runtime.expandMode !== "auto") {
+      runtime.buildMode = null;
+      runtime.nukeMode = null;
+      refreshBuildMenu();
+      refreshWeaponsMenu();
+      renderSidebar();
+    }
+    setStatus(
+      ui,
+      runtime.expandMode === "sea"
+        ? "Boat attack armed — the next click always sails, even across a land border."
+        : runtime.expandMode === "land"
+          ? "Ground attack armed — the next click requires a land route."
+          : "Forced route cancelled.",
+    );
   };
 
   // Seat ourselves on the chosen map as soon as the transport is ready.
@@ -915,6 +964,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.mySilos = me?.silos ?? 0;
     runtime.myWarships = me?.warships ?? 0;
     runtime.mySams = me?.sams ?? 0;
+    runtime.lastAttackedBy = me?.lastAttackedBy ?? 0;
     runtime.buildings = snapshot.buildings ?? [];
     runtime.nukes = snapshot.nukes ?? [];
     // Fallout is sent whole each snapshot (empty string = nowhere irradiated),
@@ -1123,10 +1173,34 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     y: (ty - runtime.view.y) * runtime.view.scale,
   });
 
+  /**
+   * Ensure a terrain-only offscreen base (no ownership tint/borders) exists
+   * for the Space "alt view" — built once from a computed all-neutral owner
+   * array and cached forever, since terrain never changes after generation.
+   */
+  const ensureTerrainOnlyBase = (): HTMLCanvasElement | null => {
+    const map = runtime.map;
+    if (!map) return null;
+    let tbase = runtime.terrainOnlyBase;
+    if (!tbase || tbase.width !== map.width || tbase.height !== map.height) {
+      tbase = document.createElement("canvas");
+      tbase.width = map.width;
+      tbase.height = map.height;
+      const ctx = tbase.getContext("2d");
+      if (ctx) {
+        const image = ctx.createImageData(map.width, map.height);
+        paintRaster(map, new Uint16Array(map.size), image.data);
+        ctx.putImageData(image, 0, 0);
+      }
+      runtime.terrainOnlyBase = tbase;
+    }
+    return tbase;
+  };
+
   /** Composite the base map plus transport ships and landings onto the canvas. */
   const renderFrame = (now: number): void => {
     const map = runtime.map;
-    const base = runtime.base;
+    const base = runtime.showTerrainOnly ? ensureTerrainOnlyBase() ?? runtime.base : runtime.base;
     const ctx = ui.mapContext;
     const cw = ui.mapCanvas.width;
     const ch = ui.mapCanvas.height;
@@ -1150,6 +1224,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ctx.imageSmoothingEnabled = true;
       drawFallout(ctx, scale);
       drawBorders(ctx, scale);
+      drawCoordinateGrid(ctx, scale);
       recomputeNames(now);
       drawNames(ctx, scale);
       drawRails(ctx, scale);
@@ -1968,6 +2043,40 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   /**
+   * Draw faint tile-boundary lines over the visible viewport when the M
+   * coordinate-grid toggle is on — OpenFront's `CoordinateGridPass`. Screen
+   * space (drawn after the camera transform is reset), and skipped when
+   * zoomed too far out for the lines to read as anything but noise.
+   */
+  const drawCoordinateGrid = (ctx: CanvasRenderingContext2D, scale: number): void => {
+    if (!runtime.showCoordinateGrid || !runtime.map || scale < 3) return;
+    const map = runtime.map;
+    const view = runtime.view;
+    const cw = ui.mapCanvas.width;
+    const ch = ui.mapCanvas.height;
+    const x0 = Math.max(0, Math.floor(view.x));
+    const y0 = Math.max(0, Math.floor(view.y));
+    const x1 = Math.min(map.width, Math.ceil(view.x + cw / scale));
+    const y1 = Math.min(map.height, Math.ceil(view.y + ch / scale));
+    ctx.save();
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.16)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let gx = x0; gx <= x1; gx += 1) {
+      const sx = Math.round((gx - view.x) * scale) + 0.5;
+      ctx.moveTo(sx, 0);
+      ctx.lineTo(sx, ch);
+    }
+    for (let gy = y0; gy <= y1; gy += 1) {
+      const sy = Math.round((gy - view.y) * scale) + 0.5;
+      ctx.moveTo(0, sy);
+      ctx.lineTo(cw, sy);
+    }
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  /**
    * Paint the lingering radioactive fallout: every tile the server currently
    * reports as irradiated (nuked ground that can't be recaptured until it
    * decays) gets a sickly yellow-green wash plus a faint flickering speckle, so
@@ -2422,10 +2531,13 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     }
 
     const percent = Number(ui.attackPercentInput.value);
-    sendExpand(tileX, tileY, percent);
+    const mode = runtime.expandMode;
+    sendExpand(tileX, tileY, percent, mode);
+    runtime.expandMode = "auto";
     runtime.clickRipples.push({ x: tileX, y: tileY, color: runtime.myColor, start: performance.now() });
     sfx.click();
-    setStatus(ui, `Expanding toward (${tileX}, ${tileY}) with ${percent}% of pool.`);
+    const routeLabel = mode === "sea" ? " by boat" : mode === "land" ? " by land" : "";
+    setStatus(ui, `Expanding toward (${tileX}, ${tileY})${routeLabel} with ${percent}% of pool.`);
   };
 
   ui.mapCanvas.addEventListener("pointerup", endDrag);
@@ -2452,6 +2564,70 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   );
 
   // ---- Keyboard shortcuts (OpenFront-style) --------------------------------
+
+  /** Owner id of the tile currently under the cursor, or null off-canvas/before terrain loads. */
+  const hoveredOwner = (): number | null => {
+    const map = runtime.map;
+    const owner = runtime.owner;
+    if (!map || !owner || runtime.hoverTileX === null || runtime.hoverTileY === null) return null;
+    if (!map.inBounds(runtime.hoverTileX, runtime.hoverTileY)) return null;
+    return owner[map.ref(runtime.hoverTileX, runtime.hoverTileY)];
+  };
+
+  const playerName = (id: number): string => runtime.players.find((p) => p.playerId === id)?.name ?? `Player ${id}`;
+
+  /** K hotkey: propose an alliance with whoever's territory is under the cursor. */
+  const proposeAllianceAtCursor = (): void => {
+    const target = hoveredOwner();
+    if (target === null || target === 0 || target === runtime.myPlayerId) {
+      setStatus(ui, "Hover a rival's territory, then press K to propose an alliance.");
+      return;
+    }
+    const { allies, outgoing } = diplomacyState();
+    if (allies.has(target)) { setStatus(ui, `Already allied with ${playerName(target)}.`); return; }
+    if (outgoing.has(target)) { setStatus(ui, `Already offered an alliance to ${playerName(target)}.`); return; }
+    sendAllyPropose(target);
+    setStatus(ui, `Alliance offered to ${playerName(target)}.`);
+  };
+
+  /** L hotkey: break the alliance with whoever's territory is under the cursor. */
+  const breakAllianceAtCursor = (): void => {
+    const target = hoveredOwner();
+    if (target === null || target === 0) {
+      setStatus(ui, "Hover an ally's territory, then press L to break the alliance.");
+      return;
+    }
+    const { allies } = diplomacyState();
+    if (!allies.has(target)) { setStatus(ui, `Not allied with ${playerName(target)}.`); return; }
+    sendAllyBreak(target);
+    setStatus(ui, `Alliance with ${playerName(target)} broken.`);
+  };
+
+  /**
+   * Shift+R hotkey: expand toward whoever last attacked us — OpenFront's
+   * "retaliate". Scans the owner raster for any tile the attacker still
+   * holds (a one-off O(map size) scan on a rare, user-triggered keypress,
+   * not a per-frame cost) since the client has no per-player tile index.
+   */
+  const retaliate = (): void => {
+    const map = runtime.map;
+    const owner = runtime.owner;
+    if (!map || !owner || runtime.matchEnded || runtime.myEliminated || !runtime.spawned) return;
+    const attackerId = runtime.lastAttackedBy;
+    if (!attackerId) { setStatus(ui, "No one has attacked you yet."); return; }
+    let ref = -1;
+    for (let i = 0; i < owner.length; i += 1) {
+      if (owner[i] === attackerId) { ref = i; break; }
+    }
+    if (ref < 0) { setStatus(ui, `${playerName(attackerId)} no longer holds any territory.`); return; }
+    const tx = map.x(ref);
+    const ty = map.y(ref);
+    const percent = Number(ui.attackPercentInput.value);
+    sendExpand(tx, ty, percent);
+    runtime.clickRipples.push({ x: tx, y: ty, color: runtime.myColor, start: performance.now() });
+    sfx.click();
+    setStatus(ui, `Retaliating against ${playerName(attackerId)} with ${percent}% of pool.`);
+  };
 
   /** Zoom about the viewport centre, mirroring the wheel-zoom anchoring. */
   const zoomBy = (factor: number): void => {
@@ -2498,11 +2674,23 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
     if (event.metaKey || event.ctrlKey || event.altKey) return;
 
-    // 1..N select/toggle the matching build type (menu order).
-    if (event.key >= "1" && event.key <= String(BUILDING_TYPES.length)) {
-      toggleBuildMode(BUILDING_TYPES[Number(event.key) - 1]);
-      event.preventDefault();
-      return;
+    // 1..0 select/toggle a buildable/launchable item — OpenFront binds every
+    // structure and weapon across the digit row. Building types fill 1..N
+    // first (menu order); any digits left over continue into the weapon
+    // kinds (so with 7 building types, 8/9/0 arm Atom/Hydrogen/MIRV).
+    if (/^[0-9]$/.test(event.key)) {
+      const slot = event.key === "0" ? 9 : Number(event.key) - 1;
+      if (slot < BUILDING_TYPES.length) {
+        toggleBuildMode(BUILDING_TYPES[slot]);
+        event.preventDefault();
+        return;
+      }
+      const weaponIndex = slot - BUILDING_TYPES.length;
+      if (weaponIndex < NUKE_KINDS.length) {
+        toggleNukeMode(NUKE_KINDS[weaponIndex]);
+        event.preventDefault();
+        return;
+      }
     }
 
     let handled = true;
@@ -2511,9 +2699,17 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       case "escape":
         toggleBuildMode(null);
         if (runtime.nukeMode) toggleNukeMode(runtime.nukeMode);
+        runtime.expandMode = "auto";
         break;
       case "t": nudgeAttackRatio(-10); break; // OpenFront: attack ratio down
       case "y": nudgeAttackRatio(10); break; //  and up
+      case "b": toggleExpandMode("sea"); break; // OpenFront: force a boat attack
+      case "g": toggleExpandMode("land"); break; //          force a ground attack
+      case "k": proposeAllianceAtCursor(); break; // OpenFront: request alliance
+      case "l": breakAllianceAtCursor(); break; //             break alliance
+      case "r": if (event.shiftKey) retaliate(); else handled = false; break; // Shift+R: retaliate
+      case " ": runtime.showTerrainOnly = !runtime.showTerrainOnly; break; // alt terrain view
+      case "m": runtime.showCoordinateGrid = !runtime.showCoordinateGrid; break; // coordinate grid
       case "q": zoomBy(1 / 1.2); break; // zoom out
       case "e": zoomBy(1.2); break; //     zoom in
       case "c": centerCamera(); break; // centre on home

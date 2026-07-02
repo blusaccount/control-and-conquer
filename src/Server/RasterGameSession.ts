@@ -1122,6 +1122,12 @@ export class RasterGameSession {
     if (!Number.isInteger(intent.percent) || intent.percent < 1 || intent.percent > 100) {
       return { kind: "rejected", reason: "INVALID_PERCENT", message: "Percent must be an integer 1..100." };
     }
+    // B(oat)/G(round) hotkeys force the route instead of the automatic choice
+    // below: "land" requires a shared land border (never crosses water, even
+    // if a crossing would reach the target); "sea" always launches a transport
+    // ship, even where a land border also exists — letting a player flank an
+    // enemy from the water instead of grinding through a defended frontier.
+    const mode = intent.mode ?? "auto";
 
     const rawRef = this.map.ref(intent.targetX, intent.targetY);
     const pool = this.grid.troopsOf(attacker);
@@ -1140,6 +1146,9 @@ export class RasterGameSession {
     // a mountain pixel inside enemy land resolves to the obvious land.
     const ref = this.grid.nearestCapturable(rawRef);
     if (ref === null) {
+      if (mode === "land") {
+        return { kind: "rejected", reason: "NO_FRONTIER", message: "No land route reaches that area." };
+      }
       // The click landed on open water (or rock) too far from any land to snap to
       // — but the snap radius is much shorter than how far a boat can cross, so a
       // tap mid-channel toward a far coast would otherwise die as "no land there".
@@ -1174,11 +1183,23 @@ export class RasterGameSession {
     //   • anything else routes to a transport ship if the water reaches it.
     // An enemy wedged between our two coasts fails both land tests (no border,
     // and the corridor isn't neutral), so it correctly becomes a boat.
-    const canMarch = target === NEUTRAL_PLAYER
-      ? this.grid.canReachByLand(attacker, ref, LAND_ATTACK_REACH)
-      : this.grid.hasLandBorderWith(attacker, target);
+    // `mode` overrides this default: "sea" skips the land check entirely (even
+    // a bordering enemy can be flanked from the water); "land" never falls
+    // through to a boat.
+    const canMarch = mode === "sea"
+      ? false
+      : target === NEUTRAL_PLAYER
+        ? this.grid.canReachByLand(attacker, ref, LAND_ATTACK_REACH)
+        : this.grid.hasLandBorderWith(attacker, target);
     if (canMarch) {
       return { kind: "land", intent: { attacker, target, troops, toward: ref } };
+    }
+    if (mode === "land") {
+      return {
+        kind: "rejected",
+        reason: "NO_FRONTIER",
+        message: "No land route reaches that area.",
+      };
     }
     // Not marchable → a transport ship to the reachable shore nearest the click
     // (its own tile wins when that tile is itself reachable). Rather than demand
@@ -1447,6 +1468,7 @@ export class RasterGameSession {
       eliminated: this.eliminated,
       alliances: this.alliances.pairs(),
       allianceRequests: this.alliances.proposals(),
+      lastAttackerOf: (playerId) => this.conflict.lastAttackerOf(playerId) ?? 0,
     });
   }
 

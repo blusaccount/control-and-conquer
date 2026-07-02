@@ -66,6 +66,12 @@ export interface RasterPlayerInfo {
   /** Number of capturable tiles currently owned. */
   tiles: number;
   /**
+   * Player id who most recently launched a land or sea attack against this
+   * player (0 if nobody has yet). Public — combat is visible on the map
+   * anyway — and drives the client's Shift+R "retaliate" hotkey.
+   */
+  lastAttackedBy: number;
+  /**
    * Troops generated per second at the current territory size — what the
    * leaderboard renders as "(+N/s)". Server-computed from tile count so every
    * client shows the same figure.
@@ -340,6 +346,17 @@ export type RasterRejectReason =
   /** No owned Missile Silo is off cooldown to launch from. */
   | "NO_SILO_READY";
 
+/**
+ * How an expand order routes to its target, mirroring OpenFront's B(oat)/G(round)
+ * hotkeys: `"auto"` (default) picks a land push across a shared border or a
+ * transport ship otherwise, exactly as before; `"land"` requires a land route
+ * and rejects if none exists (even if a sea crossing would reach it); `"sea"`
+ * always launches a transport ship, even where a land border also exists —
+ * letting a player flank behind a defended frontier instead of grinding
+ * through it.
+ */
+export type RasterExpandMode = "auto" | "land" | "sea";
+
 /** Sent by the client to expand its border toward a clicked tile. */
 export interface RasterExpandIntent {
   /** Tile column (0..width-1) the player clicked. */
@@ -348,6 +365,8 @@ export interface RasterExpandIntent {
   targetY: number;
   /** Percentage of the player's pool to commit (1..100). */
   percent: number;
+  /** Forces a land or sea route instead of the default automatic choice. */
+  mode?: RasterExpandMode;
 }
 
 /** Sent by the client to build a structure on a tile it owns. */

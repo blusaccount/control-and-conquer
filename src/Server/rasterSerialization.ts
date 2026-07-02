@@ -172,6 +172,8 @@ export interface BuildSnapshotInput {
   alliances?: RasterAlliancePair[];
   /** Pending alliance proposals (directed `from` → `to`). */
   allianceRequests?: RasterAllianceRequest[];
+  /** Player id who most recently attacked a given player, for `RasterPlayerInfo.lastAttackedBy`. */
+  lastAttackerOf?: (playerId: number) => number;
 }
 
 /**
@@ -188,7 +190,7 @@ export interface BuildSnapshotInput {
  * since they never read the ownership raster at all.
  */
 export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot => {
-  const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, terrainHash, winnerPlayerId, recentEvents, crossings, ships, nukes, nukeDetonations, nukeInterceptions = [], falloutTiles = [], fronts, rails = [], trains = [], tradeShips = [], eliminated, alliances = [], allianceRequests = [] } = input;
+  const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, terrainHash, winnerPlayerId, recentEvents, crossings, ships, nukes, nukeDetonations, nukeInterceptions = [], falloutTiles = [], fronts, rails = [], trains = [], tradeShips = [], eliminated, alliances = [], allianceRequests = [], lastAttackerOf } = input;
 
   const players: RasterPlayerInfo[] = [];
   for (const id of grid.players()) {
@@ -216,6 +218,7 @@ export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
       troopsPerSecond: troopsPerSecond(tiles, grid.troopsOf(id), SIMULATION_TICK_RATE, grid.incomeMultiplierOf(id), activeCities, grid.modifiersOf(id).troopCapMultiplier),
       maxTroops: Math.floor(maxTroops(tiles, activeCities) * grid.modifiersOf(id).troopCapMultiplier),
       eliminated: eliminated?.has(id) ?? false,
+      lastAttackedBy: lastAttackerOf?.(id) ?? 0,
     });
   }
 

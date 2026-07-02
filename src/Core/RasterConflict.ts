@@ -261,6 +261,12 @@ export class RasterConflict {
   private nukeInterceptions: NukeInterception[] = [];
   /** Tick (exclusive) each SAM Launcher, keyed by tile, is ready to fire again. */
   private readonly samCooldownUntil = new Map<TileRef, number>();
+  /**
+   * Most recent attacker of each player (land or sea), for the client's
+   * "retaliate" hotkey. Public information — combat is already visible on the
+   * map via {@link activeFronts}/{@link SeaCrossing} — so no access control.
+   */
+  private readonly lastAttackedBy = new Map<PlayerId, PlayerId>();
   private readonly incomeAccumulator = new Map<PlayerId, number>();
   /**
    * Tick (exclusive) until which a freshly-seated player is immune from attack.
@@ -437,6 +443,7 @@ export class RasterConflict {
     } else {
       this.attacks.push({ attacker, target, committed: troops, anchor: -1, toward });
     }
+    if (target !== NEUTRAL_PLAYER) this.lastAttackedBy.set(target, attacker);
     return null;
   }
 
@@ -466,7 +473,13 @@ export class RasterConflict {
 
     this.grid.addTroops(attacker, -troops);
     this.ships.push({ id: this.nextShipId++, attacker, troops, path, progress: 0 });
+    if (destOwner !== NEUTRAL_PLAYER) this.lastAttackedBy.set(destOwner, attacker);
     return null;
+  }
+
+  /** Player id who most recently attacked `player` (land or sea), or `null` if nobody has. */
+  lastAttackerOf(player: PlayerId): PlayerId | null {
+    return this.lastAttackedBy.get(player) ?? null;
   }
 
   /**

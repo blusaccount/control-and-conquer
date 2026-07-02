@@ -280,6 +280,68 @@ test("a fourth simultaneous ship is rejected with TOO_MANY_SHIPS", () => {
   assert.equal(session.peekGrid() && lastSnapshot(messages).ships.filter((s) => s.playerId === 1).length, 3);
 });
 
+// --- Forced route (B/G hotkeys): mode "land" / "sea" overrides -------------
+
+test('mode "sea" launches a transport ship at a bordering rival instead of a land push', () => {
+  // P and E share a land border (row 0) but both also touch one connected
+  // water body beneath them (row 1), so a sea route exists too — the only
+  // way to prove "sea" is *forced* rather than merely picked by default.
+  const map = mapFromRows(["##", ".."]);
+  const session = new RasterGameSession({ prebuiltMap: map, startingTroops: 200, spawnPhaseTicks: 0 });
+  const messages = collect(session, "human");
+  const grid = session.peekGrid();
+  for (let ref = 0; ref < map.size; ref += 1) if (grid.ownerOf(ref) !== NEUTRAL_PLAYER) grid.claim(ref, NEUTRAL_PLAYER);
+  if (!grid.hasPlayer(2)) grid.addPlayer(2, 50);
+  grid.claim(map.ref(0, 0), 1);
+  grid.claim(map.ref(1, 0), 2);
+  assert.equal(grid.hasLandBorderWith(1, 2), true, "the two players share a land border");
+  assert.notEqual(grid.findSeaPath(1, map.ref(1, 0)), null, "a sea route also exists");
+
+  session.queueExpand("human", { targetX: 1, targetY: 0, percent: 50, mode: "sea" });
+  session.tick();
+
+  assert.equal(messages.some((m) => m.type === "SERVER_RASTER_ACTION_REJECTED"), false, "the forced sea order is accepted");
+  assert.equal(lastSnapshot(messages).ships.filter((s) => s.playerId === 1).length, 1, "a transport ship was dispatched, not a land push");
+});
+
+test('mode "land" rejects a target only reachable by sea, even though a route exists', () => {
+  const session = new RasterGameSession({ realMapId: "world", startingTroops: 200 });
+  const messages = collect(session, "human");
+  const target = stageSeaTarget(session);
+
+  session.queueExpand("human", { targetX: target.x, targetY: target.y, percent: 10, mode: "land" });
+  session.tick();
+
+  const rejection = messages.find((m) => m.type === "SERVER_RASTER_ACTION_REJECTED");
+  assert.ok(rejection, "a sea-only target is rejected when land is forced");
+  if (rejection?.type === "SERVER_RASTER_ACTION_REJECTED") assert.equal(rejection.payload.reason, "NO_FRONTIER");
+  assert.equal(lastSnapshot(messages).ships.filter((s) => s.playerId === 1).length, 0, "no ship was dispatched");
+});
+
+// --- Retaliate (Shift+R): lastAttackedBy tracking ---------------------------
+
+test("a land attack records the attacker as the victim's lastAttackedBy, publicly visible to all", () => {
+  const map = mapFromRows(["##"]);
+  const session = new RasterGameSession({ prebuiltMap: map, startingTroops: 200, spawnPhaseTicks: 0 });
+  const messages = collect(session, "human");
+  const grid = session.peekGrid();
+  for (let ref = 0; ref < map.size; ref += 1) if (grid.ownerOf(ref) !== NEUTRAL_PLAYER) grid.claim(ref, NEUTRAL_PLAYER);
+  if (!grid.hasPlayer(2)) grid.addPlayer(2, 50);
+  grid.claim(map.ref(0, 0), 1);
+  grid.claim(map.ref(1, 0), 2);
+
+  // The first snapshot (sent synchronously on subscribe) predates these manual
+  // grid mutations; tick once so a fresh snapshot reflects both players before
+  // asserting the "nobody has attacked yet" baseline.
+  session.tick();
+  assert.equal(lastSnapshot(messages).players.find((p) => p.playerId === 2)?.lastAttackedBy, 0, "nobody has attacked player 2 yet");
+  session.queueExpand("human", { targetX: 1, targetY: 0, percent: 50 });
+  session.tick();
+  assert.equal(lastSnapshot(messages).players.find((p) => p.playerId === 2)?.lastAttackedBy, 1, "player 2's snapshot row now names player 1 as the last attacker");
+  // The attacker's own row is untouched.
+  assert.equal(lastSnapshot(messages).players.find((p) => p.playerId === 1)?.lastAttackedBy, 0);
+});
+
 test("sessions with identical seed produce identical terrain bytes", () => {
   const a = new RasterGameSession({ width: 24, height: 16, seed: 11 });
   const b = new RasterGameSession({ width: 24, height: 16, seed: 11 });
