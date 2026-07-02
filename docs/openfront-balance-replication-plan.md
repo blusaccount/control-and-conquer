@@ -44,15 +44,18 @@ sollten.
 > **Update (2026-07-02 — frischer Quellcode-Abgleich):** siehe
 > `openfront-gap-analysis.md` §3c für den Detail-Abgleich gegen den aktuellen
 > `openfrontio/OpenFrontIO`-main-Branch (Tag v0.32.6). Kurzfassung der neuen
-> Funde mit Bezug zu diesem Plan: (1) **SAM Launcher/Hydrogen Bomb/MIRV**
-> weiterhin komplett offen (§2.4/§2.9 hier bereits mit Zahlen hinterlegt); (2)
+> Funde mit Bezug zu diesem Plan: (1) **SAM Launcher/Hydrogen Bomb/MIRV** —
+> **erledigt**, siehe §3c #3 im Gap-Analysis-Dokument; (2)
 > **Zug-Tempo** ist mit `TRAIN_TILES_PER_TICK=3` (`buildings.ts:240`) 50 % zu
 > schnell — OpenFronts `speed:2` (§2.6) noch nicht exakt umgesetzt, einfacher
-> Fix; (3) **Bot/Nation-Zweiklassen-KI** (§2.9, „zwei getrennte KI-Typen")
-> weiterhin nicht umgesetzt — eine Klasse mit 5 Persönlichkeiten deckt die
-> Spielstärke ähnlich ab, aber nicht die Namensgebung/Slider-Konfigurierbarkeit;
-> (4) Schwierigkeit **„Impossible"** (§2.9) fehlt als vierte Stufe; (5) tote,
-> irreführende Konstanten `DEFENSE_POST_RADIUS`/`DEFENSE_POST_STRENGTH` in
+> Fix, weiterhin offen; (3) **Bot/Nation-Zweiklassen-KI** (§2.9, „zwei
+> getrennte KI-Typen") — **erledigt**: jeder dritte KI-Sitz ist jetzt ein
+> passiver Bot-Filler (flache OpenFront-Tribe-Zahlen, baut nichts, nimmt jede
+> Allianz an) mit eigenem Zwei-Wort-Namensgenerator, der Rest bleibt volle
+> Nation-KI mit den 5 Persönlichkeiten — weiterhin ohne Slider-Konfigurierbarkeit
+> (Feldgröße bleibt kartenskaliert); (4) Schwierigkeit **„Impossible"** (§2.9)
+> fehlt als vierte Stufe; (5) tote, irreführende Konstanten
+> `DEFENSE_POST_RADIUS`/`DEFENSE_POST_STRENGTH` in
 > `rasterCombatConfig.ts` (nie benutzt — Forts nutzen korrekt
 > `FORT_DEFENSE_RADIUS`/`STRENGTH` aus `buildings.ts`) sollten aufgeräumt
 > werden. Phase 4 (UI/Radial-Menü/Hotkeys/Karten-Katalog) bleibt der größte

@@ -2,8 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { RasterGameSession } from "../src/Server/RasterGameSession.js";
 import { DIFFICULTY_BOT_COUNT, MAX_RASTER_BOTS, scaleBotCount } from "../src/Server/MatchRegistry.js";
+import { MatchRegistry } from "../src/Server/MatchRegistry.js";
 import { isRasterDifficulty, RASTER_DIFFICULTIES } from "../src/Core/messages.js";
 import { validateCommand } from "../src/Server/validateCommand.js";
+import { kindForSeat, tribeName } from "../src/Server/botField.js";
+import type { RasterServerMessage } from "../src/Core/types.js";
 
 test("difficulty seats more rival nations as it rises", () => {
   assert.ok(DIFFICULTY_BOT_COUNT.easy < DIFFICULTY_BOT_COUNT.medium);
@@ -55,6 +58,52 @@ test("a session seats many distinct nations on a real map", () => {
   let owned = 0;
   for (const id of players) owned += grid.tileCountOf(id);
   assert.equal(owned, N, "spawns are distinct (one tile each, no overlap)");
+});
+
+// --- Bot (Tribe) vs Nation field composition --------------------------------
+
+test("kindForSeat reserves one seat in three for a passive Bot filler", () => {
+  const kinds = Array.from({ length: 30 }, (_, i) => kindForSeat(i));
+  const bots = kinds.filter((k) => k === "bot").length;
+  const nations = kinds.filter((k) => k === "nation").length;
+  assert.equal(bots, 10, "exactly a third of the seats are Bot filler");
+  assert.equal(nations, 20, "the rest are full-strategy Nations");
+  assert.equal(kindForSeat(2), "bot");
+  assert.equal(kindForSeat(0), "nation");
+  assert.equal(kindForSeat(1), "nation");
+});
+
+test("tribeName is deterministic and always two words", () => {
+  for (let i = 0; i < 50; i += 1) {
+    const name = tribeName(i);
+    assert.equal(tribeName(i), name, "same seat index always yields the same name");
+    assert.match(name, /^\S+ \S+$/, `"${name}" should be exactly two words`);
+  }
+});
+
+test("a solo match seats both Bot fillers and Nations, distinguishable by name shape", () => {
+  const registry = new MatchRegistry();
+  const messages: RasterServerMessage[] = [];
+  // A big field on "hard" so the 1-in-3 Bot split is well past one seat.
+  registry.joinRasterSolo("human", (m) => messages.push(m), { realMapId: "world" }, "hard", 12);
+  // The human's very first snapshot predates the bots being seated (each
+  // subscribe() only pushes its *own* initial snapshot); a real tick
+  // broadcasts a fresh one to every subscriber, human included.
+  for (let i = 0; i < 5; i += 1) registry.tickAll();
+
+  const snapshot = [...messages].reverse().find((m) => m.type === "SERVER_RASTER_SNAPSHOT");
+  assert.ok(snapshot && snapshot.type === "SERVER_RASTER_SNAPSHOT");
+  if (!snapshot || snapshot.type !== "SERVER_RASTER_SNAPSHOT") return;
+  const names = snapshot.payload.players.map((p) => p.name).filter((n) => n !== undefined);
+  assert.ok(names.length >= 12, "every bot seat appears in standings");
+
+  // Nation names are drawn from the curated list (e.g. "Iron Pact"); Bot names
+  // are always "<Prefix> <Suffix>" pairs from the tribal lists — the two pools
+  // don't overlap, so at least one of each confirms both kinds were seated.
+  const nationNames = new Set(["Iron Pact", "Sun Dominion", "Frost Clans", "Ember League", "Stone Republic", "Tide Union"]);
+  const looksLikeTribe = (n: string): boolean => /^(Roman|Hittite|Sumerian|Akkadian|Babylonian|Phoenician|Greek|Persian|Egyptian|Numidian|Thracian|Scythian|Gothic|Frankish|Norman|Saxon|Celtic|Iberian|Mongol|Khazar|Cuman|Avar|Bulgar|Magyar) /.test(n);
+  assert.ok(names.some((n) => nationNames.has(n)), "at least one seat is a recognisable Nation");
+  assert.ok(names.some(looksLikeTribe), "at least one seat is a recognisable Bot tribe");
 });
 
 test("validateCommand accepts a JOIN with difficulty and rejects an unknown one", () => {

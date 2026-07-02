@@ -11,6 +11,73 @@ import type { RasterDifficulty } from "../Core/messages.js";
  */
 
 /**
+ * OpenFront seats two distinct AI player types: a passive **Bot** ("Tribe") —
+ * a low-threat map-filler with a flat, difficulty-independent handicap and a
+ * two-word tribal name — and a full-strategy **Nation**, sourced from the map
+ * manifest, that builds/allies/expands and takes OpenFront's per-difficulty
+ * handicaps (see {@link NATION_START_MANPOWER} et al.). This engine has no
+ * map manifest to draw Nations from, so both tiers are procedurally seated
+ * here; `"human"` is the connecting player, never an AI seat.
+ */
+export type RasterPlayerKind = "human" | "bot" | "nation";
+
+/**
+ * Deterministic split of an AI field into passive Bot filler vs. full-strategy
+ * Nation opponents: OpenFront controls the two with independent sliders (Bot
+ * count 0–400, Nation count from the map manifest); lacking a manifest, this
+ * project instead reserves a fixed fraction of the scaled field for Bots — our
+ * own clean-room choice, not a sourced ratio. One seat in three is a Bot, so a
+ * field is mostly real opponents with a lighter-weight crowd mixed in.
+ */
+export const kindForSeat = (seatIndex: number): RasterPlayerKind => (seatIndex % 3 === 2 ? "bot" : "nation");
+
+/**
+ * Starting troops a **Bot** (Tribe) is seated with — OpenFront's flat
+ * `startManpower` for `PlayerType.Bot` (10 000), independent of difficulty
+ * (only Nation start manpower scales with difficulty, see
+ * {@link NATION_START_MANPOWER}).
+ */
+export const BOT_START_MANPOWER = 10_000;
+
+/**
+ * A Bot's population-ceiling multiplier relative to the same territory-scaled
+ * `maxTroops` formula a Nation/human uses — OpenFront divides a Bot's
+ * computed ceiling by 3.
+ */
+export const BOT_TROOP_CAP_MULTIPLIER = 1 / 3;
+
+/** A Bot's troop-growth multiplier — OpenFront halves a Bot's growth rate. */
+export const BOT_GROWTH_MULTIPLIER = 0.5;
+
+/**
+ * Two-word tribal names for Bot seats (e.g. "Roman Empire", "Hittite
+ * Alliance") — civilization-style prefix + suffix, distinct from the curated
+ * Nation name list so a Bot reads as a different kind of opponent at a
+ * glance. Deterministic (no RNG): combined by seat index with decorrelated
+ * strides so nearby seats don't share a prefix or suffix in lockstep.
+ */
+const TRIBE_NAME_PREFIXES: readonly string[] = [
+  "Roman", "Hittite", "Sumerian", "Akkadian", "Babylonian", "Phoenician",
+  "Greek", "Persian", "Egyptian", "Numidian", "Thracian", "Scythian",
+  "Gothic", "Frankish", "Norman", "Saxon", "Celtic", "Iberian",
+  "Mongol", "Khazar", "Cuman", "Avar", "Bulgar", "Magyar",
+];
+
+const TRIBE_NAME_SUFFIXES: readonly string[] = [
+  "Empire", "Dynasty", "Kingdom", "Sultanate", "Republic", "Caliphate",
+  "Realm", "Duchy", "Alliance", "Tribe", "Horde", "League",
+];
+
+/** Deterministic two-word tribal name for a Bot seated at `seatIndex` (0-based, seat order). */
+export const tribeName = (seatIndex: number): string => {
+  const prefix = TRIBE_NAME_PREFIXES[seatIndex % TRIBE_NAME_PREFIXES.length];
+  // A stride coprime with the suffix list length decorrelates the pairing
+  // from the prefix's own cycle, so consecutive seats don't repeat a pair.
+  const suffix = TRIBE_NAME_SUFFIXES[(seatIndex * 5 + 3) % TRIBE_NAME_SUFFIXES.length];
+  return `${prefix} ${suffix}`;
+};
+
+/**
  * Most opponents a solo match can seat (the session caps total nations at 48, so
  * up to 47 bots alongside the human). Difficulty picks how many actually spawn.
  * The cap is high so the larger Earth maps fill with an OpenFront-style crowd

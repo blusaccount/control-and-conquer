@@ -5,8 +5,10 @@ import {
   RasterBotController,
   RASTER_BOT_PERSONALITIES,
   DEFAULT_RASTER_BOT_CONFIG,
+  FILLER_PERSONALITY,
   type RasterBotPersonality,
 } from "../src/Server/RasterBotController.js";
+import type { RasterServerMessage } from "../src/Core/types.js";
 
 /** A snappy, eager personality for tests: decides every tick, almost no reserve. */
 const EAGER: RasterBotPersonality = {
@@ -133,4 +135,47 @@ test("A field of varied bots drives toward a decisive outcome", () => {
 test("DEFAULT_RASTER_BOT_CONFIG ships a sane all-rounder personality", () => {
   assert.equal(DEFAULT_RASTER_BOT_CONFIG.personality.id, "balanced");
   assert.ok(DEFAULT_RASTER_BOT_CONFIG.personality.decisionCooldownTicks > 0);
+});
+
+// --- Bot (Tribe) filler vs. Nation: behaviour differences -------------------
+
+test("a Bot filler never builds, even once it holds land and gold", () => {
+  const session = new RasterGameSession({ width: 48, height: 32, seed: 5 });
+  session.subscribe("human", () => {});
+  const bot = new RasterBotController({ botId: "bot", personality: EAGER, kind: "bot" });
+  bot.attach(session);
+  const botId = bot.getPlayerId()!;
+  const grid = session.peekGrid();
+
+  for (let i = 0; i < 400; i += 1) {
+    // Keep the filler flush with gold throughout — if it were going to build
+    // (like a Nation with EAGER's fast cadence does well within 400 ticks),
+    // affordability was never the blocker.
+    grid.setGold(botId, 10_000_000);
+    session.tick();
+  }
+
+  assert.equal(grid.buildingCountOf(botId, "city"), 0, "a Bot filler places no cities");
+  assert.equal(grid.buildingCountOf(botId, "port"), 0, "a Bot filler places no ports");
+});
+
+test("a Bot filler unconditionally accepts an incoming alliance offer", () => {
+  const session = new RasterGameSession({ width: 32, height: 24, seed: 6 });
+  const messages: RasterServerMessage[] = [];
+  session.subscribe("human", (m) => messages.push(m));
+  const bot = new RasterBotController({ botId: "bot", personality: FILLER_PERSONALITY, kind: "bot" });
+  bot.attach(session);
+  const botId = bot.getPlayerId()!;
+
+  // The human proposes to the Bot; a full-strategy Nation with a low-aggression
+  // personality might also accept, but a Bot accepts unconditionally, with no
+  // troop-strength comparison at all — assert it lands even though the human
+  // (the "from" side here) is far weaker than the Bot's decisive-edge threshold.
+  session.proposeAlliance("human", botId);
+  let allied = false;
+  for (let i = 0; i < 100 && !allied; i += 1) {
+    session.tick();
+    allied = session.peekAlliances().areAllied(1, botId);
+  }
+  assert.ok(allied, "the Bot filler accepted the human's alliance offer");
 });

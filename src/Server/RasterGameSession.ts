@@ -30,9 +30,14 @@ import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import type { RasterDifficulty } from "../Core/messages.js";
 import { IDENTITY_MODIFIERS } from "../Core/playerModifiers.js";
 import {
+  BOT_GROWTH_MULTIPLIER,
+  BOT_START_MANPOWER,
+  BOT_TROOP_CAP_MULTIPLIER,
   NATION_GROWTH_MULTIPLIER,
   NATION_START_MANPOWER,
   NATION_TROOP_CAP_MULTIPLIER,
+  tribeName,
+  type RasterPlayerKind,
 } from "./botField.js";
 import type { RasterMatchPhase } from "../Core/types.js";
 import { attachOwnership, buildSharedSnapshot, encodeOwnerDelta, encodeOwners, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
@@ -59,11 +64,12 @@ interface RasterSubscriber {
    */
   wantsRaster: boolean;
   /**
-   * Whether this player is an AI nation (a server-side bot) rather than a human
-   * client. Drives the post-spawn difficulty handicaps and the conquer bounty
+   * Which AI tier this player is (or `"human"` for a real client). Drives the
+   * post-spawn handicaps (Bot: flat OpenFront filler numbers; Nation: the
+   * per-difficulty handicaps; human: full strength) and the conquer bounty
    * (an AI's whole treasury is seized; a human's only half).
    */
-  isBot: boolean;
+  kind: RasterPlayerKind;
   /**
    * Per-subscriber owner baseline: the ownership raster this client last
    * received. Owner snapshots after the first are encoded as a delta against
@@ -164,9 +170,13 @@ const NATION_NAMES: readonly string[] = [
 /** Maximum nations a single session can seat (1 human + up to N-1 bots). */
 const MAX_PLAYERS = NATION_NAMES.length;
 
-/** Display name + colour for a player id (the name wraps for ids beyond the list). */
-const metaForPlayer = (id: PlayerId): { name: string; color: string } => ({
-  name: NATION_NAMES[(id - 1) % NATION_NAMES.length],
+/**
+ * Display name + colour for a player id. A Bot seat gets a procedural
+ * two-word tribal name (see {@link tribeName}); a human or Nation seat draws
+ * from the curated {@link NATION_NAMES} list (wrapping for ids beyond it).
+ */
+const metaForPlayer = (id: PlayerId, kind: RasterPlayerKind): { name: string; color: string } => ({
+  name: kind === "bot" ? tribeName(id - 1) : NATION_NAMES[(id - 1) % NATION_NAMES.length],
   color: colorForPlayer(id),
 });
 
@@ -454,14 +464,14 @@ export class RasterGameSession {
     autoSpawn = true,
     wantsRaster = true,
     playerName?: string,
-    isBot = false,
+    kind: RasterPlayerKind = "human",
   ): (() => void) | null {
     if (this.nextPlayerId > MAX_PLAYERS) {
       return null;
     }
     const playerId = this.nextPlayerId;
     this.nextPlayerId += 1;
-    const meta = metaForPlayer(playerId);
+    const meta = metaForPlayer(playerId, kind);
     if (playerName) meta.name = playerName;
     this.playerMeta.set(playerId, meta);
 
@@ -471,7 +481,7 @@ export class RasterGameSession {
       send,
       hasTerrain: false,
       wantsRaster,
-      isBot,
+      kind,
       lastOwner: null,
     };
     this.subscribers.set(clientId, subscriber);
@@ -481,7 +491,7 @@ export class RasterGameSession {
     // {@link selectSpawn}, so the player chooses where their empire begins.
     if (autoSpawn) {
       const spawn = this.spawnTiles[playerId - 1] ?? this.firstFreeSpawn();
-      if (spawn !== undefined) this.seatPlayer(playerId, spawn, isBot);
+      if (spawn !== undefined) this.seatPlayer(playerId, spawn, kind);
     }
 
     send({
@@ -513,14 +523,23 @@ export class RasterGameSession {
    * instant, only) tile. There is no capital — a nation is beaten only once its
    * whole territory is captured — so the spawn tile carries no special status.
    *
-   * An AI nation (`isBot`) is seated with OpenFront's per-difficulty handicaps:
-   * a smaller starting army, a lower population ceiling and slower growth, so
-   * easier games field weaker rivals. The human always plays at full strength.
+   * A **Nation** is seated with OpenFront's per-difficulty handicaps: a
+   * smaller starting army, a lower population ceiling and slower growth, so
+   * easier games field weaker rivals. A **Bot** filler instead takes
+   * OpenFront's flat, difficulty-independent Tribe numbers. The human always
+   * plays at full strength.
    */
-  private seatPlayer(playerId: PlayerId, spawnRef: TileRef, isBot = false): void {
-    const startTroops = isBot ? NATION_START_MANPOWER[this.difficulty] : this.startingTroops;
+  private seatPlayer(playerId: PlayerId, spawnRef: TileRef, kind: RasterPlayerKind = "human"): void {
+    const startTroops =
+      kind === "human" ? this.startingTroops : kind === "bot" ? BOT_START_MANPOWER : NATION_START_MANPOWER[this.difficulty];
     this.grid.addPlayer(playerId, startTroops);
-    if (isBot) {
+    if (kind === "bot") {
+      this.grid.setModifiers(playerId, {
+        ...IDENTITY_MODIFIERS,
+        income: BOT_GROWTH_MULTIPLIER,
+        troopCapMultiplier: BOT_TROOP_CAP_MULTIPLIER,
+      });
+    } else if (kind === "nation") {
       this.grid.setModifiers(playerId, {
         ...IDENTITY_MODIFIERS,
         income: NATION_GROWTH_MULTIPLIER[this.difficulty],
@@ -599,7 +618,7 @@ export class RasterGameSession {
     for (const subscriber of this.subscribers.values()) {
       if (this.grid.hasPlayer(subscriber.playerId)) continue;
       const spawn = this.spawnTiles[subscriber.playerId - 1] ?? this.firstFreeSpawn();
-      if (spawn !== undefined) this.seatPlayer(subscriber.playerId, spawn, subscriber.isBot);
+      if (spawn !== undefined) this.seatPlayer(subscriber.playerId, spawn, subscriber.kind);
     }
     // Grant every seated nation a post-spawn immunity window so the opening of
     // the live game is a protected land-grab — nobody can be attacked until it
@@ -1032,9 +1051,9 @@ export class RasterGameSession {
    * (newest first) plus the ids eliminated this call. Pure bookkeeping
    * otherwise — no broadcast here.
    */
-  /** Whether `id` is a human (a non-bot subscriber) rather than an AI nation. */
+  /** Whether `id` is a human (a real client) rather than an AI (Bot or Nation) seat. */
   private isHuman(id: PlayerId): boolean {
-    for (const sub of this.subscribers.values()) if (sub.playerId === id) return !sub.isBot;
+    for (const sub of this.subscribers.values()) if (sub.playerId === id) return sub.kind === "human";
     return false;
   }
 
