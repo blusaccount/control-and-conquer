@@ -56,8 +56,6 @@ export interface BuildingDef {
   readonly name: string;
   /** A short blurb describing the structure's effect. */
   readonly description: string;
-  /** Emoji used as the map marker + menu icon (a lightweight stand-in for art). */
-  readonly icon: string;
   /** Gold cost of this player's *first* building of the type. */
   readonly baseCost: number;
   /**
@@ -336,7 +334,6 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
     type: "city",
     name: "City",
     description: "Raises max population and pays a gold dividend.",
-    icon: "\u{2302}", // ⌂ house — a monochrome white glyph drawn on the owner-coloured disc
     baseCost: 125_000,
     costGrowth: 2,
     costCap: 1_000_000,
@@ -345,7 +342,6 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
     type: "port",
     name: "Port",
     description: "A coastal trade hub: steady gold income (must sit on a shore).",
-    icon: "\u{2693}\u{FE0E}", // ⚓ anchor, text-presentation (forced monochrome, not emoji)
     baseCost: 125_000,
     costGrowth: 2,
     costCap: 1_000_000,
@@ -354,7 +350,6 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
     type: "fort",
     name: "Fort",
     description: "Fortifies the surrounding tiles against capture.",
-    icon: "\u{26E8}\u{FE0E}", // ⛨ cross on shield, text-presentation (monochrome)
     baseCost: 50_000,
     costGrowth: 1,
     costCap: 250_000,
@@ -364,7 +359,6 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
     type: "factory",
     name: "Factory",
     description: "Lays railroads to nearby cities and ports; trains earn gold.",
-    icon: "\u{2699}\u{FE0E}", // ⚙ gear, text-presentation (monochrome)
     baseCost: 125_000,
     costGrowth: 2,
     costCap: 1_000_000,
@@ -373,7 +367,6 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
     type: "warship",
     name: "Warship",
     description: "Guards the coast: sinks enemy transport ships in range (must sit on a shore).",
-    icon: "\u{2694}\u{FE0E}", // ⚔ crossed swords, text-presentation (monochrome)
     baseCost: 250_000,
     costGrowth: 1,
     costCap: 1_000_000,
@@ -383,7 +376,6 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
     type: "silo",
     name: "Missile Silo",
     description: "Launches an Atom Bomb at a target you choose. Reloads after each launch.",
-    icon: "\u{2622}\u{FE0E}", // ☢ radioactive sign, text-presentation (monochrome)
     baseCost: 1_000_000,
     costGrowth: 1,
     costCap: 1_000_000,

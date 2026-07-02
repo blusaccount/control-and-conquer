@@ -24,6 +24,7 @@ import { hideMenu, setStatus, type UiElements } from "./dom.js";
 import { createWebSocketTransport, createWorkerTransport, type RasterTransport } from "./transport.js";
 import { paintRaster, paintTileInto } from "./rasterPaint.js";
 import { borderColor, playerColor, playerEmoji } from "./rasterPalette.js";
+import { drawIcon, iconSvgMarkup } from "./icons.js";
 import { loadRunHistory, recordRun, type RunRecord, type StorageLike } from "./runHistory.js";
 import { computeNameAnchors, type NameAnchor } from "./nameLayout.js";
 import {
@@ -517,7 +518,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       const def = BUILDING_DEFS[type];
       return (
         `<button class="build-btn" type="button" data-building="${type}">` +
-        `<span class="icon">${def.icon}</span>` +
+        `<span class="icon">${iconSvgMarkup(type, 19)}</span>` +
         `<span class="label">${escapeHtml(def.name)}<span class="sub">${escapeHtml(def.description)}</span></span>` +
         `<span class="cost" data-cost></span>` +
         `</button>`
@@ -1424,10 +1425,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ctx.arc(p.x, p.y, radius + 1.4, 0, Math.PI * 2);
       ctx.fillStyle = "rgba(234, 179, 8, 0.85)"; // gold halo marks a trade run
       ctx.fill();
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
       ctx.fillStyle = rgbaToCss(playerColor(ship.playerId));
-      ctx.fill();
+      drawIcon(ctx, "ship", p.x, p.y, radius);
     }
     ctx.restore();
   };
@@ -1478,6 +1477,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       factory: { sides: 6, rot: -Math.PI / 2 },
       fort: { sides: 8, rot: Math.PI / 8 },
       warship: { sides: 4, rot: 0 },
+      silo: { sides: 3, rot: -Math.PI / 2 },
     };
     const tracePath = (cx: number, cy: number, r: number, type: string): void => {
       const shape = SHAPE[type] ?? { sides: 0, rot: 0 };
@@ -1497,9 +1497,6 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     };
 
     ctx.save();
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    if (!dotMode) ctx.font = `600 ${iconPx}px "Segoe UI Symbol", "Noto Sans Symbols2", system-ui, sans-serif`;
     for (const b of runtime.buildings) {
       const { x: sx, y: sy } = worldToScreen(b.x + 0.5, b.y + 0.5);
       if (sx < -radius * 2 || sy < -radius * 2 || sx > cw + radius * 2 || sy > ch + radius * 2) continue;
@@ -1562,15 +1559,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ctx.fillStyle = "rgba(0, 0, 0, 0.18)";
       ctx.fill();
 
-      // 5. The building icon: a crisp **white** monochrome glyph, dark-outlined
-      //    so it reads cleanly on any owner colour (OpenFront's white markers).
-      const glyph = BUILDING_DEFS[b.type].icon;
-      ctx.lineJoin = "round";
-      ctx.lineWidth = Math.max(2.5, iconPx * 0.16);
-      ctx.strokeStyle = "rgba(0, 0, 0, 0.85)";
-      ctx.strokeText(glyph, sx, sy);
+      // 5. The building icon: a crisp **white** vector silhouette (custom-drawn,
+      //    not a system emoji font) so it reads cleanly and identically across
+      //    every platform, on top of any owner colour.
       ctx.fillStyle = "rgba(255, 255, 255, 0.97)";
-      ctx.fillText(glyph, sx, sy);
+      drawIcon(ctx, b.type, sx, sy, iconPx * 0.5);
 
       // 6. Build-progress bar under a structure still under construction.
       if (b.underConstruction) {
@@ -1742,11 +1735,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     ctx.fillRect(sx, sy, size, size);
     ctx.strokeRect(sx, sy, size, size);
     if (scale >= 10) {
-      ctx.font = `${Math.min(scale * 0.6, 22)}px "Segoe UI Symbol", "Noto Sans Symbols2", system-ui, sans-serif`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
       ctx.fillStyle = valid ? "#4ade80" : "#f87171";
-      ctx.fillText(BUILDING_DEFS[type].icon, sx + size / 2, sy + size / 2);
+      drawIcon(ctx, type, sx + size / 2, sy + size / 2, Math.min(scale * 0.3, 11));
     }
     ctx.restore();
   };
@@ -1795,10 +1785,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ctx.arc(p.x, p.y, radius + 1.5, 0, Math.PI * 2);
       ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
       ctx.fill();
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+      // The ship has no owner-coloured badge behind it (unlike buildings), so
+      // the icon itself is tinted directly to the owner's colour.
       ctx.fillStyle = ship.color;
-      ctx.fill();
+      drawIcon(ctx, "ship", p.x, p.y, radius);
       ctx.restore();
     }
   };
@@ -1984,7 +1974,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         `<span class="res-rate">+${formatRate(runtime.goldPerSecond)}/s</span></span>` +
         `<span class="res"><span class="res-ico">🗺️</span>` +
         `<span class="res-val">${pctStr}%</span></span>` +
-        `<span class="res res-builds">${BUILDING_DEFS.city.icon} ${runtime.myCities} ${BUILDING_DEFS.port.icon} ${runtime.myPorts} ${BUILDING_DEFS.fort.icon} ${runtime.myForts} ${BUILDING_DEFS.factory.icon} ${runtime.myFactories}</span>`;
+        `<span class="res res-builds">${iconSvgMarkup("city", 13)} ${runtime.myCities} ${iconSvgMarkup("port", 13)} ${runtime.myPorts} ${iconSvgMarkup("fort", 13)} ${runtime.myForts} ${iconSvgMarkup("factory", 13)} ${runtime.myFactories}</span>`;
     }
     refreshBuildMenu();
     refreshWeaponsMenu();
