@@ -1,7 +1,7 @@
 import { GameMap } from "../../Core/GameMap.js";
 import { RasterGameSession } from "../../Server/RasterGameSession.js";
-import { RasterBotController, RASTER_BOT_PERSONALITIES } from "../../Server/RasterBotController.js";
-import { scaleBotCount, scalePersonality, MAX_RASTER_BOTS } from "../../Server/botField.js";
+import { FILLER_PERSONALITY, RasterBotController, RASTER_BOT_PERSONALITIES } from "../../Server/RasterBotController.js";
+import { kindForSeat, MAX_RASTER_BOTS, NATION_CONFUSION_CHANCE, scaleBotCount, scalePersonality } from "../../Server/botField.js";
 import { SIMULATION_TICK_RATE, SPAWN_PHASE_SECONDS } from "../../Server/simulationConfig.js";
 import { isRasterDifficulty, type RasterDifficulty } from "../../Core/messages.js";
 import type { RasterClientMessage, RasterServerMessage } from "../../Core/types.js";
@@ -63,6 +63,10 @@ const start = async (mapId: string | undefined, rawDifficulty: unknown): Promise
     prebuiltMap: map,
     mapName,
     spawnPhaseTicks: SPAWN_PHASE_SECONDS * SIMULATION_TICK_RATE,
+    // Without this the session fell back to its "medium" default and every
+    // nation was seated with medium handicaps whatever the menu said (the
+    // personalities were scaled, the start/cap/growth numbers weren't).
+    difficulty,
   });
   session = live;
 
@@ -71,10 +75,20 @@ const start = async (mapId: string | undefined, rawDifficulty: unknown): Promise
   live.subscribe(LOCAL_CLIENT_ID, emit, /*autoSpawn*/ false, /*wantsRaster*/ true);
 
   const seats = Math.max(0, Math.min(scaleBotCount(live.peekGrid().capturableCount, difficulty), MAX_RASTER_BOTS));
+  // Identical seat mix to the server's MatchRegistry: every third seat is a
+  // passive Bot/Tribe filler, the rest full Nations with difficulty-scaled
+  // personalities and the per-difficulty confusion chance. (This path used to
+  // seat plain nations only — a drift from the websocket path, now fixed.)
   for (let i = 0; i < seats; i += 1) {
-    const base = RASTER_BOT_PERSONALITIES[i % RASTER_BOT_PERSONALITIES.length];
-    const personality = scalePersonality(base, difficulty);
-    const bot = new RasterBotController({ botId: `${LOCAL_CLIENT_ID}-bot-${i + 1}`, personality });
+    const kind = kindForSeat(i);
+    const personality =
+      kind === "bot" ? FILLER_PERSONALITY : scalePersonality(RASTER_BOT_PERSONALITIES[i % RASTER_BOT_PERSONALITIES.length], difficulty);
+    const bot = new RasterBotController({
+      botId: `${LOCAL_CLIENT_ID}-bot-${i + 1}`,
+      personality,
+      kind,
+      confusionChance: kind === "nation" ? NATION_CONFUSION_CHANCE[difficulty] : 0,
+    });
     botUnsubs.push(bot.attach(live));
   }
 

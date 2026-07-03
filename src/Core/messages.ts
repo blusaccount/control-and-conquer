@@ -6,10 +6,14 @@
 // message unions in `types.ts` import and fold these in.
 // ---------------------------------------------------------------------------
 
-/** Match difficulty — scales the number of rival nations and how hard they play. */
-export type RasterDifficulty = "easy" | "medium" | "hard";
+/**
+ * Match difficulty — scales the number of rival nations and how hard they play.
+ * Four tiers like OpenFront's Easy/Medium/Hard/Impossible: Impossible nations
+ * start bigger, grow past full strength and decide roughly twice as often.
+ */
+export type RasterDifficulty = "easy" | "medium" | "hard" | "impossible";
 
-export const RASTER_DIFFICULTIES: readonly RasterDifficulty[] = ["easy", "medium", "hard"];
+export const RASTER_DIFFICULTIES: readonly RasterDifficulty[] = ["easy", "medium", "hard", "impossible"];
 
 /** Runtime guard: is `value` a known difficulty id? */
 export const isRasterDifficulty = (value: unknown): value is RasterDifficulty =>

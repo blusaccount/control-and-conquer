@@ -9,7 +9,7 @@ import { RasterBuildIntent, RasterExpandIntent, RasterNukeIntent } from "../Core
 import type { RasterDifficulty } from "../Core/messages.js";
 import { SIMULATION_TICK_RATE, SPAWN_PHASE_SECONDS } from "./simulationConfig.js";
 import { AiGameSession } from "./aiApi.js";
-import { DIFFICULTY_BOT_COUNT, kindForSeat, MAX_RASTER_BOTS, scaleBotCount, scalePersonality } from "./botField.js";
+import { DIFFICULTY_BOT_COUNT, kindForSeat, MAX_RASTER_BOTS, NATION_CONFUSION_CHANCE, scaleBotCount, scalePersonality } from "./botField.js";
 
 // Re-exported for callers (e.g. the server entry) that import the field rules
 // from here; the rules themselves live in the Node-free `botField` module so a
@@ -85,7 +85,14 @@ export class MatchRegistry {
       const kind = kindForSeat(i);
       const personality =
         kind === "bot" ? FILLER_PERSONALITY : scalePersonality(RASTER_BOT_PERSONALITIES[i % RASTER_BOT_PERSONALITIES.length], difficulty);
-      const bot = new RasterBotController({ botId: `${matchId}-bot-${i + 1}`, personality, kind });
+      const bot = new RasterBotController({
+        botId: `${matchId}-bot-${i + 1}`,
+        personality,
+        kind,
+        // Nation confusion shrinks with difficulty (Impossible never errs);
+        // passive Bot filler barely attacks anyway, so it takes no chance.
+        confusionChance: kind === "nation" ? NATION_CONFUSION_CHANCE[difficulty] : 0,
+      });
       unsubBots.push(bot.attach(session));
     }
 

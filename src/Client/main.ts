@@ -21,6 +21,7 @@ const DIFFICULTY_INFO: Record<RasterDifficulty, { name: string; description: str
   easy: { name: "Easy", description: "Fewer, more cautious rivals — room to find your feet." },
   medium: { name: "Medium", description: "A balanced field of opponents pressing at a steady pace." },
   hard: { name: "Hard", description: "A dense, aggressive crowd of nations fighting for every tile." },
+  impossible: { name: "Impossible", description: "Bigger, faster, flawless nations that outgrow a human. Good luck." },
 };
 
 /**

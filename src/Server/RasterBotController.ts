@@ -47,6 +47,18 @@ export interface RasterBotPersonality {
 const NATION_BETRAYAL_TOLERANCE = 1;
 
 /**
+ * Cheap deterministic hash of two integers onto [0, 1) — the confusion roll.
+ * No RNG anywhere in bot decisions, so identical (terrain, intents) replays
+ * stay identical (same guarantee as the engine's fallout/SAM hashing).
+ */
+const hash01 = (a: number, b: number): number => {
+  let h = (Math.imul(a, 374761393) + Math.imul(b, 668265263)) >>> 0;
+  h = (h ^ (h >>> 13)) >>> 0;
+  h = Math.imul(h, 1274126177) >>> 0;
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+};
+
+/**
  * A spread of opponent archetypes. {@link MatchRegistry} hands these out in
  * order so a solo match fields a recognisable mix — a land-grabber, a warmonger,
  * a measured all-rounder, an opportunist and a turtle — rather than five clones.
@@ -95,6 +107,13 @@ export interface RasterBotConfig {
    * diplomacy). See {@link RasterPlayerKind}.
    */
   readonly kind?: RasterPlayerKind;
+  /**
+   * Chance per decision that this nation **misdirects** its move at a
+   * different border target than the one it meant (OpenFront's "nation
+   * confusion", 10%/5%/2.5%/0% by difficulty — see `NATION_CONFUSION_CHANCE`).
+   * Rolled deterministically; 0/absent = never confused.
+   */
+  readonly confusionChance?: number;
 }
 
 export const DEFAULT_RASTER_BOT_CONFIG: RasterBotConfig = {
@@ -478,6 +497,21 @@ export class RasterBotController {
       const softest = enemies.reduce((a, b) => (grid.troopsOf(b.target) < grid.troopsOf(a.target) ? b : a));
       sample = softest.sample;
       fraction = p.attackCommit;
+    }
+
+    // Nation confusion (OpenFront): on lower difficulties a nation sometimes
+    // misdirects its move at a *different* border target than the one it
+    // meant — a readable mistake, not a random click. Candidates exclude
+    // allies (the engine would just reject those); the roll and the pick are
+    // deterministic (hashed tick × seat), so replays stay identical.
+    const confusion = this.config.confusionChance ?? 0;
+    if (confusion > 0 && hash01(session.peekTick(), me) < confusion) {
+      const misdirects = targets.filter(
+        (t) => t.sample !== sample && (t.target === NEUTRAL_PLAYER || !alliances.areAllied(me, t.target)),
+      );
+      if (misdirects.length > 0) {
+        sample = misdirects[(session.peekTick() + me) % misdirects.length].sample;
+      }
     }
 
     const available = pool * (1 - p.reserveFraction);

@@ -91,7 +91,7 @@ Defeat/Spectate.
 | L7 | Spenden / Zielanfragen / Embargo | Truppen-/Gold-Spende an Verbündete, Target-Request, Handels-Embargo (manuell + automatisch bei Verrat) | fehlt komplett | mittel |
 | L8 | Waffen-Feinheiten | MIRV = Schwarm vieler kleiner Sprengköpfe übers Zielterritorium; SAM-Abfangquote je Waffentyp; Defense-Post-Geschütz (Shells vs. Schiffe) | MIRV splittet in 6; SAM flach 75 %; Forts schießen nicht | mittel |
 | L9 | Map-Katalog | Dutzende kuratierte Karten, Featured/All/Favorites/Suche, Random | 3 Größen derselben Earth-Karte | **hoch** (größte Content-Lücke) |
-| L10 | Schwierigkeit „Impossible" + Nation-Confusion | 4 Stufen (Impossible: Start 31 250, Cap ×1.25, Wachstum ×1.05); Fehlangriffs-Chance 10/5/2.5/0 % | 3 Stufen, keine Confusion | niedrig-mittel |
+| L10 | Schwierigkeit „Impossible" + Nation-Confusion | 4 Stufen (Impossible: Start 31 250, Cap ×1.25, Wachstum ×1.05); Fehlangriffs-Chance 10/5/2.5/0 % | **erledigt (PR J)** — inkl. Fix: Solo-Worker seatet jetzt identisch zum Server (Bot/Nation-Split + Difficulty) | — |
 | L11 | Identität/Kosmetik | Name, Flagge, Muster/Skins, Clans | Farbe/Emoji deterministisch aus Id | mittel |
 | L12 | PvP/Lobby/Teams | FFA/Duos/Trios/Quads, Ranked 1v1, Custom-Lobbys | Solo vs. Bots | strukturell größte Lücke |
 | L13 | Kleinkram | Zugtempo 2 Tiles/Tick; K/M/B-Format; tote `DEFENSE_POST_*`-Konstanten; Warship-Veterancy-Pips; Colorblind-Theme; Tag/Nacht-Ambient | Zug/Format/Konstanten **erledigt (PR A)**; offen: Veterancy-Pips, Colorblind, Ambient | niedrig |
@@ -267,7 +267,7 @@ Manifest-Listen. Stattdessen:
   „Random Map"; Karten-Thumbnails client-seitig aus dem Terrain-Raster
   gerendert (kein Asset-Import).
 
-### PR J — „Impossible" + Nation-Confusion (S, P2)
+### PR J — „Impossible" + Nation-Confusion (S, P2) — ✅ umgesetzt (2026-07-02, inkl. Solo-Worker-Seating-Fix)
 
 - `botField.ts`: vierte Stufe (Start 31 250, Cap ×1.25, Wachstum ×1.05,
   Entscheidungs-Kadenz ~2× Easy); Menü-Option.

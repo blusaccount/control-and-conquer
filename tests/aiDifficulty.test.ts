@@ -8,6 +8,8 @@ import {
   NATION_START_MANPOWER,
   NATION_TROOP_CAP_MULTIPLIER,
   NATION_GROWTH_MULTIPLIER,
+  NATION_CONFUSION_CHANCE,
+  scalePersonality,
 } from "../src/Server/botField.js";
 
 const noop = (): void => {};
@@ -65,4 +67,42 @@ test("a Bot filler gets a two-word tribal name, distinct from the curated Nation
   const assigned = messages.find((m) => m.type === "SERVER_RASTER_PLAYER_ASSIGNED");
   const name = assigned?.payload?.name;
   assert.ok(name && /^\w+ \w+$/.test(name), "the Bot's name is two words");
+});
+
+test("an Impossible Nation is seated stronger than a human (OpenFront's 4th tier)", () => {
+  const session = new RasterGameSession({ width: 48, height: 32, seed: 9, difficulty: "impossible" });
+  session.subscribe("bot-1", noop, true, false, undefined, "nation");
+  const grid = session.peekGrid();
+
+  assert.equal(grid.troopsOf(1), 31_250, "Impossible starts a quarter above the human's 25,000");
+  assert.equal(grid.modifiersOf(1).troopCapMultiplier, 1.25, "Impossible outgrows the human ceiling");
+  assert.equal(grid.modifiersOf(1).income, 1.05, "Impossible grows faster than full rate");
+});
+
+test("an Impossible Bot filler keeps its flat Tribe numbers (only Nations scale)", () => {
+  const session = new RasterGameSession({ width: 48, height: 32, seed: 9, difficulty: "impossible" });
+  session.subscribe("bot-1", noop, true, false, undefined, "bot");
+  const grid = session.peekGrid();
+  assert.equal(grid.troopsOf(1), BOT_START_MANPOWER);
+  assert.equal(grid.modifiersOf(1).troopCapMultiplier, BOT_TROOP_CAP_MULTIPLIER);
+});
+
+test("nation confusion shrinks with difficulty and vanishes on Impossible", () => {
+  assert.equal(NATION_CONFUSION_CHANCE.easy, 0.1);
+  assert.equal(NATION_CONFUSION_CHANCE.medium, 0.05);
+  assert.equal(NATION_CONFUSION_CHANCE.hard, 0.025);
+  assert.equal(NATION_CONFUSION_CHANCE.impossible, 0, "Impossible never misdirects");
+});
+
+test("Impossible personalities decide fastest, on the tightest cooldown", () => {
+  const base = { id: "t", decisionCooldownTicks: 60, minPool: 0, reserveFraction: 0, expandCommit: 1, attackCommit: 1, attackPoolRatio: 1, aggression: 0.5 };
+  const easy = scalePersonality(base, "easy");
+  const hard = scalePersonality(base, "hard");
+  const impossible = scalePersonality(base, "impossible");
+  assert.ok(impossible.decisionCooldownTicks < hard.decisionCooldownTicks, "faster than hard");
+  assert.ok(hard.decisionCooldownTicks < easy.decisionCooldownTicks, "hard faster than easy");
+  assert.ok(
+    impossible.decisionCooldownTicks * 2 <= easy.decisionCooldownTicks,
+    "Impossible decides at least twice as often as Easy (OpenFront's cadence spread)",
+  );
 });
