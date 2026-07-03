@@ -28,6 +28,8 @@ import type {
 } from "../Core/types.js";
 import { hideMenu, setStatus, type UiElements } from "./dom.js";
 import { formatCount, formatDuration, formatRate } from "./format.js";
+import { readBoolSetting } from "./settings.js";
+import { digitAction } from "./hotkeys.js";
 import { createWebSocketTransport, createWorkerTransport, type RasterTransport } from "./transport.js";
 import { paintRaster, paintTileInto } from "./rasterPaint.js";
 import { borderColor, playerColor, playerEmoji } from "./rasterPalette.js";
@@ -2976,20 +2978,43 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   /** Right-click opens the radial menu on the clicked tile, suppressing the browser's own context menu. */
+  /** True while the player can issue orders (seated, playing, not eliminated / match over). */
+  const canActNow = (): boolean =>
+    runtime.spawned && runtime.phase === "playing" && !runtime.matchEnded && !runtime.myEliminated;
+
+  /**
+   * Open the radial menu at a tile, on a given level. Shared by the right-click
+   * `contextmenu` handler (root ring) and the modifier-clicks (Ctrl → build,
+   * Alt → emoji), so every entry point positions and renders it identically.
+   */
+  const openRadialAt = (
+    tileX: number,
+    tileY: number,
+    screenX: number,
+    screenY: number,
+    level: "root" | "build" | "emoji",
+  ): void => {
+    if (!runtime.map || !runtime.owner || !runtime.map.inBounds(tileX, tileY)) return;
+    radial = { tileX, tileY, owner: runtime.owner[runtime.map.ref(tileX, tileY)], level };
+    ui.radialMenu.style.left = `${screenX}px`;
+    ui.radialMenu.style.top = `${screenY}px`;
+    ui.radialMenu.classList.remove("hidden");
+    if (level === "build") renderRadialBuild();
+    else if (level === "emoji") renderRadialEmoji();
+    else renderRadialRoot();
+  };
+
   ui.mapCanvas.addEventListener("contextmenu", (event) => {
     event.preventDefault();
-    if (!runtime.map || !runtime.owner) return;
-    const canAct = runtime.spawned && runtime.phase === "playing" && !runtime.matchEnded && !runtime.myEliminated;
-    if (!canAct) return;
+    if (!runtime.map || !runtime.owner || !canActNow()) return;
+    // A right-click while a build/weapon is armed CANCELS the ghost (OpenFront)
+    // rather than opening the menu over it — the natural "never mind" gesture.
+    if (runtime.buildMode) { toggleBuildMode(null); return; }
+    if (runtime.nukeMode) { toggleNukeMode(runtime.nukeMode); return; }
     const { x, y } = toCanvasPixels(event);
     const tileX = Math.floor(runtime.view.x + x / runtime.view.scale);
     const tileY = Math.floor(runtime.view.y + y / runtime.view.scale);
-    if (!runtime.map.inBounds(tileX, tileY)) return;
-    radial = { tileX, tileY, owner: runtime.owner[runtime.map.ref(tileX, tileY)], level: "root" };
-    ui.radialMenu.style.left = `${event.clientX}px`;
-    ui.radialMenu.style.top = `${event.clientY}px`;
-    ui.radialMenu.classList.remove("hidden");
-    renderRadialRoot();
+    openRadialAt(tileX, tileY, event.clientX, event.clientY, "root");
   });
 
   // Dismiss the radial menu on any click elsewhere — the map canvas handles
@@ -3014,6 +3039,13 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   let downY = 0;
 
   ui.mapCanvas.addEventListener("pointerdown", (event) => {
+    // Middle click auto-upgrades the structure under the cursor (OpenFront):
+    // a build order on your own finished structure levels it up.
+    if (event.button === 1) {
+      event.preventDefault();
+      autoUpgradeAt(event);
+      return;
+    }
     // Only the primary (left) button drives pan/expand; the right button is
     // reserved for the radial menu's own `contextmenu` handler below.
     if (event.button !== 0) return;
@@ -3025,9 +3057,28 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     ui.mapCanvas.setPointerCapture(event.pointerId);
   });
 
+  /** Auto-upgrade the player's own structure under the pointer, if it's an upgradable one. */
+  const autoUpgradeAt = (event: { clientX: number; clientY: number }): void => {
+    if (!runtime.map || !canActNow()) return;
+    const { x, y } = toCanvasPixels(event);
+    const tileX = Math.floor(runtime.view.x + x / runtime.view.scale);
+    const tileY = Math.floor(runtime.view.y + y / runtime.view.scale);
+    const b = runtime.buildings.find(
+      (bd) => bd.x === tileX && bd.y === tileY && bd.playerId === runtime.myPlayerId && !bd.underConstruction,
+    );
+    if (!b || !UPGRADABLE_BUILDING_TYPES.includes(b.type)) return;
+    // A build order on an existing same-type structure is an upgrade server-side.
+    sendBuild(tileX, tileY, b.type);
+    runtime.clickRipples.push({ x: tileX, y: tileY, color: runtime.myColor, start: performance.now() });
+    sfx.click();
+    setStatus(ui, `Upgrading ${BUILDING_DEFS[b.type].name} to level ${b.level + 1}…`);
+  };
+
   ui.mapCanvas.addEventListener("pointermove", (event) => {
     if (!dragging || !runtime.map) return;
-    if (Math.abs(event.clientX - downX) + Math.abs(event.clientY - downY) > 4) moved = true;
+    // OpenFront's 10px drag threshold: a press that moves less than this is a
+    // click (attack/order), more is a pan.
+    if (Math.abs(event.clientX - downX) + Math.abs(event.clientY - downY) > 10) moved = true;
     const bounds = ui.mapCanvas.getBoundingClientRect();
     const sx = ui.mapCanvas.width / bounds.width;
     const sy = ui.mapCanvas.height / bounds.height;
@@ -3083,6 +3134,25 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       return;
     }
 
+    // OpenFront's modifier clicks (playing phase, seated): Ctrl/⌘+click opens
+    // the build menu at the tile; Alt+click opens the emoji picker there.
+    if (event.ctrlKey || event.metaKey) {
+      openRadialAt(tileX, tileY, event.clientX, event.clientY, "build");
+      return;
+    }
+    if (event.altKey) {
+      openRadialAt(tileX, tileY, event.clientX, event.clientY, "emoji");
+      return;
+    }
+
+    // OpenFront's `leftClickOpensMenu` option: when enabled, a plain left click
+    // opens the radial menu instead of attacking (a modifier/shift click still
+    // acts). Off by default; read fresh so the toggle takes effect immediately.
+    if (!runtime.buildMode && !runtime.nukeMode && !event.shiftKey && readBoolSetting("leftClickOpensMenu", false)) {
+      openRadialAt(tileX, tileY, event.clientX, event.clientY, "root");
+      return;
+    }
+
     // Nuke mode takes priority over build mode (they're mutually exclusive
     // anyway) — a click launches the armed warhead at the clicked tile.
     if (runtime.nukeMode) {
@@ -3127,6 +3197,12 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     (event) => {
       if (!runtime.map) return;
       event.preventDefault();
+      // Shift+scroll adjusts the attack ratio instead of zooming (OpenFront):
+      // scroll up = more troops committed, down = fewer, by the ±10 step.
+      if (event.shiftKey) {
+        nudgeAttackRatio(event.deltaY < 0 ? 10 : -10);
+        return;
+      }
       const { x, y } = toCanvasPixels(event);
       const tileX = runtime.view.x + x / runtime.view.scale;
       const tileY = runtime.view.y + y / runtime.view.scale;
@@ -3250,23 +3326,14 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
     if (event.metaKey || event.ctrlKey || event.altKey) return;
 
-    // 1..0 select/toggle a buildable/launchable item — OpenFront binds every
-    // structure and weapon across the digit row. Building types fill 1..N
-    // first (menu order); any digits left over continue into the weapon
-    // kinds (so with 7 building types, 8/9/0 arm Atom/Hydrogen/MIRV).
-    if (/^[0-9]$/.test(event.key)) {
-      const slot = event.key === "0" ? 9 : Number(event.key) - 1;
-      if (slot < BUILDING_TYPES.length) {
-        toggleBuildMode(BUILDING_TYPES[slot]);
-        event.preventDefault();
-        return;
-      }
-      const weaponIndex = slot - BUILDING_TYPES.length;
-      if (weaponIndex < NUKE_KINDS.length) {
-        toggleNukeMode(NUKE_KINDS[weaponIndex]);
-        event.preventDefault();
-        return;
-      }
+    // Digit row (and Numpad / Shift+digit aliases, like OpenFront) arm a build
+    // or weapon by its fixed slot — see `digitAction` (OpenFront's mapping).
+    const action = digitAction(event.code);
+    if (action) {
+      if ("build" in action) toggleBuildMode(action.build);
+      else toggleNukeMode(action.nuke);
+      event.preventDefault();
+      return;
     }
 
     let handled = true;
@@ -3285,10 +3352,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       case "k": proposeAllianceAtCursor(); break; // OpenFront: request alliance
       case "l": breakAllianceAtCursor(); break; //             break alliance
       case "r": if (event.shiftKey) retaliate(); else handled = false; break; // Shift+R: retaliate
-      case " ": runtime.showTerrainOnly = !runtime.showTerrainOnly; break; // alt terrain view
+      case " ": runtime.showTerrainOnly = true; break; // alt terrain view — HOLD (released on keyup), like OpenFront
       case "m": runtime.showCoordinateGrid = !runtime.showCoordinateGrid; break; // coordinate grid
-      case "q": zoomBy(1 / 1.2); break; // zoom out
-      case "e": zoomBy(1.2); break; //     zoom in
+      case "q": case "-": zoomBy(1 / 1.2); break; // zoom out (Q or -)
+      case "e": case "=": zoomBy(1.2); break; //     zoom in  (E or =)
       case "c": centerCamera(); break; // centre on home
       case "w": case "arrowup": panByFraction(0, -panStep); break;
       case "s": case "arrowdown": panByFraction(0, panStep); break;
@@ -3298,6 +3365,14 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     }
     if (handled) event.preventDefault();
   });
+
+  // Alternate (terrain-only) view is HELD, not toggled — matching OpenFront's
+  // Space binding: down shows raw terrain, release restores the ownership view.
+  window.addEventListener("keyup", (event) => {
+    if (event.key === " ") runtime.showTerrainOnly = false;
+  });
+  // Releasing focus (tab-away) must not leave the terrain view stuck on.
+  window.addEventListener("blur", () => { runtime.showTerrainOnly = false; });
 
   // Click (or drag) the minimap to jump the main camera so the clicked point
   // becomes the centre of the viewport.

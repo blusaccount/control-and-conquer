@@ -12,6 +12,9 @@ import { setSoundEnabled } from "./sound.js";
 const STORAGE_PREFIX = "cnc.settings.";
 
 /** Read a boolean setting, falling back to `fallback` when unset or unreadable. */
+export const readBoolSetting = (key: string, fallback: boolean): boolean => readBool(key, fallback);
+
+/** Read a boolean setting, falling back to `fallback` when unset or unreadable. */
 const readBool = (key: string, fallback: boolean): boolean => {
   try {
     const raw = window.localStorage.getItem(STORAGE_PREFIX + key);
@@ -40,6 +43,7 @@ export const initSettings = (): void => {
   const eventsPanel = document.querySelector<HTMLDivElement>("#eventsPanel");
   const toggleEvents = document.querySelector<HTMLInputElement>("#toggleEvents");
   const toggleSound = document.querySelector<HTMLInputElement>("#toggleSound");
+  const toggleLeftClickMenu = document.querySelector<HTMLInputElement>("#toggleLeftClickMenu");
 
   // Event log: hidden by default, revealed when the player turns it on.
   const applyEvents = (show: boolean): void => {
@@ -63,6 +67,16 @@ export const initSettings = (): void => {
     toggleSound.addEventListener("change", () => {
       writeBool("sound", toggleSound.checked);
       setSoundEnabled(toggleSound.checked);
+    });
+  }
+
+  // Left-click behaviour: attack directly (default) vs open the radial menu —
+  // OpenFront's `leftClickOpensMenu`. rasterClient reads the persisted value at
+  // click time, so this only needs to write it.
+  if (toggleLeftClickMenu) {
+    toggleLeftClickMenu.checked = readBool("leftClickOpensMenu", false);
+    toggleLeftClickMenu.addEventListener("change", () => {
+      writeBool("leftClickOpensMenu", toggleLeftClickMenu.checked);
     });
   }
 
