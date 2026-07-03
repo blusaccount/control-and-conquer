@@ -34,6 +34,13 @@ export interface PlayerModifiers {
    * of the {@link income} growth multiplier.
    */
   troopCapMultiplier: number;
+  /**
+   * Scales the troops this player spends to claim a **neutral** tile. Mirrors
+   * OpenFront's cheaper Bot expansion: a Tribe pays `mag/10` per neutral tile
+   * versus everyone else's `mag/5`, so passive fillers blanket the map's empty
+   * land fast. 1 = the standard cost; a Bot seat runs at 0.5.
+   */
+  neutralCostMultiplier: number;
 }
 
 /** A modifiers bundle with no effect — every player's baseline. */
@@ -45,4 +52,5 @@ export const IDENTITY_MODIFIERS: PlayerModifiers = Object.freeze({
   shipCapacity: 1,
   income: 1,
   troopCapMultiplier: 1,
+  neutralCostMultiplier: 1,
 });

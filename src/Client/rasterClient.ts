@@ -56,6 +56,11 @@ export interface RasterClientOptions {
   /** Selected difficulty (size + aggression of the AI field). */
   difficulty: RasterDifficulty;
   /**
+   * Total AI opponents to seat (OpenFront's `bots` slider analogue). `undefined`
+   * (or 0 sentinel from the menu) lets the server auto-scale the field to the map.
+   */
+  fieldSize?: number;
+  /**
    * How the match is hosted. `"worker"` (default) runs the whole solo sim in a
    * browser Web Worker with no network round-trip (OpenFront-style client-side
    * lockstep); `"websocket"` connects to the authoritative server instead.
@@ -788,7 +793,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   transport.onOpen(() => {
     const join: RasterClientMessage = {
       type: "CLIENT_RASTER_JOIN",
-      payload: { mapId: options.mapId, difficulty: options.difficulty },
+      payload: {
+        mapId: options.mapId,
+        difficulty: options.difficulty,
+        ...(options.fieldSize !== undefined ? { fieldSize: options.fieldSize } : {}),
+      },
     };
     transport.send(join);
   });

@@ -105,8 +105,24 @@ if (difficultyCards) {
   }
 }
 
-// Start the run on the currently selected map + difficulty.
+// AI-opponents field-size slider: 0 = "Auto" (server scales to the map), any
+// other value seats exactly that many AI (bot-heavy split). Mirrors OpenFront's
+// bots slider.
+const fieldSizeInput = document.querySelector<HTMLInputElement>("#fieldSizeInput");
+const fieldSizeOutput = document.querySelector<HTMLOutputElement>("#fieldSizeOutput");
+const renderFieldSize = (): void => {
+  if (!fieldSizeInput || !fieldSizeOutput) return;
+  const n = Number(fieldSizeInput.value);
+  fieldSizeOutput.textContent = n === 0 ? "Auto (scaled to map)" : `${n} opponents`;
+};
+fieldSizeInput?.addEventListener("input", renderFieldSize);
+renderFieldSize();
+
+// Start the run on the currently selected map + difficulty + field size.
 const startButton = document.querySelector<HTMLButtonElement>("#startButton");
 startButton?.addEventListener("click", () => {
-  startRasterClient(ui, { mapId: selectedMapId, difficulty: selectedDifficulty });
+  const raw = fieldSizeInput ? Number(fieldSizeInput.value) : 0;
+  // 0 is the "Auto" sentinel → omit so the server auto-scales to the map.
+  const fieldSize = raw > 0 ? raw : undefined;
+  startRasterClient(ui, { mapId: selectedMapId, difficulty: selectedDifficulty, fieldSize });
 });

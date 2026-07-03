@@ -1,20 +1,16 @@
-import {
-  FILLER_PERSONALITY,
-  RasterBotController,
-  RASTER_BOT_PERSONALITIES,
-} from "./RasterBotController.js";
+import { RasterBotController } from "./RasterBotController.js";
 import { RasterGameSession, type RasterMessageHandler, type RasterGameSessionOptions } from "./RasterGameSession.js";
 import { resolveHeightmapSessionMap } from "./sessionMap.js";
 import { RasterBuildIntent, RasterExpandIntent, RasterNukeIntent } from "../Core/types.js";
 import type { RasterDifficulty } from "../Core/messages.js";
 import { SIMULATION_TICK_RATE, SPAWN_PHASE_SECONDS } from "./simulationConfig.js";
 import { AiGameSession } from "./aiApi.js";
-import { DIFFICULTY_BOT_COUNT, kindForSeat, MAX_RASTER_BOTS, NATION_CONFUSION_CHANCE, scaleBotCount, scalePersonality } from "./botField.js";
+import { buildFieldConfigs, DIFFICULTY_BOT_COUNT, MAX_FIELD, resolveFieldSize, scaleFieldCount } from "./botField.js";
 
 // Re-exported for callers (e.g. the server entry) that import the field rules
 // from here; the rules themselves live in the Node-free `botField` module so a
 // browser worker can seat an identical bot field for a local solo match.
-export { DIFFICULTY_BOT_COUNT, MAX_RASTER_BOTS, scaleBotCount };
+export { DIFFICULTY_BOT_COUNT, MAX_FIELD, scaleFieldCount };
 
 /**
  * Manages isolated raster (openfront-style) matches. Each connecting client is
@@ -43,7 +39,7 @@ export class MatchRegistry {
     send: RasterMessageHandler,
     options: RasterGameSessionOptions = {},
     difficulty: RasterDifficulty = "medium",
-    botOverride?: number,
+    fieldOverride?: number,
   ): () => void {
     this.matchSequence += 1;
     const matchId = `match-${this.matchSequence}-raster-solo`;
@@ -71,29 +67,15 @@ export class MatchRegistry {
     }
     this.clientToSession.set(clientId, session);
 
-    // Field size: a fixed override when supplied, otherwise scaled to the land
-    // the map actually offers (read straight off the freshly built grid).
-    const botCount = botOverride ?? scaleBotCount(session.peekGrid().capturableCount, difficulty);
-    const seats = Math.max(0, Math.min(Math.floor(botCount) || 0, MAX_RASTER_BOTS));
-    // Every seat is either a full-strategy Nation (OpenFront's per-difficulty
-    // handicaps + one of the five personalities) or a passive Bot filler
-    // (flat handicap, the single FILLER_PERSONALITY) — see
-    // {@link kindForSeat}. Only Nation personalities are difficulty-scaled;
-    // a Bot's numbers are already flat by design (see `seatPlayer`).
+    // The AI field: the lobby's requested size (OpenFront's `bots` slider) when
+    // given, else scaled to the land the map offers. buildFieldConfigs carves
+    // it bot-heavy (a handful of full Nations amid a passive Tribe crowd) and
+    // hands each seat its cadence/phase/handicaps — the same logic the browser
+    // solo worker uses, so the two seating paths can never drift.
+    const total = resolveFieldSize(session.peekGrid().capturableCount, difficulty, fieldOverride);
     const unsubBots: Array<() => void> = [];
-    for (let i = 0; i < seats; i += 1) {
-      const kind = kindForSeat(i);
-      const personality =
-        kind === "bot" ? FILLER_PERSONALITY : scalePersonality(RASTER_BOT_PERSONALITIES[i % RASTER_BOT_PERSONALITIES.length], difficulty);
-      const bot = new RasterBotController({
-        botId: `${matchId}-bot-${i + 1}`,
-        personality,
-        kind,
-        // Nation confusion shrinks with difficulty (Impossible never errs);
-        // passive Bot filler barely attacks anyway, so it takes no chance.
-        confusionChance: kind === "nation" ? NATION_CONFUSION_CHANCE[difficulty] : 0,
-      });
-      unsubBots.push(bot.attach(session));
+    for (const cfg of buildFieldConfigs(total, difficulty, matchId)) {
+      unsubBots.push(new RasterBotController(cfg).attach(session));
     }
 
     return () => {

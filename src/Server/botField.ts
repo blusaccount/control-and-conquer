@@ -1,4 +1,4 @@
-import type { RasterBotPersonality } from "./RasterBotController.js";
+import { FILLER_PERSONALITY, RASTER_BOT_PERSONALITIES, type RasterBotConfig, type RasterBotPersonality } from "./RasterBotController.js";
 import type { RasterDifficulty } from "../Core/messages.js";
 
 /**
@@ -22,14 +22,39 @@ import type { RasterDifficulty } from "../Core/messages.js";
 export type RasterPlayerKind = "human" | "bot" | "nation";
 
 /**
- * Deterministic split of an AI field into passive Bot filler vs. full-strategy
- * Nation opponents: OpenFront controls the two with independent sliders (Bot
- * count 0–400, Nation count from the map manifest); lacking a manifest, this
- * project instead reserves a fixed fraction of the scaled field for Bots — our
- * own clean-room choice, not a sourced ratio. One seat in three is a Bot, so a
- * field is mostly real opponents with a lighter-weight crowd mixed in.
+ * Which tier the seat at `seatIndex` plays, given how many **Nation** seats the
+ * field opens with. OpenFront seats the two independently — a `bots` count
+ * (0–400, default 400) of passive Tribe fillers plus a `nations` count from the
+ * map manifest (e.g. 75 on World, 25% on a compact map) — so a real game is
+ * **bot-heavy** (~84% Tribes: 400 bots vs 75 nations). We mirror that split:
+ * the first `nations` seats are full Nations (they take the most-spread spawn
+ * tiles), the rest are Tribe fillers, so the world reads as a dense crowd of
+ * passive tribes sprinkled with a handful of dangerous nations — not the
+ * even-strength melee an even split produces. See {@link splitField}.
  */
-export const kindForSeat = (seatIndex: number): RasterPlayerKind => (seatIndex % 3 === 2 ? "bot" : "nation");
+export const kindForSeat = (seatIndex: number, nations: number): RasterPlayerKind =>
+  seatIndex < nations ? "nation" : "bot";
+
+/**
+ * Fraction of an AI field that is full **Nations** (the rest are Tribe
+ * fillers), matching OpenFront's default density: World seats 75 nations
+ * alongside 400 bots → 75/475 ≈ 0.16. So a field is ~1 nation per ~5 bots — a
+ * few real powers amid a passive crowd.
+ */
+export const NATION_FIELD_FRACTION = 0.16;
+
+/**
+ * Split a total AI field of `total` opponents into {nations, bots} at
+ * OpenFront's ~1:5 ratio ({@link NATION_FIELD_FRACTION}), with at least one
+ * Nation whenever the field isn't empty (an all-Tribe world has nobody who
+ * builds/allies/nukes, which never happens in OpenFront).
+ */
+export const splitField = (total: number): { nations: number; bots: number } => {
+  const t = Math.max(0, Math.floor(total));
+  if (t === 0) return { nations: 0, bots: 0 };
+  const nations = Math.max(1, Math.round(t * NATION_FIELD_FRACTION));
+  return { nations: Math.min(nations, t), bots: t - Math.min(nations, t) };
+};
 
 /**
  * Starting troops a **Bot** (Tribe) is seated with — OpenFront's flat
@@ -78,22 +103,30 @@ export const tribeName = (seatIndex: number): string => {
 };
 
 /**
- * Most opponents a solo match can seat (the session caps total nations at 48, so
- * up to 47 bots alongside the human). Difficulty picks how many actually spawn.
- * The cap is high so the larger Earth maps fill with an OpenFront-style crowd
- * rather than topping out early.
+ * Most AI opponents a solo match seats. OpenFront routinely fields ~475 AI on
+ * World (400 bots + 75 nations); our engine caps lower for the browser
+ * renderer, but 200 is far past the old 47 and (measured) ~3 ms/tick with 120
+ * passive seats, so the world reads as a genuine OpenFront-style crowd rather
+ * than a sparse handful. The field scales with the map up to this ceiling
+ * (see {@link scaleFieldCount}).
  */
-export const MAX_RASTER_BOTS = 47;
+export const MAX_FIELD = 200;
+
+/**
+ * @deprecated Kept as an alias of {@link MAX_FIELD} for callers/tests that
+ * still import the old name. The 47-seat cap it named is gone.
+ */
+export const MAX_RASTER_BOTS = MAX_FIELD;
 
 /**
  * Smallest field seated per difficulty — the floor used on the smallest maps and
- * the procedural fallback. Bigger maps grow well past this (see {@link scaleBotCount}).
+ * the procedural fallback. Bigger maps grow well past this (see {@link scaleFieldCount}).
  */
 export const DIFFICULTY_BOT_COUNT: Record<RasterDifficulty, number> = {
-  easy: 4,
-  medium: 6,
-  hard: 8,
-  impossible: 10,
+  easy: 12,
+  medium: 18,
+  hard: 24,
+  impossible: 30,
 };
 
 // --- AI strength by difficulty ---------------------------------------------
@@ -130,10 +163,15 @@ export const NATION_GROWTH_MULTIPLIER: Record<RasterDifficulty, number> = {
 
 /**
  * Chance per decision that a nation **misdirects** its move at a different
- * border target than the one it meant — OpenFront's "nation confusion", which
- * shrinks with difficulty (10%/5%/2.5%/0%) so weaker tiers make readable
- * mistakes and Impossible plays flawlessly. Rolled deterministically (hashed
- * tick × seat, no RNG) so replays stay identical.
+ * border target than the one it meant. Weaker tiers make more readable
+ * mistakes; Impossible plays flawlessly. Rolled deterministically (hashed tick
+ * × seat, no RNG) so replays stay identical.
+ *
+ * NOTE: current OpenFront `main` no longer carries an explicit per-difficulty
+ * "confusion" percentage (it was community-documented for older versions and
+ * appears to have been folded into `AiAttackBehavior`'s random-boat rolls). We
+ * keep a small, shrinking-with-difficulty version as our own readable-mistakes
+ * flavour — it is not claimed as a source-exact OpenFront value.
  */
 export const NATION_CONFUSION_CHANCE: Record<RasterDifficulty, number> = {
   easy: 0.1,
@@ -143,60 +181,152 @@ export const NATION_CONFUSION_CHANCE: Record<RasterDifficulty, number> = {
 };
 
 /**
- * Land-per-nation density as a square-root divisor, by difficulty: the field
+ * Ticks between a **Nation**'s attack decisions, drawn deterministically per
+ * seat from OpenFront's per-difficulty range (`NationExecution` cadence):
+ * Easy 65–100, Medium 55–70, Hard 45–60, Impossible 30–50. So nations act
+ * deliberately (every ~3–10 s), not frantically — the measured OpenFront
+ * rhythm, with Impossible reacting roughly twice as often as Easy.
+ */
+export const NATION_DECISION_TICKS: Record<RasterDifficulty, readonly [number, number]> = {
+  easy: [65, 100],
+  medium: [55, 70],
+  hard: [45, 60],
+  impossible: [30, 50],
+};
+
+/** Ticks between a passive **Bot** (Tribe)'s attacks — OpenFront's `nextInt(40, 80)`. */
+export const BOT_DECISION_TICKS: readonly [number, number] = [40, 80];
+
+/** Deterministic per-seat integer in `[lo, hi]` — a stand-in for OpenFront's per-seat RNG cadence. */
+const seatPick = (seatIndex: number, [lo, hi]: readonly [number, number]): number => {
+  let h = (Math.imul(seatIndex + 1, 2654435761) ^ 0x9e3779b9) >>> 0;
+  h = (h ^ (h >>> 15)) >>> 0;
+  return lo + (h % (hi - lo + 1));
+};
+
+/** A Nation's per-seat decision cadence for `difficulty` (from {@link NATION_DECISION_TICKS}). */
+export const nationDecisionCadence = (difficulty: RasterDifficulty, seatIndex: number): number =>
+  seatPick(seatIndex, NATION_DECISION_TICKS[difficulty]);
+
+/** A Bot's per-seat decision cadence (from {@link BOT_DECISION_TICKS}). */
+export const botDecisionCadence = (seatIndex: number): number => seatPick(seatIndex, BOT_DECISION_TICKS);
+
+/** A per-seat phase offset so the field doesn't all decide on the same tick (thundering herd). */
+export const seatPhaseOffset = (seatIndex: number, cadence: number): number =>
+  seatPick(seatIndex + 7919, [0, Math.max(0, cadence - 1)]);
+
+/**
+ * Land-per-opponent density as a square-root divisor, by difficulty: the field
  * grows with the square root of the capturable land divided by this, so a 4×
  * larger map roughly doubles the field rather than quadrupling it. Smaller =
- * denser, so Hard packs more rival nations onto the same map than Easy.
+ * denser, so Impossible packs the most opponents onto the same map. Tuned so
+ * earth-standard (~155k land) seats ~80, earth-large (~620k) ~160 and
+ * earth-huge (~2.5M) hits the {@link MAX_FIELD} ceiling — an OpenFront-scale
+ * crowd rather than the old sparse handful.
  */
 const DIFFICULTY_FIELD_DIVISOR: Record<RasterDifficulty, number> = {
-  easy: 24,
-  medium: 16,
-  hard: 11,
-  impossible: 9,
+  easy: 7,
+  medium: 5,
+  hard: 4.2,
+  impossible: 3.6,
 };
 
 /**
- * Number of rival nations to seat for a map of `capturableTiles` land, scaled to
- * the map so small maps (the Classic sketch) stay a readable handful while the
- * large real-world Earth maps fill up with many more nations. The count climbs
- * with the square root of the land available, is floored per difficulty so even
- * tiny maps field some opponents, and is capped at the session's seat limit.
+ * Total AI opponents to seat for a map of `capturableTiles` land — bots plus
+ * nations combined (split bot-heavy by {@link splitField}). Scales with the
+ * square root of the land so small maps stay readable and the big Earth maps
+ * fill with an OpenFront-style crowd, floored per difficulty and capped at
+ * {@link MAX_FIELD}.
  */
-export const scaleBotCount = (capturableTiles: number, difficulty: RasterDifficulty): number => {
+export const scaleFieldCount = (capturableTiles: number, difficulty: RasterDifficulty): number => {
   const byLand = Math.round(Math.sqrt(Math.max(0, capturableTiles)) / DIFFICULTY_FIELD_DIVISOR[difficulty]);
-  return Math.max(DIFFICULTY_BOT_COUNT[difficulty], Math.min(byLand, MAX_RASTER_BOTS));
+  return Math.max(DIFFICULTY_BOT_COUNT[difficulty], Math.min(byLand, MAX_FIELD));
 };
 
 /**
- * Tilt a personality by difficulty: Easy bots react slower and pick fewer
- * fights; Hard bots react faster and press harder. Medium keeps the preset.
+ * @deprecated Old name for {@link scaleFieldCount}. The field is no longer
+ * "bots only" (it's a bot-heavy mix of bots + nations); kept so existing
+ * callers/tests keep compiling.
+ */
+export const scaleBotCount = scaleFieldCount;
+
+/**
+ * Tilt a Nation personality by difficulty. Cadence now comes from
+ * {@link nationDecisionCadence} (per-seat, applied by the seat loop), so this
+ * only scales **aggression**: Easy nations pick fewer fights, Hard/Impossible
+ * press harder. Medium keeps the preset.
  */
 export const scalePersonality = (
   p: RasterBotPersonality,
   difficulty: RasterDifficulty,
 ): RasterBotPersonality => {
-  if (difficulty === "impossible") {
-    // OpenFront's Impossible nations decide roughly twice as often as Easy —
-    // the fastest cadence, on top of the biggest start/cap/growth handicaps.
-    return {
-      ...p,
-      decisionCooldownTicks: Math.max(3, Math.round(p.decisionCooldownTicks * 0.5)),
-      aggression: Math.min(1, p.aggression * 1.5),
-    };
-  }
-  if (difficulty === "hard") {
-    return {
-      ...p,
-      decisionCooldownTicks: Math.max(4, Math.round(p.decisionCooldownTicks * 0.7)),
-      aggression: Math.min(1, p.aggression * 1.3),
-    };
-  }
-  if (difficulty === "easy") {
-    return {
-      ...p,
-      decisionCooldownTicks: Math.round(p.decisionCooldownTicks * 1.4),
-      aggression: p.aggression * 0.6,
-    };
-  }
+  if (difficulty === "impossible") return { ...p, aggression: Math.min(1, p.aggression * 1.5) };
+  if (difficulty === "hard") return { ...p, aggression: Math.min(1, p.aggression * 1.3) };
+  if (difficulty === "easy") return { ...p, aggression: p.aggression * 0.6 };
   return p;
+};
+
+/**
+ * Build the ordered {@link RasterBotConfig} list for an AI field — the single
+ * source of truth both seating paths (the authoritative {@link MatchRegistry}
+ * and the browser solo worker) use, so they can never drift.
+ *
+ * `total` is the AI opponent count (from the lobby's `fieldSize` or
+ * {@link scaleFieldCount}); {@link splitField} carves it bot-heavy. The first
+ * `nations` seats are full **Nations** — difficulty-scaled aggression, a
+ * per-seat {@link nationDecisionCadence}, and the per-difficulty confusion
+ * chance — and take the most-spread spawn tiles. The rest are passive **Bot**
+ * fillers on OpenFront's flat Tribe numbers with a per-seat
+ * {@link botDecisionCadence}. Every seat gets a {@link seatPhaseOffset} so the
+ * field doesn't all decide on the same tick. `idPrefix` namespaces the bot ids.
+ */
+export const buildFieldConfigs = (
+  total: number,
+  difficulty: RasterDifficulty,
+  idPrefix: string,
+): RasterBotConfig[] => {
+  const { nations, bots } = splitField(total);
+  const configs: RasterBotConfig[] = [];
+  const seats = nations + bots;
+  for (let i = 0; i < seats; i += 1) {
+    const kind = kindForSeat(i, nations);
+    if (kind === "nation") {
+      const cadence = nationDecisionCadence(difficulty, i);
+      configs.push({
+        botId: `${idPrefix}-bot-${i + 1}`,
+        personality: {
+          ...scalePersonality(RASTER_BOT_PERSONALITIES[i % RASTER_BOT_PERSONALITIES.length], difficulty),
+          decisionCooldownTicks: cadence,
+        },
+        kind,
+        confusionChance: NATION_CONFUSION_CHANCE[difficulty],
+        phaseOffset: seatPhaseOffset(i, cadence),
+      });
+    } else {
+      const cadence = botDecisionCadence(i);
+      configs.push({
+        botId: `${idPrefix}-bot-${i + 1}`,
+        personality: { ...FILLER_PERSONALITY, decisionCooldownTicks: cadence },
+        kind,
+        confusionChance: 0,
+        phaseOffset: seatPhaseOffset(i, cadence),
+      });
+    }
+  }
+  return configs;
+};
+
+/**
+ * Resolve the AI opponent count for a match: the lobby's explicit `fieldSize`
+ * when given (clamped to `[0, MAX_FIELD]`), else the map-scaled default.
+ */
+export const resolveFieldSize = (
+  capturableTiles: number,
+  difficulty: RasterDifficulty,
+  requested: number | undefined,
+): number => {
+  if (requested !== undefined && Number.isFinite(requested)) {
+    return Math.max(0, Math.min(Math.floor(requested), MAX_FIELD));
+  }
+  return scaleFieldCount(capturableTiles, difficulty);
 };

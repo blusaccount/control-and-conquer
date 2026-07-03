@@ -34,6 +34,13 @@ export interface RasterJoinPayload {
    * default. Controls the size and aggression of the AI field.
    */
   difficulty?: RasterDifficulty;
+  /**
+   * Total AI opponents to seat (bots + nations combined), OpenFront's `bots`
+   * slider analogue. Optional: when absent the server auto-scales the field to
+   * the map (`scaleFieldCount`). Clamped to `[0, MAX_FIELD]` and split
+   * bot-heavy by `splitField`. 0 seats an empty world (sandbox).
+   */
+  fieldSize?: number;
 }
 
 export type RasterJoinClientMessage = { type: "CLIENT_RASTER_JOIN"; payload: RasterJoinPayload };

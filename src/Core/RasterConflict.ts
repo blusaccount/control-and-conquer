@@ -826,15 +826,20 @@ export class RasterConflict {
    */
   private attackerTileLoss(
     ref: TileRef,
+    attacker: PlayerId,
     target: PlayerId,
     attackForce: number,
     defenderTroops: number,
     defenderDensity: number,
   ): number {
     const mag = this.tileMagnitude(ref, target);
-    return target === NEUTRAL_PLAYER
-      ? neutralLossPerTile(mag)
-      : attackerLossPerTile(defenderTroops, defenderDensity, attackForce, mag);
+    if (target === NEUTRAL_PLAYER) {
+      // OpenFront's Bots pay half for neutral land (mag/10 vs mag/5), so
+      // passive Tribe fillers blanket empty land fast; carried by the
+      // attacker's neutralCostMultiplier (1 for everyone else, 0.5 for a Bot).
+      return neutralLossPerTile(mag) * this.grid.modifiersOf(attacker).neutralCostMultiplier;
+    }
+    return attackerLossPerTile(defenderTroops, defenderDensity, attackForce, mag);
   }
 
   /**
@@ -940,7 +945,7 @@ export class RasterConflict {
       ? 1
       : largeDefenderLossFactor(this.grid.tileCountOf(target)) *
         largeAttackerLossFactor(this.grid.tileCountOf(attacker));
-    return Math.ceil(this.attackerTileLoss(ref, target, attackerForce, defTroops, defDensity) * largeFactor);
+    return Math.ceil(this.attackerTileLoss(ref, attacker, target, attackerForce, defTroops, defDensity) * largeFactor);
   }
 
   /**
@@ -1346,7 +1351,7 @@ export class RasterConflict {
         if (this.grid.ownerOf(ref) !== attack.target) continue;
         // OpenFront's per-tile attacker loss: the ratio shifts as the assault is
         // spent down, so a front that bleeds out grinds to a halt on the spot.
-        const loss = this.attackerTileLoss(ref, attack.target, attack.committed, defenderTroops, defenderDensity) * largeFactor;
+        const loss = this.attackerTileLoss(ref, attack.attacker, attack.target, attack.committed, defenderTroops, defenderDensity) * largeFactor;
         if (attack.committed < loss) break;
 
         if (vsPlayer) this.grid.addTroops(attack.target, -defenderBleed);

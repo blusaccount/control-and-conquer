@@ -1,7 +1,7 @@
 import { GameMap } from "../../Core/GameMap.js";
 import { RasterGameSession } from "../../Server/RasterGameSession.js";
-import { FILLER_PERSONALITY, RasterBotController, RASTER_BOT_PERSONALITIES } from "../../Server/RasterBotController.js";
-import { kindForSeat, MAX_RASTER_BOTS, NATION_CONFUSION_CHANCE, scaleBotCount, scalePersonality } from "../../Server/botField.js";
+import { RasterBotController } from "../../Server/RasterBotController.js";
+import { buildFieldConfigs, resolveFieldSize } from "../../Server/botField.js";
 import { SIMULATION_TICK_RATE, SPAWN_PHASE_SECONDS } from "../../Server/simulationConfig.js";
 import { isRasterDifficulty, type RasterDifficulty } from "../../Core/messages.js";
 import type { RasterClientMessage, RasterServerMessage } from "../../Core/types.js";
@@ -45,10 +45,11 @@ const emit = (message: RasterServerMessage): void => {
 };
 
 /** Fetch the prebuilt terrain plane and seat the match (human + bot field). */
-const start = async (mapId: string | undefined, rawDifficulty: unknown): Promise<void> => {
+const start = async (mapId: string | undefined, rawDifficulty: unknown, rawFieldSize: unknown): Promise<void> => {
   if (starting || session) return;
   starting = true;
   const difficulty: RasterDifficulty = isRasterDifficulty(rawDifficulty) ? rawDifficulty : "medium";
+  const fieldSize = typeof rawFieldSize === "number" && Number.isFinite(rawFieldSize) ? rawFieldSize : undefined;
 
   // No id → let the server pick its default map (matches the WebSocket path).
   const res = await fetch(mapId ? `/api/solo/map?id=${encodeURIComponent(mapId)}` : "/api/solo/map");
@@ -74,22 +75,13 @@ const start = async (mapId: string | undefined, rawDifficulty: unknown): Promise
   // the bot field — identical seating order to the server's MatchRegistry.
   live.subscribe(LOCAL_CLIENT_ID, emit, /*autoSpawn*/ false, /*wantsRaster*/ true);
 
-  const seats = Math.max(0, Math.min(scaleBotCount(live.peekGrid().capturableCount, difficulty), MAX_RASTER_BOTS));
-  // Identical seat mix to the server's MatchRegistry: every third seat is a
-  // passive Bot/Tribe filler, the rest full Nations with difficulty-scaled
-  // personalities and the per-difficulty confusion chance. (This path used to
-  // seat plain nations only — a drift from the websocket path, now fixed.)
-  for (let i = 0; i < seats; i += 1) {
-    const kind = kindForSeat(i);
-    const personality =
-      kind === "bot" ? FILLER_PERSONALITY : scalePersonality(RASTER_BOT_PERSONALITIES[i % RASTER_BOT_PERSONALITIES.length], difficulty);
-    const bot = new RasterBotController({
-      botId: `${LOCAL_CLIENT_ID}-bot-${i + 1}`,
-      personality,
-      kind,
-      confusionChance: kind === "nation" ? NATION_CONFUSION_CHANCE[difficulty] : 0,
-    });
-    botUnsubs.push(bot.attach(live));
+  // The AI field: the lobby's requested size (OpenFront's `bots` slider) or the
+  // map-scaled default. buildFieldConfigs is the exact same seating logic the
+  // authoritative server uses (bot-heavy mix, per-seat cadence/phase/handicaps),
+  // so solo-worker and websocket matches can never drift.
+  const total = resolveFieldSize(live.peekGrid().capturableCount, difficulty, fieldSize);
+  for (const cfg of buildFieldConfigs(total, difficulty, LOCAL_CLIENT_ID)) {
+    botUnsubs.push(new RasterBotController(cfg).attach(live));
   }
 
   timer = setInterval(() => live.tick(), Math.round(1000 / SIMULATION_TICK_RATE)) as unknown as number;
@@ -101,7 +93,7 @@ ctx.onmessage = (event): void => {
   const message = data.message;
 
   if (message.type === "CLIENT_RASTER_JOIN") {
-    void start(message.payload.mapId, message.payload.difficulty);
+    void start(message.payload.mapId, message.payload.difficulty, message.payload.fieldSize);
     return;
   }
   if (!session) return;

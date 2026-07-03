@@ -34,6 +34,7 @@ import {
   BOT_GROWTH_MULTIPLIER,
   BOT_START_MANPOWER,
   BOT_TROOP_CAP_MULTIPLIER,
+  MAX_FIELD,
   NATION_GROWTH_MULTIPLIER,
   NATION_START_MANPOWER,
   NATION_TROOP_CAP_MULTIPLIER,
@@ -173,8 +174,13 @@ const NATION_NAMES: readonly string[] = [
   "Raven Banner", "Otter State", "Bison Clans", "Viper Cult", "Moose Holds", "Orca Fleet",
 ];
 
-/** Maximum nations a single session can seat (1 human + up to N-1 bots). */
-const MAX_PLAYERS = NATION_NAMES.length;
+/**
+ * Maximum players a single session can seat — decoupled from the curated
+ * {@link NATION_NAMES} list (Bot/Tribe seats draw procedural {@link tribeName}s,
+ * so the field can far outgrow the name list). Sized to {@link MAX_FIELD} AI
+ * plus headroom for human seats, so a crowded OpenFront-style world fits.
+ */
+const MAX_PLAYERS = MAX_FIELD + 8;
 
 /**
  * Display name + colour for a player id. A Bot seat gets a procedural
@@ -434,33 +440,44 @@ export class RasterGameSession {
     const candidates: TileRef[] = [];
     for (let k = 0; k < landTiles.length; k += stride) candidates.push(landTiles[k]);
 
+    // Farthest-point sampling, incremental so it stays O(players × candidates)
+    // even for a crowded {@link MAX_FIELD} field: keep each candidate's squared
+    // distance to its nearest chosen seat, and after adding a seat update only
+    // against that new seat (one O(candidates) pass), then take the argmax.
+    // (A naïve re-scan against every chosen seat would be O(players² × cands)
+    // and stall tick 0 once the field grows past a few dozen.)
+    const cx = candidates.map((c) => this.map.x(c));
+    const cy = candidates.map((c) => this.map.y(c));
+    const nearest = new Float64Array(candidates.length).fill(Infinity);
     const chosen: TileRef[] = [];
+    const chosenSet = new Set<TileRef>();
+    const addSeat = (ref: TileRef): void => {
+      chosen.push(ref);
+      chosenSet.add(ref);
+      const sx = this.map.x(ref);
+      const sy = this.map.y(ref);
+      for (let i = 0; i < candidates.length; i += 1) {
+        const dx = cx[i] - sx;
+        const dy = cy[i] - sy;
+        const d = dx * dx + dy * dy;
+        if (d < nearest[i]) nearest[i] = d;
+      }
+    };
     // First spawn: the corner-most land tile (low x, low y).
-    chosen.push(landTiles[0]);
-    const chosenSet = new Set<TileRef>(chosen);
+    addSeat(landTiles[0]);
     while (chosen.length < MAX_PLAYERS) {
       let bestRef = -1;
       let bestScore = -1;
-      for (const candidate of candidates) {
-        if (chosenSet.has(candidate)) continue;
-        const cx = this.map.x(candidate);
-        const cy = this.map.y(candidate);
-        let minDist = Infinity;
-        for (const seat of chosen) {
-          const dx = cx - this.map.x(seat);
-          const dy = cy - this.map.y(seat);
-          const dist = dx * dx + dy * dy;
-          if (dist < minDist) minDist = dist;
-        }
-        if (minDist > bestScore) {
-          bestScore = minDist;
-          bestRef = candidate;
+      for (let i = 0; i < candidates.length; i += 1) {
+        if (chosenSet.has(candidates[i])) continue;
+        if (nearest[i] > bestScore) {
+          bestScore = nearest[i];
+          bestRef = candidates[i];
         }
       }
       // No distinct candidate left (tiny map) — stop rather than duplicate spawns.
       if (bestRef < 0) break;
-      chosenSet.add(bestRef);
-      chosen.push(bestRef);
+      addSeat(bestRef);
     }
     return chosen;
   }
@@ -550,6 +567,9 @@ export class RasterGameSession {
         ...IDENTITY_MODIFIERS,
         income: BOT_GROWTH_MULTIPLIER,
         troopCapMultiplier: BOT_TROOP_CAP_MULTIPLIER,
+        // OpenFront's Tribes claim neutral land at half cost (mag/10), so they
+        // blanket the map's empty ground fast.
+        neutralCostMultiplier: 0.5,
       });
     } else if (kind === "nation") {
       this.grid.setModifiers(playerId, {

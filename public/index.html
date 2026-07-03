@@ -304,6 +304,24 @@
         color: var(--accent);
       }
 
+      /* ---- Menu: AI-opponents field-size slider -------------------------- */
+      .field-row {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        max-width: 520px;
+        margin: 4px auto 0;
+      }
+      .field-row input[type="range"] { flex: 1; accent-color: var(--accent); height: 6px; }
+      .field-row output {
+        min-width: 150px;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+        font-weight: 700;
+        color: var(--accent);
+      }
+      .field-hint { max-width: 520px; margin: 8px auto 0; text-align: center; }
+
       /* ---- Bottom-right: events + minimap -------------------------------- */
       .hud-corner {
         position: absolute;
@@ -905,6 +923,12 @@
       <div id="mapCards" class="perk-cards"></div>
       <h2 class="menu-section">Choose difficulty</h2>
       <div id="difficultyCards" class="perk-cards"></div>
+      <h2 class="menu-section">AI opponents</h2>
+      <div class="field-row">
+        <input id="fieldSizeInput" type="range" min="0" max="200" step="1" value="0" />
+        <output id="fieldSizeOutput">Auto (scaled to map)</output>
+      </div>
+      <p class="hint field-hint">A bot-heavy field like OpenFront — mostly passive tribes with a few strong nations. <b>Auto</b> scales the count to the map; drag to set a fixed number (0 = empty sandbox).</p>
       <button id="startButton" class="menu-button primary" type="button">Start Run</button>
     </div>
 
