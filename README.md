@@ -53,23 +53,25 @@ heightmap source with the build tool:
 tsx scripts/buildMap.ts --in <source-heightmap.png> --out earth-topo.png --max-width 2048
 ```
 
-The size of the AI field **scales with the map**: the Standard map seats a
-crowd, while the larger Earth maps fill with an OpenFront-scale field (up to
-200), so bigger worlds feel genuinely populated. Difficulty shifts the whole
-curve — harder games pack a denser, more aggressive field onto the same land.
-Pick a fixed count in the menu's **AI opponents** slider (0 = auto-scale), or
-force one server-side with `RASTER_BOTS` (max 200), e.g. `RASTER_BOTS=60 npm run dev`.
+The AI field is **packed**, like OpenFront (whose default is a flat 400 bots).
+It scales with the map to keep OpenFront's density (~1 player per ~1300 tiles):
+the Standard map seats ~130 opponents, the larger Earth maps up to the **400**
+ceiling, so the world reads as a dense mosaic rather than a sparse handful.
+Difficulty tilts the curve — harder games pack more onto the same land. Pick a
+fixed count in the menu's **AI opponents** slider (0 = auto-scale), or force one
+server-side with `RASTER_BOTS` (max 400), e.g. `RASTER_BOTS=200 npm run dev`.
 
-The AI field is a **bot-heavy** two-tier mix, exactly like OpenFront's Bot/Nation
+The field is a **bot-heavy** two-tier mix, exactly like OpenFront's Bot/Nation
 split (its default World seats ~400 bots to ~75 nations, ≈1 nation per 5 bots).
 About one seat in six is a full-strategy **Nation** — a distinct personality
 (land-grabber, warmonger, all-rounder, opportunist, turtle) that expands
 deliberately (OpenFront's 45–100-tick decision cadence), builds, allies, sends
 warships and nukes, and reacts with emoji. The rest are passive **Bot** filler —
 low-threat, difficulty-flat "tribes" (e.g. "Roman Empire") that grab cheap
-neutral land fast (OpenFront's half-price `mag/10` expansion), poke weakly every
-40–80 ticks (`troops/20`), never build, and accept any alliance — a dense,
-living crowd sprinkled with a few real powers rather than an even melee.
+neutral land fast (OpenFront's half-price `mag/10` expansion) and, once the map
+fills, keep the borders alive by weakly poking a neighbour (`troops/20` at
+OpenFront's ~1/3 tribe odds) instead of freezing — never build, always ally.
+The result is a living, churning crowd sprinkled with a few real powers.
 
 ## Combat model
 

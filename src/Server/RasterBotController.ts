@@ -53,6 +53,13 @@ const EMOJI_ANGRY = 3;
 const EMOJI_HANDSHAKE = 4;
 
 /**
+ * Odds a Tribe pokes a bordering rival on a decision with no neutral land left,
+ * mirroring OpenFront's `TribeExecution` attack odds (~1/3 against a non-ally).
+ * Low enough that the world-wide churn is a steady simmer, not a snowball.
+ */
+const TRIBE_POKE_ODDS = 1 / 3;
+
+/**
  * Cheap deterministic hash of two integers onto [0, 1) — the confusion roll.
  * No RNG anywhere in bot decisions, so identical (terrain, intents) replays
  * stay identical (same guarantee as the engine's fallout/SAM hashing).
@@ -288,7 +295,11 @@ export class RasterBotController {
 
     if (grid.troopsOf(this.myPlayerId) < this.config.personality.minPool) return;
 
-    this.decide(grid, map);
+    // Tribes and Nations decide differently: a Tribe is a busy little map-filler
+    // (grab neutral land, else weakly poke a neighbour), a Nation plays the full
+    // strategy game.
+    if (kind === "bot") this.decideBot(grid, map);
+    else this.decide(grid, map);
   }
 
   /**
@@ -468,6 +479,59 @@ export class RasterBotController {
         session.sendEmoji(this.config.botId, prey, EMOJI_ANGRY); // 😡 at the ally it just stabbed
       }
     }
+  }
+
+  /**
+   * A passive **Bot** (Tribe)'s move, mirroring OpenFront's `TribeExecution`:
+   * grab adjacent **neutral** land when there is any (the early-game blanket),
+   * otherwise **weakly poke a bordering rival** at roughly OpenFront's odds
+   * (~1/3 for a non-ally) — a `troops/20` jab that rarely conquers much but
+   * keeps the borders alive with constant low-level churn instead of a dead,
+   * frozen map. Never allies-first, never banks idle: a Tribe is always fidgeting.
+   * Deterministic (the odds roll is a per-tick/-seat hash, no RNG).
+   */
+  private decideBot(grid: TerritoryGrid, map: GameMap): void {
+    const me = this.myPlayerId;
+    const session = this.session;
+    if (me === null || !session) return;
+    const p = this.config.personality;
+    const pool = grid.troopsOf(me);
+    const alliances = session.peekAlliances();
+
+    const targets = grid.frontierTargets(me);
+    if (targets.length === 0) return;
+
+    // Prefer cheap neutral land whenever it borders us (OpenFront's terraNullius
+    // preference) — this is what makes tribes blanket the empty map so fast.
+    const neutral = targets.find((t) => t.target === NEUTRAL_PLAYER) ?? null;
+    if (neutral) {
+      this.queueCommit(grid, map, me, neutral.sample, p.expandCommit);
+      return;
+    }
+
+    // No neutral land left: poke a bordering non-ally, but only at OpenFront's
+    // ~1/3 odds per decision, so the churn is a steady simmer, not a firehose.
+    if (hash01(session.peekTick(), me) >= TRIBE_POKE_ODDS) return;
+    const enemies = targets.filter((t) => t.target !== NEUTRAL_PLAYER && !alliances.areAllied(me, t.target));
+    if (enemies.length === 0) return;
+    // Jab the weakest bordering rival (best chance the weak poke actually lands),
+    // regardless of relative strength — a Tribe attacks by odds, not advantage.
+    const prey = enemies.reduce((a, b) => (grid.troopsOf(b.target) < grid.troopsOf(a.target) ? b : a));
+    this.queueCommit(grid, map, me, prey.sample, p.attackCommit);
+  }
+
+  /** Commit `fraction` of the reserve-adjusted pool toward `sample`, as a percent expand order. */
+  private queueCommit(grid: TerritoryGrid, map: GameMap, me: PlayerId, sample: TileRef, fraction: number): void {
+    const session = this.session;
+    if (!session) return;
+    const pool = grid.troopsOf(me);
+    const available = pool * (1 - this.config.personality.reserveFraction);
+    const troops = Math.max(1, Math.floor(available * fraction));
+    session.queueExpand(this.config.botId, {
+      targetX: map.x(sample),
+      targetY: map.y(sample),
+      percent: Math.min(100, Math.max(1, Math.round((troops / Math.max(1, pool)) * 100))),
+    });
   }
 
   /** Pick and queue one expand intent for this decision tick (or bank troops). */
