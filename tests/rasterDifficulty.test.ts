@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { RasterGameSession } from "../src/Server/RasterGameSession.js";
-import { DIFFICULTY_BOT_COUNT, MAX_RASTER_BOTS, scaleBotCount } from "../src/Server/MatchRegistry.js";
+import { DIFFICULTY_BOT_COUNT, MAX_FIELD, scaleFieldCount } from "../src/Server/MatchRegistry.js";
 import { MatchRegistry } from "../src/Server/MatchRegistry.js";
 import { isRasterDifficulty, RASTER_DIFFICULTIES } from "../src/Core/messages.js";
 import { validateCommand } from "../src/Server/validateCommand.js";
-import { kindForSeat, tribeName } from "../src/Server/botField.js";
+import { kindForSeat, splitField, tribeName } from "../src/Server/botField.js";
 import type { RasterServerMessage } from "../src/Core/types.js";
 
 test("difficulty seats more rival nations as it rises", () => {
@@ -16,27 +16,33 @@ test("difficulty seats more rival nations as it rises", () => {
 
 test("the field scales up with the land a map offers", () => {
   // A tiny (Classic-scale) map stays a small handful; ever-larger maps seat
-  // strictly more nations, scaling with the tiles available.
-  const tiny = scaleBotCount(1_500, "medium");
-  const standard = scaleBotCount(30_000, "medium");
-  const large = scaleBotCount(120_000, "medium");
-  const huge = scaleBotCount(480_000, "medium");
+  // strictly more opponents, scaling with the tiles available.
+  const tiny = scaleFieldCount(1_500, "medium");
+  const standard = scaleFieldCount(30_000, "medium");
+  const large = scaleFieldCount(120_000, "medium");
+  const huge = scaleFieldCount(480_000, "medium");
   assert.ok(tiny < standard, `tiny (${tiny}) should field fewer than standard (${standard})`);
   assert.ok(standard < large, `standard (${standard}) should field fewer than large (${large})`);
   assert.ok(large <= huge, `large (${large}) should not exceed huge (${huge})`);
 });
 
-test("a tiny map floors at the difficulty minimum, a vast one caps at the seat limit", () => {
+test("the field is denser than the old 47-cap — a big map fills like OpenFront", () => {
+  // earth-standard (~155k land) seats a real crowd, not a handful.
+  assert.ok(scaleFieldCount(155_000, "medium") >= 60, "a standard Earth map seats a dense field");
+  assert.ok(scaleFieldCount(620_000, "medium") >= 120, "a large Earth map is crowded");
+});
+
+test("a tiny map floors at the difficulty minimum, a vast one caps at MAX_FIELD", () => {
   for (const d of RASTER_DIFFICULTIES) {
-    assert.equal(scaleBotCount(1, d), DIFFICULTY_BOT_COUNT[d], "tiny maps fall back to the floor");
-    assert.equal(scaleBotCount(50_000_000, d), MAX_RASTER_BOTS, "vast maps cap at the seat limit");
+    assert.equal(scaleFieldCount(1, d), DIFFICULTY_BOT_COUNT[d], "tiny maps fall back to the floor");
+    assert.equal(scaleFieldCount(50_000_000, d), MAX_FIELD, "vast maps cap at the field limit");
   }
 });
 
 test("harder difficulty packs a denser field onto the same map", () => {
   const tiles = 120_000;
-  assert.ok(scaleBotCount(tiles, "easy") < scaleBotCount(tiles, "medium"));
-  assert.ok(scaleBotCount(tiles, "medium") < scaleBotCount(tiles, "hard"));
+  assert.ok(scaleFieldCount(tiles, "easy") < scaleFieldCount(tiles, "medium"));
+  assert.ok(scaleFieldCount(tiles, "medium") < scaleFieldCount(tiles, "hard"));
 });
 
 test("isRasterDifficulty accepts the known ids and rejects everything else", () => {
@@ -62,15 +68,24 @@ test("a session seats many distinct nations on a real map", () => {
 
 // --- Bot (Tribe) vs Nation field composition --------------------------------
 
-test("kindForSeat reserves one seat in three for a passive Bot filler", () => {
-  const kinds = Array.from({ length: 30 }, (_, i) => kindForSeat(i));
-  const bots = kinds.filter((k) => k === "bot").length;
-  const nations = kinds.filter((k) => k === "nation").length;
-  assert.equal(bots, 10, "exactly a third of the seats are Bot filler");
-  assert.equal(nations, 20, "the rest are full-strategy Nations");
-  assert.equal(kindForSeat(2), "bot");
-  assert.equal(kindForSeat(0), "nation");
-  assert.equal(kindForSeat(1), "nation");
+test("the field is bot-heavy like OpenFront (~1 nation per ~5 bots)", () => {
+  // OpenFront's World defaults to 400 bots + 75 nations ≈ 16% nations.
+  const { nations, bots } = splitField(100);
+  assert.equal(nations + bots, 100, "the split is exhaustive");
+  assert.ok(nations >= 14 && nations <= 18, `~16% nations, got ${nations}`);
+  assert.ok(bots > nations * 4, "far more passive tribes than nations");
+  // Always at least one nation (someone must build/ally/nuke), even in a tiny field.
+  assert.equal(splitField(1).nations, 1);
+  assert.deepEqual(splitField(0), { nations: 0, bots: 0 });
+});
+
+test("kindForSeat puts the nations first, then the tribe fillers", () => {
+  const { nations } = splitField(30);
+  const kinds = Array.from({ length: 30 }, (_, i) => kindForSeat(i, nations));
+  assert.equal(kinds.filter((k) => k === "nation").length, nations);
+  assert.equal(kinds.filter((k) => k === "bot").length, 30 - nations);
+  assert.equal(kindForSeat(0, nations), "nation", "the first seats are Nations");
+  assert.equal(kindForSeat(29, nations), "bot", "the tail is Bot filler");
 });
 
 test("tribeName is deterministic and always two words", () => {
@@ -100,7 +115,7 @@ test("a solo match seats both Bot fillers and Nations, distinguishable by name s
   // Nation names are drawn from the curated list (e.g. "Iron Pact"); Bot names
   // are always "<Prefix> <Suffix>" pairs from the tribal lists — the two pools
   // don't overlap, so at least one of each confirms both kinds were seated.
-  const nationNames = new Set(["Iron Pact", "Sun Dominion", "Frost Clans", "Ember League", "Stone Republic", "Tide Union"]);
+  const nationNames = new Set(["Blue Empire", "Red Empire", "Green Empire", "Amber Empire", "Violet Empire", "Cyan Empire", "Iron Pact", "Sun Dominion"]);
   const looksLikeTribe = (n: string): boolean => /^(Roman|Hittite|Sumerian|Akkadian|Babylonian|Phoenician|Greek|Persian|Egyptian|Numidian|Thracian|Scythian|Gothic|Frankish|Norman|Saxon|Celtic|Iberian|Mongol|Khazar|Cuman|Avar|Bulgar|Magyar) /.test(n);
   assert.ok(names.some((n) => nationNames.has(n)), "at least one seat is a recognisable Nation");
   assert.ok(names.some(looksLikeTribe), "at least one seat is a recognisable Bot tribe");

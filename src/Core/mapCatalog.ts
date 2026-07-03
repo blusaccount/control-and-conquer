@@ -45,7 +45,7 @@ export interface MapChoice {
  *
  * Each tier's edge is 1.25× the previous design (≈1.56× the area, so "about 50%
  * bigger") — large enough to seat an OpenFront-style crowded field of nations
- * (see {@link scaleBotCount}). The old stylised "World — Classic" sketch was
+ * (see `scaleFieldCount`). The old stylised "World — Classic" sketch was
  * dropped: it was too small to host a readable multi-nation FFA.
  *
  * Procedural generation still exists server-side as a fallback (see

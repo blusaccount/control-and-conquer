@@ -46,6 +46,12 @@ export interface RasterBotPersonality {
  */
 const NATION_BETRAYAL_TOLERANCE = 1;
 
+// Emoji indices into RASTER_EMOJIS (["👍","👎","😂","😡","🤝","🫡","💀","🔥"])
+// that nations flash as contextual reactions.
+const EMOJI_THUMBS_DOWN = 1;
+const EMOJI_ANGRY = 3;
+const EMOJI_HANDSHAKE = 4;
+
 /**
  * Cheap deterministic hash of two integers onto [0, 1) — the confusion roll.
  * No RNG anywhere in bot decisions, so identical (terrain, intents) replays
@@ -63,36 +69,46 @@ const hash01 = (a: number, b: number): number => {
  * order so a solo match fields a recognisable mix — a land-grabber, a warmonger,
  * a measured all-rounder, an opportunist and a turtle — rather than five clones.
  */
+// Nation commit fractions mirror OpenFront's `NationExecution` behaviour ratios
+// (reserveRatio 30–40%, expandRatio 10–20%, plus a trigger to open a war): a
+// nation keeps a deep reserve and commits a *modest* slice per move, so borders
+// creep deliberately rather than blobbing the whole pool at once. The archetypes
+// vary within those ranges. `decisionCooldownTicks` here is only a fallback —
+// the seat loop overrides it with a per-seat `nationDecisionCadence`
+// (Easy 65–100 … Impossible 30–50 ticks).
 export const RASTER_BOT_PERSONALITIES: readonly RasterBotPersonality[] = [
   // Expander: races for neutral land to compound income, fights only when boxed in.
-  { id: "expander", decisionCooldownTicks: 12, minPool: 5, reserveFraction: 0.15, expandCommit: 0.85, attackCommit: 0.6, attackPoolRatio: 1.5, aggression: 0.2 },
-  // Aggressor: hunts the weakest neighbour early and commits hard to the kill.
-  { id: "aggressor", decisionCooldownTicks: 10, minPool: 5, reserveFraction: 0.2, expandCommit: 0.7, attackCommit: 0.85, attackPoolRatio: 1.0, aggression: 0.9 },
+  { id: "expander", decisionCooldownTicks: 80, minPool: 5, reserveFraction: 0.30, expandCommit: 0.30, attackCommit: 0.28, attackPoolRatio: 1.5, aggression: 0.2 },
+  // Aggressor: hunts the weakest neighbour early and commits harder to the kill.
+  { id: "aggressor", decisionCooldownTicks: 55, minPool: 5, reserveFraction: 0.30, expandCommit: 0.24, attackCommit: 0.40, attackPoolRatio: 1.0, aggression: 0.9 },
   // Balanced: grabs land first, then turns on a clearly weaker rival.
-  { id: "balanced", decisionCooldownTicks: 14, minPool: 8, reserveFraction: 0.25, expandCommit: 0.75, attackCommit: 0.65, attackPoolRatio: 1.25, aggression: 0.5 },
+  { id: "balanced", decisionCooldownTicks: 65, minPool: 8, reserveFraction: 0.35, expandCommit: 0.25, attackCommit: 0.30, attackPoolRatio: 1.25, aggression: 0.5 },
   // Opportunist: expands patiently but pounces on a lopsided advantage.
-  { id: "opportunist", decisionCooldownTicks: 12, minPool: 6, reserveFraction: 0.3, expandCommit: 0.8, attackCommit: 0.7, attackPoolRatio: 1.4, aggression: 0.6 },
+  { id: "opportunist", decisionCooldownTicks: 65, minPool: 6, reserveFraction: 0.35, expandCommit: 0.26, attackCommit: 0.32, attackPoolRatio: 1.4, aggression: 0.6 },
   // Turtle: banks a deep reserve, expands cautiously, rarely starts a war.
-  { id: "turtle", decisionCooldownTicks: 18, minPool: 12, reserveFraction: 0.4, expandCommit: 0.7, attackCommit: 0.55, attackPoolRatio: 1.8, aggression: 0.15 },
+  { id: "turtle", decisionCooldownTicks: 90, minPool: 12, reserveFraction: 0.40, expandCommit: 0.22, attackCommit: 0.25, attackPoolRatio: 1.8, aggression: 0.15 },
 ];
 
 /**
  * The passive **Bot** ("Tribe") personality: OpenFront's low-threat map
  * filler. It reacts slowly, commits only a sliver of its pool per attack
- * (mirroring OpenFront's `attackAmount` for `PlayerType.Bot`, `troops/20` —
+ * (mirroring OpenFront's `attackAmount` for `PlayerType.Bot`, `troops/20` = 5% —
  * a fifth of a Nation's `troops/5`), and almost never picks a fight it isn't
- * heavily favoured to win. Paired with `kind: "bot"` (see
- * {@link RasterBotConfig.kind}), which additionally skips building and
- * always accepts alliance offers rather than weighing them — see
+ * heavily favoured to win — but it grabs neutral land eagerly (and cheaply, at
+ * OpenFront's `mag/10`; see the Bot `neutralCostMultiplier`). Paired with
+ * `kind: "bot"` (see {@link RasterBotConfig.kind}), which additionally skips
+ * building and always accepts alliance offers rather than weighing them — see
  * {@link RasterBotController.maybeBuild}/{@link RasterBotController.manageDiplomacy}.
+ * `decisionCooldownTicks` is a fallback — the seat loop overrides it with a
+ * per-seat `botDecisionCadence` (OpenFront's `nextInt(40, 80)`).
  */
 export const FILLER_PERSONALITY: RasterBotPersonality = {
   id: "filler",
   decisionCooldownTicks: 60,
   minPool: 20,
-  reserveFraction: 0.6,
-  expandCommit: 0.25,
-  attackCommit: 0.05,
+  reserveFraction: 0.5,
+  expandCommit: 0.4, // grab a healthy bite of cheap neutral land each poke
+  attackCommit: 0.05, // OpenFront's Bot attackAmount = troops/20
   attackPoolRatio: 2.5,
   aggression: 0.05,
 };
@@ -114,6 +130,12 @@ export interface RasterBotConfig {
    * Rolled deterministically; 0/absent = never confused.
    */
   readonly confusionChance?: number;
+  /**
+   * Ticks to delay this seat's first decision, so a large field doesn't all
+   * decide on tick 0 (a thundering herd). Spread deterministically per seat by
+   * {@link seatPhaseOffset}; 0/absent = decide as soon as it has banked `minPool`.
+   */
+  readonly phaseOffset?: number;
 }
 
 export const DEFAULT_RASTER_BOT_CONFIG: RasterBotConfig = {
@@ -175,6 +197,10 @@ export class RasterBotController {
 
   public attach(session: RasterGameSession): () => void {
     this.session = session;
+    // Seed the throttle so this seat's first decision fires after its
+    // `phaseOffset` ticks rather than every seat firing on tick 0 (a thundering
+    // herd on a crowded field). The throttle compares `tick - lastDecisionTick`.
+    this.lastDecisionTick = -(this.config.phaseOffset ?? 0);
     // Subscribe headless (wantsRaster=false): the bot reads engine state via
     // peekGrid and never decodes the wire ownership, so the session skips the
     // costly per-tick owner encoding for it.
@@ -385,6 +411,9 @@ export class RasterBotController {
       const accept =
         kind === "bot" || (trusted && (p.aggression < 0.5 || grid.troopsOf(from) >= myPool));
       session.respondAlliance(this.config.botId, from, accept);
+      // React like an OpenFront nation: 🤝 on a new pact, 👎 on a snub. The
+      // session rate-limits emoji, so this never spams.
+      session.sendEmoji(this.config.botId, from, accept ? EMOJI_HANDSHAKE : EMOJI_THUMBS_DOWN);
       return;
     }
 
@@ -434,7 +463,10 @@ export class RasterBotController {
           prey = t.target;
         }
       }
-      if (prey !== null) session.breakAlliance(this.config.botId, prey);
+      if (prey !== null) {
+        session.breakAlliance(this.config.botId, prey);
+        session.sendEmoji(this.config.botId, prey, EMOJI_ANGRY); // 😡 at the ally it just stabbed
+      }
     }
   }
 
@@ -456,6 +488,24 @@ export class RasterBotController {
     const enemies = targets.filter(
       (t) => t.target !== NEUTRAL_PLAYER && !alliances.areAllied(me, t.target),
     );
+
+    // Honour an ally's target request (OpenFront): if an ally has asked us to
+    // attack someone we border and can plausibly beat, oblige at once — a
+    // nation is a helpful ally. Deterministic (lowest requester/target first).
+    const requested = new Set(alliances.targetRequestsFor(me).map((r) => r.target));
+    if (requested.size > 0) {
+      const ask = enemies.find((e) => requested.has(e.target) && pool >= grid.troopsOf(e.target) * p.attackPoolRatio);
+      if (ask) {
+        const available = pool * (1 - p.reserveFraction);
+        const troops = Math.max(1, Math.floor(available * p.attackCommit));
+        session.queueExpand(this.config.botId, {
+          targetX: map.x(ask.sample),
+          targetY: map.y(ask.sample),
+          percent: Math.min(100, Math.max(1, Math.round((troops / pool) * 100))),
+        });
+        return;
+      }
+    }
 
     // Weakest rival we can currently beat on troop pool (deterministic tiebreak:
     // lowest pool, then lowest target id thanks to ascending `targets` order).

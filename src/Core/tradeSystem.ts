@@ -68,6 +68,13 @@ export interface TradeShipTarget {
 
 export class TradeSystem {
   private readonly grid: TerritoryGrid;
+  /**
+   * Directed embargo predicate: `isEmbargoed(a, b)` is true when trade between
+   * owners `a` and `b` is barred (either side embargoing the other). Injected
+   * from the diplomacy graph so a port never dispatches to an embargoed rival.
+   * Defaults to "never embargoed" for callers/tests that don't wire diplomacy.
+   */
+  private readonly isEmbargoed: (a: PlayerId, b: PlayerId) => boolean;
   private ports: TradePort[] = [];
   private ships: TradeShip[] = [];
   private nextShipId = 1;
@@ -80,8 +87,9 @@ export class TradeSystem {
    */
   private rejections = new Map<TileRef, number>();
 
-  constructor(grid: TerritoryGrid) {
+  constructor(grid: TerritoryGrid, isEmbargoed: (a: PlayerId, b: PlayerId) => boolean = () => false) {
     this.grid = grid;
+    this.isEmbargoed = isEmbargoed;
   }
 
   /**
@@ -196,8 +204,11 @@ export class TradeSystem {
     for (const src of sorted) {
       if (src.sea < 0) continue;
       // Partners: any other port on the same sea body (any owner — trade flows
-      // even between rivals, as in OpenFront, enriching both ends).
-      const partners = sorted.filter((p) => p.ref !== src.ref && p.sea === src.sea);
+      // even between rivals, as in OpenFront, enriching both ends) — except
+      // owners this port has (or is under) an embargo with, who are skipped.
+      const partners = sorted.filter(
+        (p) => p.ref !== src.ref && p.sea === src.sea && !this.isEmbargoed(src.owner, p.owner),
+      );
       if (partners.length === 0) continue; // no reachable partner — not a rejection, just skip
 
       const rejected = this.rejections.get(src.ref) ?? 0;

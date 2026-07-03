@@ -28,12 +28,13 @@ import { LAND_ATTACK_REACH, RASTER_MATCH_DURATION_SECONDS, SPAWN_IMMUNITY_SECOND
 import { NUKE_DEFS, nukeCost, SILO_RELOAD_TICKS, type NukeKind } from "../Core/nukes.js";
 import { BUILDING_CONSTRUCTION_TICKS, BUILDING_DEFS, buildingCost, COASTAL_BUILDING_TYPES, COASTAL_SNAP_RADIUS, CONQUER_GOLD_FRACTION_AI, CONQUER_GOLD_FRACTION_HUMAN, costCounterTypes, STRUCTURE_MIN_DIST, UPGRADABLE_BUILDING_TYPES } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
-import type { RasterDifficulty } from "../Core/messages.js";
+import { RASTER_EMOJIS, type RasterDifficulty } from "../Core/messages.js";
 import { IDENTITY_MODIFIERS } from "../Core/playerModifiers.js";
 import {
   BOT_GROWTH_MULTIPLIER,
   BOT_START_MANPOWER,
   BOT_TROOP_CAP_MULTIPLIER,
+  MAX_FIELD,
   NATION_GROWTH_MULTIPLIER,
   NATION_START_MANPOWER,
   NATION_TROOP_CAP_MULTIPLIER,
@@ -96,6 +97,11 @@ interface PendingNuke {
 }
 
 const MAX_EVENTS = 10;
+
+/** Minimum ticks between two emoji reactions from the same player (anti-spam). */
+const EMOJI_COOLDOWN_TICKS = 10;
+/** How long an emoji reaction floats before it is dropped from the snapshot (~2s at 10 TPS). */
+const EMOJI_LIFETIME_TICKS = 20;
 
 /**
  * Per-client cap on expand/build intents queued between ticks. A legitimate
@@ -168,8 +174,13 @@ const NATION_NAMES: readonly string[] = [
   "Raven Banner", "Otter State", "Bison Clans", "Viper Cult", "Moose Holds", "Orca Fleet",
 ];
 
-/** Maximum nations a single session can seat (1 human + up to N-1 bots). */
-const MAX_PLAYERS = NATION_NAMES.length;
+/**
+ * Maximum players a single session can seat — decoupled from the curated
+ * {@link NATION_NAMES} list (Bot/Tribe seats draw procedural {@link tribeName}s,
+ * so the field can far outgrow the name list). Sized to {@link MAX_FIELD} AI
+ * plus headroom for human seats, so a crowded OpenFront-style world fits.
+ */
+const MAX_PLAYERS = MAX_FIELD + 8;
 
 /**
  * Display name + colour for a player id. A Bot seat gets a procedural
@@ -265,8 +276,12 @@ const DEFAULT_OPTIONS: Required<Omit<RasterGameSessionOptions, "prebuiltMap">> =
 export class RasterGameSession {
   private readonly map: GameMap;
   private readonly grid: TerritoryGrid;
-  /** Diplomacy state: who is allied, and pending alliance proposals. */
+  /** Diplomacy state: who is allied, pending proposals, embargoes and target requests. */
   private readonly alliances = new AllianceRegistry();
+  /** Live floating emoji reactions (sender, tile, emoji, spawn tick), aged out each tick. */
+  private emojiReactions: Array<{ from: PlayerId; x: number; y: number; emoji: number; bornTick: number }> = [];
+  /** Tick each player last flashed an emoji, for the per-sender rate limit. */
+  private readonly lastEmojiTick = new Map<PlayerId, number>();
   private readonly conflict: RasterConflict;
   private readonly mapName: string;
   private readonly startingTroops: number;
@@ -425,33 +440,44 @@ export class RasterGameSession {
     const candidates: TileRef[] = [];
     for (let k = 0; k < landTiles.length; k += stride) candidates.push(landTiles[k]);
 
+    // Farthest-point sampling, incremental so it stays O(players × candidates)
+    // even for a crowded {@link MAX_FIELD} field: keep each candidate's squared
+    // distance to its nearest chosen seat, and after adding a seat update only
+    // against that new seat (one O(candidates) pass), then take the argmax.
+    // (A naïve re-scan against every chosen seat would be O(players² × cands)
+    // and stall tick 0 once the field grows past a few dozen.)
+    const cx = candidates.map((c) => this.map.x(c));
+    const cy = candidates.map((c) => this.map.y(c));
+    const nearest = new Float64Array(candidates.length).fill(Infinity);
     const chosen: TileRef[] = [];
+    const chosenSet = new Set<TileRef>();
+    const addSeat = (ref: TileRef): void => {
+      chosen.push(ref);
+      chosenSet.add(ref);
+      const sx = this.map.x(ref);
+      const sy = this.map.y(ref);
+      for (let i = 0; i < candidates.length; i += 1) {
+        const dx = cx[i] - sx;
+        const dy = cy[i] - sy;
+        const d = dx * dx + dy * dy;
+        if (d < nearest[i]) nearest[i] = d;
+      }
+    };
     // First spawn: the corner-most land tile (low x, low y).
-    chosen.push(landTiles[0]);
-    const chosenSet = new Set<TileRef>(chosen);
+    addSeat(landTiles[0]);
     while (chosen.length < MAX_PLAYERS) {
       let bestRef = -1;
       let bestScore = -1;
-      for (const candidate of candidates) {
-        if (chosenSet.has(candidate)) continue;
-        const cx = this.map.x(candidate);
-        const cy = this.map.y(candidate);
-        let minDist = Infinity;
-        for (const seat of chosen) {
-          const dx = cx - this.map.x(seat);
-          const dy = cy - this.map.y(seat);
-          const dist = dx * dx + dy * dy;
-          if (dist < minDist) minDist = dist;
-        }
-        if (minDist > bestScore) {
-          bestScore = minDist;
-          bestRef = candidate;
+      for (let i = 0; i < candidates.length; i += 1) {
+        if (chosenSet.has(candidates[i])) continue;
+        if (nearest[i] > bestScore) {
+          bestScore = nearest[i];
+          bestRef = candidates[i];
         }
       }
       // No distinct candidate left (tiny map) — stop rather than duplicate spawns.
       if (bestRef < 0) break;
-      chosenSet.add(bestRef);
-      chosen.push(bestRef);
+      addSeat(bestRef);
     }
     return chosen;
   }
@@ -541,6 +567,9 @@ export class RasterGameSession {
         ...IDENTITY_MODIFIERS,
         income: BOT_GROWTH_MULTIPLIER,
         troopCapMultiplier: BOT_TROOP_CAP_MULTIPLIER,
+        // OpenFront's Tribes claim neutral land at half cost (mag/10), so they
+        // blanket the map's empty ground fast.
+        neutralCostMultiplier: 0.5,
       });
     } else if (kind === "nation") {
       this.grid.setModifiers(playerId, {
@@ -728,10 +757,89 @@ export class RasterGameSession {
     if (me === null) return;
     if (this.alliances.breakAlliance(me, targetId)) {
       // Betrayal marks the breaker a traitor: a temporary combat penalty
-      // (OpenFront's traitor debuffs) — see RasterConflict.markTraitor.
+      // (OpenFront's traitor debuffs) — see RasterConflict.markTraitor. The
+      // registry also auto-embargoes the wronged partner.
       this.conflict.markTraitor(me);
       this.pushEvent(`${this.nameOf(me)} betrayed their alliance with ${this.nameOf(targetId)}.`);
     }
+  }
+
+  /**
+   * Donate `percent`% of your `resource` (troops or gold) to an **ally** —
+   * OpenFront's ally donation. No-op unless the two are currently allied and
+   * the amount rounds to at least 1. The donor's pool falls and the ally's
+   * rises by the same integer amount.
+   */
+  public donate(clientId: string, targetId: PlayerId, resource: "troops" | "gold", percent: number): void {
+    const me = this.resolveDiplomacy(clientId, targetId);
+    if (me === null) return;
+    if (!this.alliances.areAllied(me, targetId)) return;
+    const pct = Math.min(100, Math.max(1, Math.floor(percent)));
+    if (resource === "troops") {
+      const amount = Math.floor(this.grid.troopsOf(me) * (pct / 100));
+      if (amount < 1) return;
+      this.grid.addTroops(me, -amount);
+      this.grid.addTroops(targetId, amount);
+      this.pushEvent(`${this.nameOf(me)} sent ${amount} troops to ${this.nameOf(targetId)}.`);
+    } else {
+      const amount = Math.floor(this.grid.goldOf(me) * (pct / 100));
+      if (amount < 1) return;
+      this.grid.addGold(me, -amount);
+      this.grid.addGold(targetId, amount);
+      this.pushEvent(`${this.nameOf(me)} sent ${amount} gold to ${this.nameOf(targetId)}.`);
+    }
+  }
+
+  /** Set (`on: true`) or lift a trade embargo against `targetId`. */
+  public setEmbargo(clientId: string, targetId: PlayerId, on: boolean): void {
+    const me = this.resolveDiplomacy(clientId, targetId);
+    if (me === null) return;
+    if (on) {
+      if (this.alliances.setEmbargo(me, targetId)) {
+        this.pushEvent(`${this.nameOf(me)} placed a trade embargo on ${this.nameOf(targetId)}.`);
+      }
+    } else if (this.alliances.clearEmbargo(me, targetId)) {
+      this.pushEvent(`${this.nameOf(me)} lifted its trade embargo on ${this.nameOf(targetId)}.`);
+    }
+  }
+
+  /** Ask ally `allyId` to attack `targetId` — recorded and announced to the ally. */
+  public requestTarget(clientId: string, allyId: PlayerId, targetId: PlayerId): void {
+    const me = this.resolveDiplomacy(clientId, allyId);
+    if (me === null) return;
+    if (!this.grid.hasPlayer(targetId) || this.eliminated.has(targetId)) return;
+    if (this.alliances.requestTarget(me, allyId, targetId)) {
+      this.pushEvent(`${this.nameOf(me)} asked ${this.nameOf(allyId)} to attack ${this.nameOf(targetId)}.`);
+    }
+  }
+
+  /**
+   * Flash an emoji reaction over `targetId`'s territory (or your own, for a
+   * broadcast). Rate-limited per sender; purely cosmetic, so it never touches
+   * the simulation — it rides the snapshot as a transient reaction that the
+   * client floats and fades. Dropped silently when the sender is spamming.
+   */
+  public sendEmoji(clientId: string, targetId: PlayerId, emoji: number): void {
+    const subscriber = this.subscribers.get(clientId);
+    if (!subscriber || this.matchEndedBroadcast) return;
+    const me = subscriber.playerId;
+    if (!this.grid.hasPlayer(me) || this.eliminated.has(me)) return;
+    if (!this.grid.hasPlayer(targetId) || this.eliminated.has(targetId)) return;
+    if (emoji < 0 || emoji >= RASTER_EMOJIS.length) return;
+    // Rate-limit: at most one reaction per sender per EMOJI_COOLDOWN_TICKS.
+    const last = this.lastEmojiTick.get(me);
+    if (last !== undefined && this.conflict.tick - last < EMOJI_COOLDOWN_TICKS) return;
+    this.lastEmojiTick.set(me, this.conflict.tick);
+    // Float it over a tile of the reacted-to player (their land is the anchor).
+    const anchor = this.grid.anyTileOf(targetId);
+    if (anchor === undefined) return;
+    this.emojiReactions.push({
+      from: me,
+      x: this.map.x(anchor),
+      y: this.map.y(anchor),
+      emoji,
+      bornTick: this.conflict.tick,
+    });
   }
 
   /**
@@ -932,6 +1040,13 @@ export class RasterGameSession {
     this.lastRails = this.conflict.railLinks().map((r) => ({ playerId: r.owner, points: r.points }));
     this.lastTrains = this.conflict.activeTrains().map((t) => ({ playerId: t.owner, x: t.x, y: t.y }));
     this.lastTradeShips = this.conflict.tradeShips().map((t) => ({ playerId: t.owner, x: t.x, y: t.y }));
+
+    // Age out floating emoji reactions past their lifetime (cheap; the list is
+    // empty on the vast majority of ticks).
+    if (this.emojiReactions.length > 0) {
+      const cutoff = this.conflict.tick - EMOJI_LIFETIME_TICKS;
+      this.emojiReactions = this.emojiReactions.filter((e) => e.bornTick > cutoff);
+    }
 
     // Append a single event line per command issued this tick, newest first.
     if (eventLines.length > 0) {
@@ -1541,6 +1656,15 @@ export class RasterGameSession {
       eliminated: this.eliminated,
       alliances: this.alliances.infos(this.conflict.tick),
       allianceRequests: this.alliances.proposals(),
+      embargoes: this.alliances.allEmbargoes(),
+      targetRequests: this.alliances.allTargetRequests(),
+      emojis: this.emojiReactions.map((e) => ({
+        from: e.from,
+        x: e.x,
+        y: e.y,
+        emoji: e.emoji,
+        age: this.conflict.tick - e.bornTick,
+      })),
       lastAttackerOf: (playerId) => this.conflict.lastAttackerOf(playerId) ?? 0,
       betrayalsOf: (playerId) => this.alliances.betrayalsOf(playerId),
     });

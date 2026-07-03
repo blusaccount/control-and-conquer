@@ -304,6 +304,24 @@
         color: var(--accent);
       }
 
+      /* ---- Menu: AI-opponents field-size slider -------------------------- */
+      .field-row {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        max-width: 520px;
+        margin: 4px auto 0;
+      }
+      .field-row input[type="range"] { flex: 1; accent-color: var(--accent); height: 6px; }
+      .field-row output {
+        min-width: 150px;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+        font-weight: 700;
+        color: var(--accent);
+      }
+      .field-hint { max-width: 520px; margin: 8px auto 0; text-align: center; }
+
       /* ---- Bottom-right: events + minimap -------------------------------- */
       .hud-corner {
         position: absolute;
@@ -397,6 +415,16 @@
         accent-color: var(--accent);
         cursor: pointer;
       }
+      .settings-controls { margin-top: 10px; border-top: 1px solid var(--panel-border); padding-top: 8px; }
+      .controls-grid {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 3px 12px;
+        font-size: 11px;
+        color: var(--text-faint);
+        margin-top: 4px;
+      }
+      .controls-grid span:nth-child(odd) { color: var(--text-dim); font-weight: 600; white-space: nowrap; }
       .settings-row .settings-sub {
         display: block;
         font-size: 11px;
@@ -648,6 +676,7 @@
       #leaderboard .lb-act.renew { color: #4ade80; border-color: rgba(74, 222, 128, 0.4); }
       #leaderboard .lb-pact { font-size: 10px; color: var(--text-faint); align-self: center; padding-right: 2px; }
       #leaderboard .lb-traitor { font-size: 10px; color: #fca5a5; }
+      #leaderboard .lb-embargo, #leaderboard .lb-target { font-size: 10px; }
 
       /* ---- Menu + stats overlays ----------------------------------------- */
       .menu-overlay {
@@ -867,7 +896,7 @@
             <output id="attackPercentOutput">20%</output>
           </div>
         </label>
-        <div class="hint hotkey-hint">Keys · <b>1–0</b> build/nuke · <b>B/G</b> boat/ground · <b>K/L</b> ally/break · <b>Shift+R</b> retaliate · <b>Space</b> alt view · <b>M</b> grid · <b>T/Y</b> ratio · <b>Q/E</b> zoom · <b>C</b> centre · <b>WASD</b> pan · <b>Esc</b> cancel</div>
+        <div class="hint hotkey-hint"><b>1–0</b> build/weapon · <b>T/Y</b> ratio (or Shift+scroll) · <b>B/G</b> boat/ground · <b>K/L</b> ally/break · <b>Shift+R</b> retaliate · <b>Space</b> hold terrain · <b>Ctrl+click</b> build · <b>Alt+click</b> emoji · full list in ⚙</div>
       </div>
 
       <div class="hud-corner">
@@ -892,6 +921,25 @@
             <input id="toggleSound" type="checkbox" />
             <span>Sound effects<span class="settings-sub">Short cues for expanding, alliances, and match end.</span></span>
           </label>
+          <label class="settings-row">
+            <input id="toggleLeftClickMenu" type="checkbox" />
+            <span>Left click opens menu<span class="settings-sub">OpenFront option: left click opens the radial menu instead of attacking. Shift+click still attacks.</span></span>
+          </label>
+          <div class="settings-controls">
+            <div class="panel-head">Controls</div>
+            <div class="controls-grid">
+              <span>Left click</span><span>Attack / order tile</span>
+              <span>Right click</span><span>Radial menu (cancels a build ghost)</span>
+              <span>Drag</span><span>Pan · Scroll Zoom · Shift+Scroll Attack ratio</span>
+              <span>Ctrl / ⌘ + click</span><span>Build menu at tile</span>
+              <span>Alt + click</span><span>Emoji at tile · Middle click Upgrade</span>
+              <span>1–0</span><span>City·Factory·Port·Def·Silo·SAM·Warship·Atom·Hydro·MIRV</span>
+              <span>T / Y</span><span>Attack ratio − / + · B / G Boat / Ground</span>
+              <span>K / L</span><span>Ally / Break · Shift+R Retaliate</span>
+              <span>Space</span><span>Hold: terrain view · M Grid</span>
+              <span>Q / E · WASD</span><span>Zoom · Pan · C Centre · Esc Cancel</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -904,6 +952,12 @@
       <div id="mapCards" class="perk-cards"></div>
       <h2 class="menu-section">Choose difficulty</h2>
       <div id="difficultyCards" class="perk-cards"></div>
+      <h2 class="menu-section">AI opponents</h2>
+      <div class="field-row">
+        <input id="fieldSizeInput" type="range" min="0" max="200" step="1" value="0" />
+        <output id="fieldSizeOutput">Auto (scaled to map)</output>
+      </div>
+      <p class="hint field-hint">A bot-heavy field like OpenFront — mostly passive tribes with a few strong nations. <b>Auto</b> scales the count to the map; drag to set a fixed number (0 = empty sandbox).</p>
       <button id="startButton" class="menu-button primary" type="button">Start Run</button>
     </div>
 

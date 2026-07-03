@@ -7,7 +7,7 @@ import { Buffer } from "node:buffer";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { resolveCatalogSessionMap } from "./sessionMap.js";
-import { MatchRegistry, DIFFICULTY_BOT_COUNT, MAX_RASTER_BOTS } from "./MatchRegistry.js";
+import { MatchRegistry, DIFFICULTY_BOT_COUNT, MAX_FIELD } from "./MatchRegistry.js";
 import { isRasterDifficulty } from "../Core/messages.js";
 import { validateCommand } from "./validateCommand.js";
 import { buildHeightmapGameMap, getHeightmapMap } from "./heightmapMaps.js";
@@ -85,7 +85,7 @@ const warmRemainingMaps = (): void => {
 // wins over the per-join difficulty; otherwise the chosen difficulty decides.
 const botOverrideRaw = process.env.RASTER_BOTS;
 const botOverride = botOverrideRaw !== undefined && Number.isFinite(Number(botOverrideRaw))
-  ? Math.max(0, Math.min(Math.floor(Number(botOverrideRaw)), MAX_RASTER_BOTS))
+  ? Math.max(0, Math.min(Math.floor(Number(botOverrideRaw)), MAX_FIELD))
   : undefined;
 
 const registry = new MatchRegistry();
@@ -210,12 +210,19 @@ wss.on("connection", (socket) => {
           const difficulty = isRasterDifficulty(message.payload.difficulty)
             ? message.payload.difficulty
             : "medium";
+          // A RASTER_BOTS env override wins (testing); otherwise the client's
+          // chosen field size (OpenFront's `bots` slider) flows through, and
+          // when neither is set the server auto-scales to the map.
+          const rawField = message.payload.fieldSize;
+          const clientField = typeof rawField === "number" && Number.isFinite(rawField)
+            ? Math.max(0, Math.min(Math.floor(rawField), MAX_FIELD))
+            : undefined;
           unsubscribe = registry.joinRasterSolo(
             clientId,
             send,
             { ...choice.options },
             difficulty,
-            botOverride,
+            botOverride ?? clientField,
           );
         }
       } else if (message.type === "CLIENT_RASTER_SELECT_SPAWN") {
@@ -234,6 +241,14 @@ wss.on("connection", (socket) => {
         registry.breakRasterAlliance(clientId, message.payload.targetId);
       } else if (message.type === "CLIENT_RASTER_ALLY_RENEW") {
         registry.renewRasterAlliance(clientId, message.payload.targetId);
+      } else if (message.type === "CLIENT_RASTER_DONATE") {
+        registry.donateRaster(clientId, message.payload.targetId, message.payload.resource, message.payload.percent);
+      } else if (message.type === "CLIENT_RASTER_EMBARGO") {
+        registry.setRasterEmbargo(clientId, message.payload.targetId, message.payload.on);
+      } else if (message.type === "CLIENT_RASTER_TARGET_REQUEST") {
+        registry.requestRasterTarget(clientId, message.payload.allyId, message.payload.targetId);
+      } else if (message.type === "CLIENT_RASTER_EMOJI") {
+        registry.sendRasterEmoji(clientId, message.payload.targetId, message.payload.emoji);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown command error.";
@@ -259,7 +274,7 @@ server.listen(port, () => {
   console.log(
     botOverride !== undefined
       ? `Seating a fixed ${botOverride} AI opponent(s) per solo match (RASTER_BOTS override).`
-      : `AI opponents scale with map size (min per difficulty — easy: ${DIFFICULTY_BOT_COUNT.easy}, medium: ${DIFFICULTY_BOT_COUNT.medium}, hard: ${DIFFICULTY_BOT_COUNT.hard}; up to ${MAX_RASTER_BOTS} on the largest maps).`,
+      : `AI opponents scale with map size (min per difficulty — easy: ${DIFFICULTY_BOT_COUNT.easy}, medium: ${DIFFICULTY_BOT_COUNT.medium}, hard: ${DIFFICULTY_BOT_COUNT.hard}; up to ${MAX_FIELD} on the largest maps).`,
   );
   console.log(`Simulation loop running at ${SIMULATION_TICK_RATE} TPS.`);
   // Warm the rest of the catalogue in the background so switching maps is instant.

@@ -53,22 +53,23 @@ heightmap source with the build tool:
 tsx scripts/buildMap.ts --in <source-heightmap.png> --out earth-topo.png --max-width 2048
 ```
 
-The size of the AI field **scales with the map**: the Standard map stays a
-readable handful, while the larger Earth maps fill up with many more rival
-nations (up to 47), so bigger worlds feel crowded rather than empty.
-Difficulty shifts the whole curve — harder games pack a denser, more aggressive
-field onto the same land. Set a fixed count instead with `RASTER_BOTS` (max 47),
-e.g. `RASTER_BOTS=12 npm run dev`, which overrides the per-map scaling.
+The size of the AI field **scales with the map**: the Standard map seats a
+crowd, while the larger Earth maps fill with an OpenFront-scale field (up to
+200), so bigger worlds feel genuinely populated. Difficulty shifts the whole
+curve — harder games pack a denser, more aggressive field onto the same land.
+Pick a fixed count in the menu's **AI opponents** slider (0 = auto-scale), or
+force one server-side with `RASTER_BOTS` (max 200), e.g. `RASTER_BOTS=60 npm run dev`.
 
-The AI field is a two-tier mix, like OpenFront's Bot/Nation split: two seats in
-three are full-strategy **Nations**, each seated with a distinct personality
-(land-grabber, warmonger, all-rounder, opportunist, turtle) that races for
-cheap neutral land to compound its income, strikes the weakest rival it can
-beat, and uses amphibious crossings to attack across narrow seas. The
-remaining third are passive **Bot** filler — a low-threat, difficulty-flat
-tribal nation (e.g. "Roman Empire") that barely attacks, never builds, and
-accepts any alliance offered to it — padding out the world without every
-opponent being a serious threat.
+The AI field is a **bot-heavy** two-tier mix, exactly like OpenFront's Bot/Nation
+split (its default World seats ~400 bots to ~75 nations, ≈1 nation per 5 bots).
+About one seat in six is a full-strategy **Nation** — a distinct personality
+(land-grabber, warmonger, all-rounder, opportunist, turtle) that expands
+deliberately (OpenFront's 45–100-tick decision cadence), builds, allies, sends
+warships and nukes, and reacts with emoji. The rest are passive **Bot** filler —
+low-threat, difficulty-flat "tribes" (e.g. "Roman Empire") that grab cheap
+neutral land fast (OpenFront's half-price `mag/10` expansion), poke weakly every
+40–80 ticks (`troops/20`), never build, and accept any alliance — a dense,
+living crowd sprinkled with a few real powers rather than an even melee.
 
 ## Combat model
 

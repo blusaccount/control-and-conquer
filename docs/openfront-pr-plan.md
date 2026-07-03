@@ -87,8 +87,8 @@ Defeat/Spectate.
 | L3 | **Allianz-Lebenszyklus** | ~5 min Laufzeit, Renewal-Prompt ~30 s vor Ablauf, natürlicher Ablauf ≠ Verrat; Verrats-Zähler; Auto-Embargo | **erledigt (PR C)** — 5-min-Ablauf, beidseitiges Renewal, Verrats-Konto + 🗡-Marker, Bot-Verhalten; Auto-Embargo folgt mit PR F (Embargo-System) | — |
 | L4 | **Struktur-Upgrades (Level)** | seit v24: Bau auf bestehendes Gebäude = Upgrade (City-Level ×250k Cap, Stations-Level etc.), Level-Ziffern im Render | **erledigt (PR D)** — City/Port/Factory upgradebar (gleiche Kostenrampe, Effekt pro Level), Level-Badge + amber Upgrade-Ghost, Bot-Upgrades; Fort/Silo/SAM bewusst v1-ausgenommen | — |
 | L5 | **Win-Condition** | Prozent-Schwelle der Landfläche (FFA; Teams 95 %) → Spiele *enden* | **erledigt (PR B)** — `WIN_TILE_FRACTION = 0.8`, Match endet an der Schwelle; Leaderboard zeigt Sieg-Fortschritt | — |
-| L6 | Emojis / Quick-Chat | Emoji-Reaktionen übers Territorium, Preset-Nachrichten | fehlt komplett | mittel |
-| L7 | Spenden / Zielanfragen / Embargo | Truppen-/Gold-Spende an Verbündete, Target-Request, Handels-Embargo (manuell + automatisch bei Verrat) | fehlt komplett | mittel |
+| L6 | Emojis / Quick-Chat | Emoji-Reaktionen übers Territorium, Preset-Nachrichten | **erledigt (PR E)** — 8-Emoji-Set, Radial-Ast, über dem Ziel-Territorium schwebend + verblassend, Bot-Reaktionen (🤝/👎/😡); Preset-Chat bewusst als Event-Zeilen | — |
+| L7 | Spenden / Zielanfragen / Embargo | Truppen-/Gold-Spende an Verbündete, Target-Request, Handels-Embargo (manuell + automatisch bei Verrat) | **erledigt (PR F)** — Truppen-/Gold-Spende (Slider-%), „Verbündete angreifen lassen" (Target-Request, Bots folgen), Embargo (manuell + auto bei Verrat, sperrt Trade-Schiffe) | — |
 | L8 | Waffen-Feinheiten | MIRV = Schwarm vieler kleiner Sprengköpfe übers Zielterritorium; SAM-Abfangquote je Waffentyp; Defense-Post-Geschütz (Shells vs. Schiffe) | MIRV splittet in 6; SAM flach 75 %; Forts schießen nicht | mittel |
 | L9 | Map-Katalog | Dutzende kuratierte Karten, Featured/All/Favorites/Suche, Random | 3 Größen derselben Earth-Karte | **hoch** (größte Content-Lücke) |
 | L10 | Schwierigkeit „Impossible" + Nation-Confusion | 4 Stufen (Impossible: Start 31 250, Cap ×1.25, Wachstum ×1.05); Fehlangriffs-Chance 10/5/2.5/0 % | **erledigt (PR J)** — inkl. Fix: Solo-Worker seatet jetzt identisch zum Server (Bot/Nation-Split + Difficulty) | — |
@@ -200,7 +200,7 @@ als Zielbild dokumentiert (Balance-Plan §2.12).
 - **Tests:** Kostenfolge Bau→Upgrade; Cap-Erhöhung; Eroberung zerstört
   Struktur samt Level.
 
-### PR E — Emojis + Quick-Chat (M, P1)
+### PR E — Emojis + Quick-Chat (M, P1) — ✅ umgesetzt (2026-07-03)
 
 Reine Feel-/Sozial-Schicht, macht die Welt „bewohnt" — auch solo, weil
 Nations reagieren.
@@ -215,7 +215,7 @@ Nations reagieren.
   Krieg) — deterministisch getriggert.
 - **Tests:** Rate-Limit; Event-Serialisierung.
 
-### PR F — Spenden, Zielanfragen, Embargo (M, P1)
+### PR F — Spenden, Zielanfragen, Embargo (M, P1) — ✅ umgesetzt (2026-07-03; damit ist auch die in PR C offengelassene Auto-Embargo-Kopplung geschlossen)
 
 Vervollständigt die Diplomatie-Äste des Radialmenüs (heute: „diese Systeme
 existieren hier nicht").

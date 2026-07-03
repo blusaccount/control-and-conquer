@@ -665,3 +665,31 @@ test("activeFronts reports each land attack with its committed troops and an anc
   // The anchor is a real tile on the contested strip (not the -1 placeholder).
   assert.ok(fronts[0].tile >= 0 && fronts[0].tile < grid.map.size);
 });
+
+test("a Bot claims neutral land at half cost (OpenFront's mag/10)", () => {
+  // Two identical 12-tile flat rows. Same committed troops toward neutral land;
+  // the Bot (neutralCostMultiplier 0.5) captures roughly twice as far as a
+  // normal attacker before the assault is spent out.
+  const build = (neutralMult: number): TerritoryGrid => {
+    const grid = new TerritoryGrid(flatLand(12, 1));
+    grid.addPlayer(1, 80);
+    grid.claim(0, 1);
+    grid.setModifiers(1, { ...IDENTITY_MODIFIERS, income: 0, neutralCostMultiplier: neutralMult });
+    return grid;
+  };
+
+  const normal = build(1);
+  const nc = new RasterConflict(normal);
+  assert.equal(nc.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 80 }), null);
+  runTicks(nc, 40);
+
+  const bot = build(0.5);
+  const bc = new RasterConflict(bot);
+  assert.equal(bc.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 80 }), null);
+  runTicks(bc, 40);
+
+  assert.ok(
+    bot.tileCountOf(1) > normal.tileCountOf(1),
+    `the Bot expands further on the same troops (bot ${bot.tileCountOf(1)} vs normal ${normal.tileCountOf(1)})`,
+  );
+});

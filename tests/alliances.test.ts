@@ -135,3 +135,60 @@ test("explicit breaks are tallied against the breaker only", () => {
   assert.equal(reg.betrayalsOf(2), 0, "the betrayed side stays clean");
   assert.equal(reg.betrayalsOf(3), 0);
 });
+
+// ---- Embargoes --------------------------------------------------------------
+
+test("embargoes are directed but block trade in either direction", () => {
+  const reg = new AllianceRegistry();
+  assert.equal(reg.isEmbargoed(1, 2), false);
+  assert.equal(reg.setEmbargo(1, 2), true);
+  assert.equal(reg.setEmbargo(1, 2), false, "duplicate is a no-op");
+  assert.equal(reg.hasEmbargo(1, 2), true, "directed: 1 embargoes 2");
+  assert.equal(reg.hasEmbargo(2, 1), false, "not the reverse direction");
+  assert.equal(reg.isEmbargoed(1, 2), true, "trade is blocked...");
+  assert.equal(reg.isEmbargoed(2, 1), true, "...from either side's view");
+  assert.deepEqual(reg.embargoesOf(1), [2]);
+  assert.deepEqual(reg.allEmbargoes(), [[1, 2]]);
+
+  assert.equal(reg.clearEmbargo(1, 2), true);
+  assert.equal(reg.isEmbargoed(1, 2), false, "lifting reopens trade");
+  assert.equal(reg.setEmbargo(1, 1), false, "no self-embargo");
+});
+
+test("betrayal auto-embargoes the wronged partner", () => {
+  const reg = new AllianceRegistry();
+  reg.propose(1, 2, 0);
+  reg.accept(2, 1, 0);
+  assert.equal(reg.isEmbargoed(1, 2), false);
+  assert.equal(reg.breakAlliance(1, 2), true);
+  assert.equal(reg.hasEmbargo(1, 2), true, "the breaker auto-embargoes the ally it stabbed");
+  assert.equal(reg.hasEmbargo(2, 1), false, "only the breaker's direction is auto-set");
+});
+
+// ---- Target requests --------------------------------------------------------
+
+test("target requests need a standing alliance and clear when it ends", () => {
+  const reg = new AllianceRegistry();
+  assert.equal(reg.requestTarget(1, 2, 3), false, "no request without an alliance");
+  reg.propose(1, 2, 0);
+  reg.accept(2, 1, 0);
+  assert.equal(reg.requestTarget(1, 2, 3), true, "ally 1 asks ally 2 to attack 3");
+  assert.equal(reg.requestTarget(1, 2, 3), false, "duplicate is a no-op");
+  assert.equal(reg.requestTarget(1, 2, 1), false, "can't target the requester");
+  assert.deepEqual(reg.targetRequestsFor(2), [{ from: 1, to: 2, target: 3 }]);
+
+  // Breaking the pact drops the request.
+  reg.breakAlliance(1, 2);
+  assert.deepEqual(reg.targetRequestsFor(2), [], "a request dies with its alliance");
+});
+
+test("removePlayer scrubs embargoes and target requests touching the player", () => {
+  const reg = new AllianceRegistry();
+  reg.setEmbargo(1, 2);
+  reg.propose(1, 3, 0);
+  reg.accept(3, 1, 0);
+  reg.requestTarget(1, 3, 2);
+  reg.removePlayer(2);
+  assert.equal(reg.hasEmbargo(1, 2), false, "the departed player's embargoes are gone");
+  assert.deepEqual(reg.targetRequestsFor(3), [], "requests naming the departed target are gone");
+});
