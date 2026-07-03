@@ -65,8 +65,11 @@ The field is a **bot-heavy** two-tier mix, exactly like OpenFront's Bot/Nation
 split (its default World seats ~400 bots to ~75 nations, ≈1 nation per 5 bots).
 About one seat in six is a full-strategy **Nation** — a distinct personality
 (land-grabber, warmonger, all-rounder, opportunist, turtle) that expands
-deliberately (OpenFront's 45–100-tick decision cadence), builds, allies, sends
-warships and nukes, and reacts with emoji. The rest are passive **Bot** filler —
+deliberately (OpenFront's 45–100-tick decision cadence), allies, reacts with
+emoji, and builds toward OpenFront's late game: a train-and-trade economy
+(cities, ports, a rail-served factory) that bankrolls border forts, warship
+patrols and finally a missile silo — after which it wages nuclear war
+(retaliation first, then deterrence) and stands up SAM cover once warheads fly. The rest are passive **Bot** filler —
 low-threat, difficulty-flat "tribes" (e.g. "Roman Empire") that grab cheap
 neutral land fast (OpenFront's half-price `mag/10` expansion) and, once the map
 fills, keep the borders alive by weakly poking a neighbour (`troops/20` at

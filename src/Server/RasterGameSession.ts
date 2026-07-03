@@ -570,6 +570,8 @@ export class RasterGameSession {
         // OpenFront's Tribes claim neutral land at half cost (mag/10), so they
         // blanket the map's empty ground fast.
         neutralCostMultiplier: 0.5,
+        // …and earn gold at half rate (goldAdditionRate: Bot base 50 vs 100).
+        goldMultiplier: 0.5,
       });
     } else if (kind === "nation") {
       this.grid.setModifiers(playerId, {

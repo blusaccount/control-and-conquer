@@ -91,8 +91,14 @@ export const WIN_TILE_FRACTION = 0.8;
  * clock runs out the territory leader is declared the winner. Kept in seconds
  * (a pure gameplay rule) so it stays independent of the server tick rate, which
  * the session multiplies in to derive a tick budget.
+ *
+ * OpenFront's FFA has **no** time limit at all — a match runs until someone
+ * dominates — and its signature late game (the nuclear arms race) only begins
+ * once the AI economies mature, around the 8–10-minute mark. The old 600 s cap
+ * ended the match right there, so nations barely got a warhead off; 30 minutes
+ * keeps a bounded run while leaving the whole nuclear era on the table.
  */
-export const RASTER_MATCH_DURATION_SECONDS = 600;
+export const RASTER_MATCH_DURATION_SECONDS = 1800;
 
 /**
  * Seconds of **spawn immunity** a freshly-seated nation gets, mirroring

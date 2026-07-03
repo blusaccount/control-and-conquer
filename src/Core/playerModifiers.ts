@@ -41,6 +41,13 @@ export interface PlayerModifiers {
    * land fast. 1 = the standard cost; a Bot seat runs at 0.5.
    */
   neutralCostMultiplier: number;
+  /**
+   * Scales the flat passive gold trickle. Mirrors OpenFront's
+   * `goldAdditionRate`: a `PlayerType.Bot` earns a 50/tick base where every
+   * other player earns 100/tick — so a Tribe seat runs at 0.5 and its hoard
+   * (loot for whoever conquers it) grows half as fast.
+   */
+  goldMultiplier: number;
 }
 
 /** A modifiers bundle with no effect — every player's baseline. */
@@ -53,4 +60,5 @@ export const IDENTITY_MODIFIERS: PlayerModifiers = Object.freeze({
   income: 1,
   troopCapMultiplier: 1,
   neutralCostMultiplier: 1,
+  goldMultiplier: 1,
 });
