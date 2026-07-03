@@ -200,10 +200,15 @@ export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
   for (const id of grid.players()) {
     const meta = playerMeta.get(id) ?? { name: `Player ${id}`, color: "#888" };
     const tiles = grid.tileCountOf(id);
-    const cities = grid.buildingCountOf(id, "city");
-    const ports = grid.buildingCountOf(id, "port");
-    // Only finished cities lift the population cap (under-construction ones don't yet).
-    const activeCities = grid.activeBuildingCountOf(id, "city");
+    // The wire per-type figures are **cost counters** (sum of levels): every
+    // build or upgrade advances them, so the client's build-menu price labels
+    // match the server's ramp exactly. Identical to instance counts for
+    // non-upgradable types.
+    const cities = grid.totalLevelsOf(id, "city");
+    const ports = grid.totalLevelsOf(id, "port");
+    // Only finished city levels lift the population cap (under-construction
+    // cities don't yet; upgrades apply instantly).
+    const activeCities = grid.activeLevelsOf(id, "city");
     players.push({
       playerId: id,
       name: meta.name,
@@ -213,11 +218,11 @@ export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
       goldPerSecond: goldPerSecond(SIMULATION_TICK_RATE),
       cities,
       ports,
-      forts: grid.buildingCountOf(id, "fort"),
-      factories: grid.buildingCountOf(id, "factory"),
-      silos: grid.buildingCountOf(id, "silo"),
-      warships: grid.buildingCountOf(id, "warship"),
-      sams: grid.buildingCountOf(id, "sam"),
+      forts: grid.totalLevelsOf(id, "fort"),
+      factories: grid.totalLevelsOf(id, "factory"),
+      silos: grid.totalLevelsOf(id, "silo"),
+      warships: grid.totalLevelsOf(id, "warship"),
+      sams: grid.totalLevelsOf(id, "sam"),
       tiles,
       troopsPerSecond: troopsPerSecond(tiles, grid.troopsOf(id), SIMULATION_TICK_RATE, grid.incomeMultiplierOf(id), activeCities, grid.modifiersOf(id).troopCapMultiplier),
       maxTroops: Math.floor(maxTroops(tiles, activeCities) * grid.modifiersOf(id).troopCapMultiplier),
@@ -235,6 +240,7 @@ export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
     type,
     underConstruction: grid.isUnderConstruction(ref),
     buildProgress: grid.constructionProgress(ref, tick),
+    level: grid.buildingLevelOf(ref),
   }));
 
   return {

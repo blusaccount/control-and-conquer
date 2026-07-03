@@ -85,8 +85,18 @@
   Gold an jeder Stadt/jedem Hafen aus (`TRAIN_GOLD_PER_STATION`). `RasterConflict` tickt
   das System; Netz + Züge gehen als `rails`/`trains` in den Snapshot und werden im Client
   als Gleis-Polylinien und fahrende Punkte gezeichnet.
+- **Struktur-Upgrades (2026-07-02, PR D):** Bau auf ein eigenes, fertiges Gebäude
+  gleichen Typs ist ein **Upgrade** (OpenFront v24) — gleiche Kostenrampe (jeder
+  Bau *oder* Ausbau rückt den Zähler weiter), Effekt pro Level: City-Level heben
+  den Pop-Cap je +250k, Port-/Fabrik-Level takten Trade-Schiffe/Züge schneller.
+  Nur City/Port/Fabrik sind upgradebar (Fort/Silo/SAM-Level-Effekte sind bei
+  OpenFront nicht öffentlich dokumentiert — bewusst ausgelassen). Level-Badge im
+  Client, amber Upgrade-Ghost („Lv n+1"), Bots upgraden Citys, wenn der
+  Mindestabstand keinen Neubau mehr zulässt. Upgrades wirken sofort (ohne
+  Bauzeit) — dokumentierte Vereinfachung.
 - **Bauwerke leben mit ihrem Tile:** wird ein Tile erobert oder neutralisiert, fällt
-  die Struktur (und eine Fort-Aura) — der Eroberer erbt nacktes Land (`claim` → `destroyBuilding`).
+  die Struktur (und eine Fort-Aura, und die gesamte Upgrade-Investition) — der
+  Eroberer erbt nacktes Land (`claim` → `destroyBuilding`).
 - **Bots reinvestieren** Gold ab einer Mindestgröße in Städte (`maybeBuildCity`),
   deterministisch wie alle Bot-Entscheidungen.
 

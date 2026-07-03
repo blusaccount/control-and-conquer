@@ -91,6 +91,17 @@ export const costCounterTypes = (type: BuildingType): readonly BuildingType[] =>
   return [type];
 };
 
+/**
+ * The types a player can **upgrade** by building on their own existing
+ * structure of the same type (OpenFront's v24 structure upgrades). Each level
+ * costs the next step of the ramp and re-applies the effect: a level-2 city
+ * lifts the population cap twice, a level-2 port/factory dispatches trade
+ * ships/trains at twice the cadence. Deliberately v1-restricted to the three
+ * economy structures — fort/silo/SAM/warship level effects aren't publicly
+ * documented for OpenFront, so we don't guess at them.
+ */
+export const UPGRADABLE_BUILDING_TYPES: readonly BuildingType[] = ["city", "port", "factory"];
+
 /** Static description of one building type for menus and cost maths. */
 export interface BuildingDef {
   readonly type: BuildingType;

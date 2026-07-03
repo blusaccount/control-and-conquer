@@ -42,8 +42,16 @@ interface PlayerStanding {
   tiles: Set<TileRef>;
   /** Per-player gameplay modifiers; defaults to no effect. */
   modifiers: PlayerModifiers;
-  /** How many of each building type this player currently owns (for cost maths). */
+  /** How many of each building type this player currently owns (instances). */
   buildingCounts: Map<BuildingType, number>;
+  /**
+   * Sum of levels across this player's buildings of each type — the **cost
+   * counter**: every build *or upgrade* of a type bumps it by one, so the next
+   * build/upgrade of that type costs the next step of the ramp (OpenFront's
+   * v24 structure upgrades share the build ramp). Equals `buildingCounts` while
+   * everything is level 1.
+   */
+  buildingLevelTotals: Map<BuildingType, number>;
 }
 
 /**
@@ -118,6 +126,14 @@ export class TerritoryGrid {
    * engine, which reads {@link buildingCountOf}).
    */
   private readonly buildings = new Map<TileRef, BuildingType>();
+  /**
+   * Structure level per tile, only for buildings **above level 1** (absent =
+   * level 1, the map stays tiny). Building on your own structure of the same
+   * type upgrades it (OpenFront v24): each level re-applies the type's effect
+   * (a level-2 city lifts the cap twice, a level-2 port/factory dispatches at
+   * twice the cadence).
+   */
+  private readonly buildingLevels = new Map<TileRef, number>();
   /**
    * Buildings still under construction: tile → its build window `{start, ready}`
    * in engine ticks. A building counts toward its owner's cost ramp the moment it
@@ -422,6 +438,7 @@ export class TerritoryGrid {
       tiles: new Set(),
       modifiers: { ...IDENTITY_MODIFIERS },
       buildingCounts: new Map(),
+      buildingLevelTotals: new Map(),
     });
     this.playerIdsCache = null;
   }
@@ -658,8 +675,9 @@ export class TerritoryGrid {
       throw new Error(`Tile ${ref} already has a building.`);
     }
     this.buildings.set(ref, type);
-    const counts = this.standing(owner).buildingCounts;
-    counts.set(type, (counts.get(type) ?? 0) + 1);
+    const standing = this.standing(owner);
+    standing.buildingCounts.set(type, (standing.buildingCounts.get(type) ?? 0) + 1);
+    standing.buildingLevelTotals.set(type, (standing.buildingLevelTotals.get(type) ?? 0) + 1);
     if (readyTick > startTick) {
       // Under construction: effects switch on later, at activateDue.
       this.construction.set(ref, { start: startTick, ready: readyTick });
@@ -667,6 +685,56 @@ export class TerritoryGrid {
       // Instantly active (the default, used by tests/direct placement).
       this.addDefensePost(ref, FORT_DEFENSE_RADIUS, FORT_DEFENSE_STRENGTH);
     }
+  }
+
+  /**
+   * Raise the level of the building on `ref` by one — the caller has already
+   * verified ownership and charged the (next-ramp-step) gold cost. Levels
+   * re-apply the type's effect; the owner's {@link PlayerStanding.buildingLevelTotals}
+   * cost counter bumps so the following build/upgrade costs the next step.
+   * Throws on a bare tile or one still under construction. Returns the new level.
+   */
+  upgradeBuilding(ref: TileRef): number {
+    const type = this.buildings.get(ref);
+    if (type === undefined) throw new Error(`Tile ${ref} has no building to upgrade.`);
+    if (this.construction.has(ref)) throw new Error(`Tile ${ref} is still under construction.`);
+    const owner = this.owner[ref];
+    if (owner === NEUTRAL_PLAYER) throw new Error(`Tile ${ref} is not owned.`);
+    const next = this.buildingLevelOf(ref) + 1;
+    this.buildingLevels.set(ref, next);
+    const totals = this.standing(owner).buildingLevelTotals;
+    totals.set(type, (totals.get(type) ?? 0) + 1);
+    return next;
+  }
+
+  /** The level of the building on `ref` (1 for a fresh structure, 0 for bare ground). */
+  buildingLevelOf(ref: TileRef): number {
+    if (!this.buildings.has(ref)) return 0;
+    return this.buildingLevels.get(ref) ?? 1;
+  }
+
+  /**
+   * Sum of levels across `player`'s buildings of `type` — the **cost counter**
+   * for the ramp (each build or upgrade advances it) and the basis for
+   * level-scaled effects. Equals {@link buildingCountOf} while nothing has
+   * been upgraded.
+   */
+  totalLevelsOf(player: PlayerId, type: BuildingType): number {
+    return this.standing(player).buildingLevelTotals.get(type) ?? 0;
+  }
+
+  /**
+   * Sum of levels across `player`'s *finished* buildings of `type` — the count
+   * that drives level-scaled effects (a level-2 city lifts the cap twice).
+   * Under-construction instances (always level 1 — upgrades apply instantly)
+   * are excluded, mirroring {@link activeBuildingCountOf}.
+   */
+  activeLevelsOf(player: PlayerId, type: BuildingType): number {
+    let pending = 0;
+    for (const ref of this.construction.keys()) {
+      if (this.buildings.get(ref) === type && this.owner[ref] === player) pending += 1;
+    }
+    return Math.max(0, this.totalLevelsOf(player, type) - pending);
   }
 
   /**
@@ -727,13 +795,19 @@ export class TerritoryGrid {
   private destroyBuilding(ref: TileRef, previousOwner: PlayerId): boolean {
     const type = this.buildings.get(ref);
     if (type === undefined) return false;
+    const level = this.buildingLevelOf(ref);
     this.buildings.delete(ref);
+    this.buildingLevels.delete(ref);
     this.construction.delete(ref);
     if (previousOwner !== NEUTRAL_PLAYER) {
-      const counts = this.standing(previousOwner).buildingCounts;
-      const next = (counts.get(type) ?? 0) - 1;
-      if (next > 0) counts.set(type, next);
-      else counts.delete(type);
+      const standing = this.standing(previousOwner);
+      const next = (standing.buildingCounts.get(type) ?? 0) - 1;
+      if (next > 0) standing.buildingCounts.set(type, next);
+      else standing.buildingCounts.delete(type);
+      // A razed structure takes its whole upgrade investment with it.
+      const totals = (standing.buildingLevelTotals.get(type) ?? 0) - level;
+      if (totals > 0) standing.buildingLevelTotals.set(type, totals);
+      else standing.buildingLevelTotals.delete(type);
     }
     if (type === "fort") this.removeDefensePost(ref);
     return true;

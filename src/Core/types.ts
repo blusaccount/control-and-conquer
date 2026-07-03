@@ -227,6 +227,8 @@ export interface RasterBuilding {
   underConstruction: boolean;
   /** Construction progress in [0,1]; 1 once finished. Drives the build-progress bar. */
   buildProgress: number;
+  /** Structure level (1 = fresh; upgrades raise it). The client renders digits >1. */
+  level: number;
 }
 
 /**

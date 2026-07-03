@@ -245,7 +245,10 @@ export class RailSystem {
       const rate = trainSpawnRate(factoriesByOwner.get(owner) ?? 1);
       const rejected = this.trainRejections.get(factory) ?? 0;
       if (rejected < rate) {
-        this.trainRejections.set(factory, rejected + 1);
+        // An upgraded factory advances by its level per attempt, so a level-2
+        // factory launches trains twice as often (per-level station cadence,
+        // OpenFront's structure upgrades).
+        this.trainRejections.set(factory, rejected + this.grid.buildingLevelOf(factory));
         continue;
       }
 

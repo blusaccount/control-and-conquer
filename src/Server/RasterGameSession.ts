@@ -26,7 +26,7 @@ import type {
 } from "../Core/types.js";
 import { LAND_ATTACK_REACH, RASTER_MATCH_DURATION_SECONDS, SPAWN_IMMUNITY_SECONDS, WIN_TILE_FRACTION } from "../Core/rasterCombatConfig.js";
 import { NUKE_DEFS, nukeCost, SILO_RELOAD_TICKS, type NukeKind } from "../Core/nukes.js";
-import { BUILDING_CONSTRUCTION_TICKS, BUILDING_DEFS, buildingCost, COASTAL_BUILDING_TYPES, COASTAL_SNAP_RADIUS, CONQUER_GOLD_FRACTION_AI, CONQUER_GOLD_FRACTION_HUMAN, costCounterTypes, STRUCTURE_MIN_DIST } from "../Core/buildings.js";
+import { BUILDING_CONSTRUCTION_TICKS, BUILDING_DEFS, buildingCost, COASTAL_BUILDING_TYPES, COASTAL_SNAP_RADIUS, CONQUER_GOLD_FRACTION_AI, CONQUER_GOLD_FRACTION_HUMAN, costCounterTypes, STRUCTURE_MIN_DIST, UPGRADABLE_BUILDING_TYPES } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
 import type { RasterDifficulty } from "../Core/messages.js";
 import { IDENTITY_MODIFIERS } from "../Core/playerModifiers.js";
@@ -1284,6 +1284,38 @@ export class RasterGameSession {
     if (!this.grid.isCapturable(clickRef) || this.grid.ownerOf(clickRef) !== attacker) {
       return { kind: "rejected", reason: "NOT_BUILDABLE", message: `Build a ${def.name.toLowerCase()} on land you own.` };
     }
+    // Building on your own finished structure of the same type **upgrades** it
+    // a level (OpenFront's v24 structure upgrades): same cost ramp — the next
+    // step's price — no spacing check (it's the same tile), effect applies at
+    // once. Only the economy structures are upgradable (see
+    // UPGRADABLE_BUILDING_TYPES); the click must land on the structure itself.
+    if (this.grid.buildingAt(clickRef) === intent.building) {
+      if (!UPGRADABLE_BUILDING_TYPES.includes(intent.building)) {
+        return { kind: "rejected", reason: "TILE_OCCUPIED", message: `A ${def.name.toLowerCase()} can't be upgraded.` };
+      }
+      if (this.grid.isUnderConstruction(clickRef)) {
+        return { kind: "rejected", reason: "TILE_OCCUPIED", message: `That ${def.name.toLowerCase()} is still under construction.` };
+      }
+      const ownedLevels = costCounterTypes(intent.building).reduce(
+        (sum, t) => sum + this.grid.totalLevelsOf(attacker, t),
+        0,
+      );
+      const upgradeCost = buildingCost(intent.building, ownedLevels);
+      if (this.grid.goldOf(attacker) < upgradeCost) {
+        return {
+          kind: "rejected",
+          reason: "INSUFFICIENT_GOLD",
+          message: `Not enough gold — upgrading this ${def.name.toLowerCase()} costs ${upgradeCost}.`,
+        };
+      }
+      this.grid.addGold(attacker, -upgradeCost);
+      const level = this.grid.upgradeBuilding(clickRef);
+      const upgraderName = this.playerMeta.get(attacker)?.name ?? `Player ${attacker}`;
+      return {
+        kind: "ok",
+        line: `${upgraderName} upgraded a ${def.name} to level ${level} (${upgradeCost} gold).`,
+      };
+    }
     // Coastal structures (ports, warships) can only stand where the land meets
     // navigable water. A coastline is a single tile wide, so rather than demand a
     // pixel-perfect click on it (OpenFront never does), snap to the nearest owned
@@ -1317,10 +1349,11 @@ export class RasterGameSession {
       }
     }
 
-    // Ports and Factories share a cost counter, so sum the owned counts across
-    // the building's cost group (just itself for the others).
+    // Ports and Factories share a cost counter, so sum the owned **levels**
+    // across the building's cost group (just itself for the others): every
+    // build or upgrade of the group advances the ramp.
     const owned = costCounterTypes(intent.building).reduce(
-      (sum, t) => sum + this.grid.buildingCountOf(attacker, t),
+      (sum, t) => sum + this.grid.totalLevelsOf(attacker, t),
       0,
     );
     const cost = buildingCost(intent.building, owned);

@@ -418,3 +418,87 @@ test("a second building on the same tile is rejected as occupied", () => {
   assert.ok(rejections(messages).includes("TILE_OCCUPIED"));
   assert.equal(session.peekGrid().buildingCount, 1);
 });
+
+// ---- Structure upgrades (OpenFront v24: build on your own structure) --------
+
+test("upgradeBuilding raises the level and the cost counter; razing clears both", () => {
+  const grid = landStrip(6);
+  grid.addPlayer(1, 0);
+  claimRun(grid, 1, 3);
+  grid.placeBuilding(0, "city");
+
+  assert.equal(grid.buildingLevelOf(0), 1, "a fresh structure is level 1");
+  assert.equal(grid.totalLevelsOf(1, "city"), 1);
+  assert.equal(grid.upgradeBuilding(0), 2, "the upgrade reports the new level");
+  assert.equal(grid.buildingLevelOf(0), 2);
+  assert.equal(grid.buildingCountOf(1, "city"), 1, "still one instance");
+  assert.equal(grid.totalLevelsOf(1, "city"), 2, "but two ramp steps consumed");
+  assert.equal(grid.activeLevelsOf(1, "city"), 2, "both levels are active");
+
+  // The conqueror gets bare ground: the whole upgrade investment dies with it.
+  grid.addPlayer(2, 0);
+  grid.claim(0, 2);
+  assert.equal(grid.buildingLevelOf(0), 0, "no structure left");
+  assert.equal(grid.totalLevelsOf(1, "city"), 0, "the loser's cost counter resets");
+});
+
+test("upgradeBuilding refuses bare ground and under-construction structures", () => {
+  const grid = landStrip(4);
+  grid.addPlayer(1, 0);
+  claimRun(grid, 1, 2);
+  assert.throws(() => grid.upgradeBuilding(0), /no building/);
+  grid.placeBuilding(0, "city", 0, 20); // still under construction
+  assert.throws(() => grid.upgradeBuilding(0), /under construction/);
+});
+
+test("building on your own finished city upgrades it at the next ramp price", () => {
+  const { session, messages, build } = stageBuilder(16);
+  const grid = session.peekGrid();
+  grid.setGold(1, 1_000_000);
+  session.queueBuild("human", { targetX: build.x, targetY: build.y, building: "city" });
+  session.tick();
+  // Let the city finish building (upgrades are refused mid-construction).
+  for (let i = 0; i < 25; i += 1) session.tick();
+
+  const goldBefore = grid.goldOf(1);
+  session.queueBuild("human", { targetX: build.x, targetY: build.y, building: "city" });
+  session.tick();
+
+  assert.ok(!rejections(messages).includes("TILE_OCCUPIED"), "same-type click is an upgrade, not occupied");
+  assert.equal(grid.buildingCountOf(1, "city"), 1, "still one city instance");
+  assert.equal(grid.totalLevelsOf(1, "city"), 2, "two ramp steps consumed");
+  // The upgrade costs the ramp's *second* step (2^1 · base), not the first.
+  const upgradePrice = BUILDING_DEFS.city.baseCost * 2;
+  const spent = goldBefore - grid.goldOf(1);
+  assert.ok(
+    spent >= upgradePrice - 1000 && spent <= upgradePrice,
+    `expected the upgrade to cost ~${upgradePrice}, spent ${spent}`,
+  );
+
+  const snap = lastSnapshot(messages);
+  assert.equal(snap.buildings[0].level, 2, "the snapshot carries the new level");
+  assert.equal(snap.players.find((p) => p.playerId === 1)?.cities, 2, "the wire city figure is the cost counter");
+});
+
+test("an upgrade is refused while the structure is still under construction", () => {
+  const { session, messages, build } = stageBuilder(17);
+  session.peekGrid().setGold(1, 1_000_000);
+  session.queueBuild("human", { targetX: build.x, targetY: build.y, building: "city" });
+  session.tick(); // the city is placed but still building (20 ticks)
+  session.queueBuild("human", { targetX: build.x, targetY: build.y, building: "city" });
+  session.tick();
+  assert.ok(rejections(messages).includes("TILE_OCCUPIED"), "no upgrading a construction site");
+  assert.equal(session.peekGrid().totalLevelsOf(1, "city"), 1, "no ramp step was consumed");
+});
+
+test("non-upgradable structures reject a same-type click", () => {
+  const { session, messages, origin } = stageBuilder(18);
+  session.peekGrid().setGold(1, 10_000_000);
+  session.queueBuild("human", { targetX: origin.x, targetY: origin.y, building: "fort" });
+  session.tick();
+  for (let i = 0; i < 55; i += 1) session.tick(); // fort takes 50 ticks
+  session.queueBuild("human", { targetX: origin.x, targetY: origin.y, building: "fort" });
+  session.tick();
+  assert.ok(rejections(messages).includes("TILE_OCCUPIED"), "forts are not upgradable (v1)");
+  assert.equal(session.peekGrid().totalLevelsOf(1, "fort"), 1);
+});

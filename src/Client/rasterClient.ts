@@ -36,6 +36,7 @@ import {
   BUILDING_TYPES,
   buildingCost,
   costCounterTypes,
+  UPGRADABLE_BUILDING_TYPES,
   type BuildingType,
 } from "../Core/buildings.js";
 import type { RasterDifficulty } from "../Core/messages.js";
@@ -1775,6 +1776,26 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ctx.fillStyle = "rgba(255, 255, 255, 0.97)";
       drawIcon(ctx, b.type, sx, sy, iconPx * 0.5);
 
+      // 5b. Level badge on an upgraded structure (OpenFront's level digits): a
+      //     small dark disc with the level, bottom-right of the token.
+      if (b.level > 1) {
+        const br = Math.max(5, radius * 0.42);
+        const bcx = sx + radius * 0.78;
+        const bcy = sy + radius * 0.78;
+        ctx.beginPath();
+        ctx.arc(bcx, bcy, br, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(15, 17, 23, 0.92)";
+        ctx.fill();
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.7)";
+        ctx.stroke();
+        ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+        ctx.font = `600 ${Math.max(7, br * 1.3)}px system-ui, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(String(b.level), bcx, bcy + 0.5);
+      }
+
       // 6. Build-progress bar under a structure still under construction.
       if (b.underConstruction) {
         ctx.globalAlpha = 1;
@@ -1918,7 +1939,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
    * In build mode, outline the hovered tile with the structure's own colour
    * and icon before the player commits — OpenFront's ghost-build preview.
    * Green when the tile is a legal build site (owned, no existing structure),
-   * red otherwise, so the outline itself answers "can I build here?".
+   * amber over your own same-type structure (an **upgrade** — the click raises
+   * its level), red otherwise, so the outline itself answers "can I build here?".
    */
   const drawBuildGhost = (ctx: CanvasRenderingContext2D, scale: number): void => {
     const map = runtime.map;
@@ -1931,10 +1953,24 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
 
     const ref = map.ref(tx, ty);
     const isMine = owner[ref] === runtime.myPlayerId;
-    const alreadyBuilt = runtime.buildings.some((b) => b.x === tx && b.y === ty);
-    const valid = isMine && !alreadyBuilt;
-    const outline = valid ? "rgba(74, 222, 128, 0.9)" : "rgba(248, 113, 113, 0.9)";
-    const fill = valid ? "rgba(74, 222, 128, 0.22)" : "rgba(248, 113, 113, 0.18)";
+    const hoverBuilding = runtime.buildings.find((b) => b.x === tx && b.y === ty);
+    const isUpgrade =
+      hoverBuilding !== undefined &&
+      hoverBuilding.playerId === runtime.myPlayerId &&
+      hoverBuilding.type === type &&
+      !hoverBuilding.underConstruction &&
+      UPGRADABLE_BUILDING_TYPES.includes(type);
+    const valid = isMine && (hoverBuilding === undefined || isUpgrade);
+    const outline = isUpgrade
+      ? "rgba(250, 204, 21, 0.95)"
+      : valid
+        ? "rgba(74, 222, 128, 0.9)"
+        : "rgba(248, 113, 113, 0.9)";
+    const fill = isUpgrade
+      ? "rgba(250, 204, 21, 0.22)"
+      : valid
+        ? "rgba(74, 222, 128, 0.22)"
+        : "rgba(248, 113, 113, 0.18)";
 
     const { x: sx, y: sy } = worldToScreen(tx, ty);
     const size = scale;
@@ -1945,8 +1981,15 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     ctx.fillRect(sx, sy, size, size);
     ctx.strokeRect(sx, sy, size, size);
     if (scale >= 10) {
-      ctx.fillStyle = valid ? "#4ade80" : "#f87171";
+      ctx.fillStyle = isUpgrade ? "#facc15" : valid ? "#4ade80" : "#f87171";
       drawIcon(ctx, type, sx + size / 2, sy + size / 2, Math.min(scale * 0.3, 11));
+      if (isUpgrade) {
+        // Spell out what the click does: raise this structure to the next level.
+        ctx.font = `600 ${Math.max(9, Math.min(scale * 0.35, 13))}px system-ui, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText(`Lv ${hoverBuilding.level + 1}`, sx + size / 2, sy - 2);
+      }
     }
     ctx.restore();
   };

@@ -3,7 +3,7 @@ import type { GameMap, TileRef } from "../Core/GameMap.js";
 import { NEUTRAL_PLAYER, type PlayerId, type TerritoryGrid } from "../Core/TerritoryGrid.js";
 import { maxTroops } from "../Core/rasterCombatConfig.js";
 import { ALLIANCE_RENEWAL_WINDOW_TICKS } from "../Core/alliances.js";
-import { buildingCost } from "../Core/buildings.js";
+import { buildingCost, costCounterTypes, STRUCTURE_MIN_DIST } from "../Core/buildings.js";
 import type { RasterServerMessage, RasterSnapshot } from "../Core/types.js";
 import type { RasterPlayerKind } from "./botField.js";
 
@@ -259,14 +259,26 @@ export class RasterBotController {
     if (grid.tileCountOf(me) < RasterBotController.MIN_TILES_TO_BUILD) return;
     // One port for the coastal gold dividend, then compound into cities.
     if (this.tryQueueBuild(grid, map, "port", (ref) => map.isShore(ref), 1)) return;
-    this.tryQueueBuild(grid, map, "city", () => true);
+    if (this.tryQueueBuild(grid, map, "city", () => true)) return;
+    // No legal spot left for a fresh city (structure spacing) — sink the
+    // surplus into **upgrading** one instead, so a boxed-in nation keeps
+    // climbing the same cost ramp (OpenFront's structure upgrades).
+    this.tryQueueUpgrade(grid, map, "city");
+  }
+
+  /** The next ramp price of `type` for this bot (cost group's summed levels). */
+  private nextBuildCost(grid: TerritoryGrid, me: PlayerId, type: "city" | "port"): number {
+    const ramp = costCounterTypes(type).reduce((sum, t) => sum + grid.totalLevelsOf(me, t), 0);
+    return buildingCost(type, ramp);
   }
 
   /**
    * Queue a build of `type` on the lowest-`TileRef` owned, unbuilt, `eligible`
-   * tile when the bot can afford its next one and owns fewer than `cap` of the
-   * type. Returns whether an order was queued, so the caller can fall through to
-   * the next building choice. Deterministic, so replays stay identical.
+   * tile that also honours the structure-spacing rule (so the order isn't
+   * doomed to a server rejection), when the bot can afford its next one and
+   * owns fewer than `cap` of the type. Returns whether an order was queued, so
+   * the caller can fall through to the next building choice. Deterministic, so
+   * replays stay identical.
    */
   private tryQueueBuild(
     grid: TerritoryGrid,
@@ -278,15 +290,41 @@ export class RasterBotController {
     const me = this.myPlayerId;
     const session = this.session;
     if (me === null || !session) return false;
-    const owned = grid.buildingCountOf(me, type);
-    if (owned >= cap) return false;
-    if (grid.goldOf(me) < buildingCost(type, owned)) return false;
+    if (grid.buildingCountOf(me, type) >= cap) return false;
+    if (grid.goldOf(me) < this.nextBuildCost(grid, me, type)) return false;
+
+    // The bot's own structures, for the spacing check (a handful at most).
+    const mine: Array<[number, number]> = [];
+    for (const [ref] of grid.buildingEntries()) {
+      if (grid.ownerOf(ref) === me) mine.push([map.x(ref), map.y(ref)]);
+    }
+    const minSq = STRUCTURE_MIN_DIST * STRUCTURE_MIN_DIST;
 
     for (const ref of grid.tilesOf(me)) {
-      if (!grid.hasBuilding(ref) && eligible(ref)) {
-        session.queueBuild(this.config.botId, { targetX: map.x(ref), targetY: map.y(ref), building: type });
-        return true;
-      }
+      if (grid.hasBuilding(ref) || !eligible(ref)) continue;
+      const x = map.x(ref);
+      const y = map.y(ref);
+      if (mine.some(([bx, by]) => (bx - x) * (bx - x) + (by - y) * (by - y) < minSq)) continue;
+      session.queueBuild(this.config.botId, { targetX: x, targetY: y, building: type });
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Queue an **upgrade** of the bot's lowest-`TileRef` finished `type`
+   * structure (a build order on its own tile), when the next ramp step is
+   * affordable. Returns whether an order was queued. Deterministic.
+   */
+  private tryQueueUpgrade(grid: TerritoryGrid, map: GameMap, type: "city" | "port"): boolean {
+    const me = this.myPlayerId;
+    const session = this.session;
+    if (me === null || !session) return false;
+    if (grid.goldOf(me) < this.nextBuildCost(grid, me, type)) return false;
+    for (const [ref, t] of grid.buildingEntries()) {
+      if (t !== type || grid.ownerOf(ref) !== me || grid.isUnderConstruction(ref)) continue;
+      session.queueBuild(this.config.botId, { targetX: map.x(ref), targetY: map.y(ref), building: type });
+      return true;
     }
     return false;
   }
@@ -434,7 +472,7 @@ export class RasterBotController {
       // in which case further income is lost, so spend down on the softest target.
       // With nothing left to fight (only allies or neutral-free borders), bank.
       if (enemies.length === 0) return;
-      const cap = maxTroops(grid.tileCountOf(me), grid.activeBuildingCountOf(me, "city")) *
+      const cap = maxTroops(grid.tileCountOf(me), grid.activeLevelsOf(me, "city")) *
         grid.modifiersOf(me).troopCapMultiplier;
       if (pool < cap * 0.9) return;
       const softest = enemies.reduce((a, b) => (grid.troopsOf(b.target) < grid.troopsOf(a.target) ? b : a));

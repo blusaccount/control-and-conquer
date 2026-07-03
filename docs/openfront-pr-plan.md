@@ -85,7 +85,7 @@ Defeat/Spectate.
 | L1 | Attack-Ratio-Slider | 1–100 %, Default 20 %, Schritt 10 | **erledigt (PR A)** — 1–100 %, Default 20, T/Y ±10 | — |
 | L2 | Boot-Kapazität | `floor(troops/5)` pro Boot | **war bereits umgesetzt** (Session kappt auf `floor(pool/5)`; PR A pinnt das per Test) | — |
 | L3 | **Allianz-Lebenszyklus** | ~5 min Laufzeit, Renewal-Prompt ~30 s vor Ablauf, natürlicher Ablauf ≠ Verrat; Verrats-Zähler; Auto-Embargo | **erledigt (PR C)** — 5-min-Ablauf, beidseitiges Renewal, Verrats-Konto + 🗡-Marker, Bot-Verhalten; Auto-Embargo folgt mit PR F (Embargo-System) | — |
-| L4 | **Struktur-Upgrades (Level)** | seit v24: Bau auf bestehendes Gebäude = Upgrade (City-Level ×250k Cap, Stations-Level etc.), Level-Ziffern im Render | Gebäude sind one-shot, kein Level-Feld | **hoch** — zentrales Spätspiel-Element |
+| L4 | **Struktur-Upgrades (Level)** | seit v24: Bau auf bestehendes Gebäude = Upgrade (City-Level ×250k Cap, Stations-Level etc.), Level-Ziffern im Render | **erledigt (PR D)** — City/Port/Factory upgradebar (gleiche Kostenrampe, Effekt pro Level), Level-Badge + amber Upgrade-Ghost, Bot-Upgrades; Fort/Silo/SAM bewusst v1-ausgenommen | — |
 | L5 | **Win-Condition** | Prozent-Schwelle der Landfläche (FFA; Teams 95 %) → Spiele *enden* | **erledigt (PR B)** — `WIN_TILE_FRACTION = 0.8`, Match endet an der Schwelle; Leaderboard zeigt Sieg-Fortschritt | — |
 | L6 | Emojis / Quick-Chat | Emoji-Reaktionen übers Territorium, Preset-Nachrichten | fehlt komplett | mittel |
 | L7 | Spenden / Zielanfragen / Embargo | Truppen-/Gold-Spende an Verbündete, Target-Request, Handels-Embargo (manuell + automatisch bei Verrat) | fehlt komplett | mittel |
@@ -181,7 +181,7 @@ erzeugt die typischen Verrats- und Neusortierungs-Momente.
 - **Tests:** Ablauf ohne Traitor-Debuff; Renewal-Fenster; Bot-Antworten
   deterministisch.
 
-### PR D — Struktur-Upgrades / Level (M/L, P1)
+### PR D — Struktur-Upgrades / Level (M/L, P1) — ✅ umgesetzt (2026-07-02; Upgrades wirken sofort statt mit Bauzeit — dokumentierte Vereinfachung)
 
 Seit OpenFront v24 Kernbestandteil des Spätspiels (Gold-Senke statt
 Gebäude-Spam); unser Renderer hat Level-Ziffern/grünen Upgrade-Ghost bereits
