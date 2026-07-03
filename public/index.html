@@ -613,6 +613,7 @@
         background: rgba(56, 189, 248, 0.08);
       }
       #leaderboard .lb-empty { font-size: 12px; color: var(--text-faint); padding: 4px; }
+      #leaderboard .lb-note { font-size: 11px; color: var(--text-faint); padding: 4px 4px 0; text-align: right; }
 
       /* ---- Diplomacy action buttons (per leaderboard row) ---------------- */
       #leaderboard .lb-acts {
@@ -644,6 +645,9 @@
       #leaderboard .lb-act.decline,
       #leaderboard .lb-act.break { color: #fca5a5; border-color: rgba(252, 165, 165, 0.35); }
       #leaderboard .lb-act.ally { color: #7dd3fc; border-color: rgba(125, 211, 252, 0.4); }
+      #leaderboard .lb-act.renew { color: #4ade80; border-color: rgba(74, 222, 128, 0.4); }
+      #leaderboard .lb-pact { font-size: 10px; color: var(--text-faint); align-self: center; padding-right: 2px; }
+      #leaderboard .lb-traitor { font-size: 10px; color: #fca5a5; }
 
       /* ---- Menu + stats overlays ----------------------------------------- */
       .menu-overlay {
@@ -859,8 +863,8 @@
         <label class="attack-label">
           Attack ratio
           <div class="slider-row">
-            <input id="attackPercentInput" type="range" min="10" max="90" step="5" value="50" />
-            <output id="attackPercentOutput">50%</output>
+            <input id="attackPercentInput" type="range" min="1" max="100" step="1" value="20" />
+            <output id="attackPercentOutput">20%</output>
           </div>
         </label>
         <div class="hint hotkey-hint">Keys · <b>1–0</b> build/nuke · <b>B/G</b> boat/ground · <b>K/L</b> ally/break · <b>Shift+R</b> retaliate · <b>Space</b> alt view · <b>M</b> grid · <b>T/Y</b> ratio · <b>Q/E</b> zoom · <b>C</b> centre · <b>WASD</b> pan · <b>Esc</b> cancel</div>

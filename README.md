@@ -34,14 +34,14 @@ so the menu and the server never drift on the available options:
 | **Earth — Standard** | `earth` heightmap @ 640 | ~155k |
 | **Earth — Large** (default) | `earth` heightmap @ 1280 | ~620k |
 | **Earth — Huge** | `earth` heightmap @ 2560 | ~2.5M |
-| **Procedural** | seeded terrain generator | ~40k |
 
 The Earth maps are downsampled from a committed equirectangular topology raster;
 the same source scales from a quick game up to an OpenFront-scale world. Each
 tier's edge is 1.25× the previous (≈1.56× the area, so "about 50% bigger"), big
-enough to host a crowded multi-nation FFA. Procedural rolls a fresh continent.
-The old small "World — Classic" sketch was retired — it was too cramped for a
-readable field of rivals.
+enough to host a crowded multi-nation FFA. A seeded procedural generator still
+exists server-side as a fallback, but it is intentionally not offered in the
+menu; the old small "World — Classic" sketch was retired — it was too cramped
+for a readable field of rivals.
 
 `RASTER_MAP` optionally overrides the **default** choice used when a client sends
 none — it must name a catalogue id, e.g. `RASTER_MAP=earth-huge npm run dev`.
@@ -115,7 +115,8 @@ before `npm start` in production.
 ## Architecture
 
 Server-authoritative. The server holds the master state and ticks a fixed-step
-simulation (20 TPS); the client renders snapshots and sends intent-only commands.
+simulation (10 TPS, OpenFront's rate); the client renders snapshots and sends
+intent-only commands.
 
 ```
 Browser (Canvas 2D)  ──WebSocket──►  Node + ws

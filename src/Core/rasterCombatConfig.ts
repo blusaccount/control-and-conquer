@@ -76,6 +76,17 @@ export const troopsPerSecond = (
   troopGrowth(troops, maxTroops(tiles, cities) * troopCapMultiplier) * incomeMultiplier * ticksPerSecond;
 
 /**
+ * Fraction of the map's capturable land a single player must hold to win by
+ * **domination**, mirroring OpenFront's FFA win condition (community-documented
+ * as controlling 80% of total land; openfrontpro.com/mechanics/winning and the
+ * OpenFront wiki, 2026-07). Requiring every last tile made matches drag through
+ * a long, foregone mop-up phase; at the threshold the match ends immediately
+ * and the leader is crowned. Team modes use a higher bar (OpenFront: 95%) —
+ * a future team PR should carry its own constant.
+ */
+export const WIN_TILE_FRACTION = 0.8;
+
+/**
  * Maximum wall-clock length of a single roguelite run, in seconds. When the
  * clock runs out the territory leader is declared the winner. Kept in seconds
  * (a pure gameplay rule) so it stays independent of the server tick rate, which
@@ -204,7 +215,7 @@ export const ATTACK_DENSITY_FACTOR = 1.3;
  * stockpiled troop pool real *defensive* value.
  *
  * The {@link DEFENDER_STRENGTH_MAX} cap is **deliberately** tighter than the
- * fort/defense-post ceiling ({@link DEFENSE_POST_STRENGTH}×): this axis scales
+ * fort/defense-post ceiling (`FORT_DEFENSE_STRENGTH`× in `buildings.ts`): this axis scales
  * with a raw *troop advantage*, which the runaway leader has in abundance, so
  * capping it keeps a trailing player able to dislodge a stockpiled empire (an
  * uncapped troop-ratio defence would harden the snowball into an unbeatable
@@ -312,17 +323,6 @@ export const attackTilesPerTick = (
   const clamped = Math.min(ENEMY_TILES_PER_TICK_MAX, Math.max(ENEMY_TILES_PER_TICK_MIN, advantage));
   return clamped * border * ENEMY_TILES_BORDER_MULT;
 };
-
-/**
- * Defense-post aura. A defense post is a fortified location (e.g. a player's
- * capital) that makes capturing ground around it dearer, mirroring OpenFront's
- * defense posts that multiply attacker losses within a tile range. Capture cost
- * inside the aura is scaled up to {@link DEFENSE_POST_STRENGTH}× at the post
- * itself, falling off linearly to 1× at {@link DEFENSE_POST_RADIUS} tiles
- * (Chebyshev distance). Beyond the radius a post has no effect.
- */
-export const DEFENSE_POST_RADIUS = 6;
-export const DEFENSE_POST_STRENGTH = 3;
 
 /**
  * Floor on the troops a defender loses from their pool for each tile captured
@@ -466,7 +466,7 @@ export const MAX_TRANSPORT_SHIPS_PER_PLAYER = 3;
 
 /**
  * Tiles a transport ship advances along its water path each tick. The ship
- * crosses visibly over several ticks (at 20 TPS) rather than teleporting, so the
+ * crosses visibly over several ticks (at 10 TPS) rather than teleporting, so the
  * shortest route it takes is legible and interceptable in feel.
  */
 export const SHIP_TILES_PER_TICK = 1;

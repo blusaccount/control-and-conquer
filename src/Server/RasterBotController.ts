@@ -2,7 +2,8 @@ import type { RasterGameSession } from "./RasterGameSession.js";
 import type { GameMap, TileRef } from "../Core/GameMap.js";
 import { NEUTRAL_PLAYER, type PlayerId, type TerritoryGrid } from "../Core/TerritoryGrid.js";
 import { maxTroops } from "../Core/rasterCombatConfig.js";
-import { buildingCost } from "../Core/buildings.js";
+import { ALLIANCE_RENEWAL_WINDOW_TICKS } from "../Core/alliances.js";
+import { buildingCost, costCounterTypes, STRUCTURE_MIN_DIST } from "../Core/buildings.js";
 import type { RasterServerMessage, RasterSnapshot } from "../Core/types.js";
 import type { RasterPlayerKind } from "./botField.js";
 
@@ -35,6 +36,27 @@ export interface RasterBotPersonality {
    * At >= 0.5 the bot opens a war the moment it holds a decisive edge. */
   readonly aggression: number;
 }
+
+/**
+ * The most betrayals a nation forgives when weighing an alliance offer: anyone
+ * who has broken more pacts than this is refused outright, whatever the
+ * personality — a serial traitor's word is worthless. (Reputation heuristic of
+ * our own; OpenFront tracks a public betrayal count but doesn't document how
+ * its nations weigh it.)
+ */
+const NATION_BETRAYAL_TOLERANCE = 1;
+
+/**
+ * Cheap deterministic hash of two integers onto [0, 1) — the confusion roll.
+ * No RNG anywhere in bot decisions, so identical (terrain, intents) replays
+ * stay identical (same guarantee as the engine's fallout/SAM hashing).
+ */
+const hash01 = (a: number, b: number): number => {
+  let h = (Math.imul(a, 374761393) + Math.imul(b, 668265263)) >>> 0;
+  h = (h ^ (h >>> 13)) >>> 0;
+  h = Math.imul(h, 1274126177) >>> 0;
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+};
 
 /**
  * A spread of opponent archetypes. {@link MatchRegistry} hands these out in
@@ -85,6 +107,13 @@ export interface RasterBotConfig {
    * diplomacy). See {@link RasterPlayerKind}.
    */
   readonly kind?: RasterPlayerKind;
+  /**
+   * Chance per decision that this nation **misdirects** its move at a
+   * different border target than the one it meant (OpenFront's "nation
+   * confusion", 10%/5%/2.5%/0% by difficulty — see `NATION_CONFUSION_CHANCE`).
+   * Rolled deterministically; 0/absent = never confused.
+   */
+  readonly confusionChance?: number;
 }
 
 export const DEFAULT_RASTER_BOT_CONFIG: RasterBotConfig = {
@@ -249,14 +278,26 @@ export class RasterBotController {
     if (grid.tileCountOf(me) < RasterBotController.MIN_TILES_TO_BUILD) return;
     // One port for the coastal gold dividend, then compound into cities.
     if (this.tryQueueBuild(grid, map, "port", (ref) => map.isShore(ref), 1)) return;
-    this.tryQueueBuild(grid, map, "city", () => true);
+    if (this.tryQueueBuild(grid, map, "city", () => true)) return;
+    // No legal spot left for a fresh city (structure spacing) — sink the
+    // surplus into **upgrading** one instead, so a boxed-in nation keeps
+    // climbing the same cost ramp (OpenFront's structure upgrades).
+    this.tryQueueUpgrade(grid, map, "city");
+  }
+
+  /** The next ramp price of `type` for this bot (cost group's summed levels). */
+  private nextBuildCost(grid: TerritoryGrid, me: PlayerId, type: "city" | "port"): number {
+    const ramp = costCounterTypes(type).reduce((sum, t) => sum + grid.totalLevelsOf(me, t), 0);
+    return buildingCost(type, ramp);
   }
 
   /**
    * Queue a build of `type` on the lowest-`TileRef` owned, unbuilt, `eligible`
-   * tile when the bot can afford its next one and owns fewer than `cap` of the
-   * type. Returns whether an order was queued, so the caller can fall through to
-   * the next building choice. Deterministic, so replays stay identical.
+   * tile that also honours the structure-spacing rule (so the order isn't
+   * doomed to a server rejection), when the bot can afford its next one and
+   * owns fewer than `cap` of the type. Returns whether an order was queued, so
+   * the caller can fall through to the next building choice. Deterministic, so
+   * replays stay identical.
    */
   private tryQueueBuild(
     grid: TerritoryGrid,
@@ -268,15 +309,41 @@ export class RasterBotController {
     const me = this.myPlayerId;
     const session = this.session;
     if (me === null || !session) return false;
-    const owned = grid.buildingCountOf(me, type);
-    if (owned >= cap) return false;
-    if (grid.goldOf(me) < buildingCost(type, owned)) return false;
+    if (grid.buildingCountOf(me, type) >= cap) return false;
+    if (grid.goldOf(me) < this.nextBuildCost(grid, me, type)) return false;
+
+    // The bot's own structures, for the spacing check (a handful at most).
+    const mine: Array<[number, number]> = [];
+    for (const [ref] of grid.buildingEntries()) {
+      if (grid.ownerOf(ref) === me) mine.push([map.x(ref), map.y(ref)]);
+    }
+    const minSq = STRUCTURE_MIN_DIST * STRUCTURE_MIN_DIST;
 
     for (const ref of grid.tilesOf(me)) {
-      if (!grid.hasBuilding(ref) && eligible(ref)) {
-        session.queueBuild(this.config.botId, { targetX: map.x(ref), targetY: map.y(ref), building: type });
-        return true;
-      }
+      if (grid.hasBuilding(ref) || !eligible(ref)) continue;
+      const x = map.x(ref);
+      const y = map.y(ref);
+      if (mine.some(([bx, by]) => (bx - x) * (bx - x) + (by - y) * (by - y) < minSq)) continue;
+      session.queueBuild(this.config.botId, { targetX: x, targetY: y, building: type });
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Queue an **upgrade** of the bot's lowest-`TileRef` finished `type`
+   * structure (a build order on its own tile), when the next ramp step is
+   * affordable. Returns whether an order was queued. Deterministic.
+   */
+  private tryQueueUpgrade(grid: TerritoryGrid, map: GameMap, type: "city" | "port"): boolean {
+    const me = this.myPlayerId;
+    const session = this.session;
+    if (me === null || !session) return false;
+    if (grid.goldOf(me) < this.nextBuildCost(grid, me, type)) return false;
+    for (const [ref, t] of grid.buildingEntries()) {
+      if (t !== type || grid.ownerOf(ref) !== me || grid.isUnderConstruction(ref)) continue;
+      session.queueBuild(this.config.botId, { targetX: map.x(ref), targetY: map.y(ref), building: type });
+      return true;
     }
     return false;
   }
@@ -285,15 +352,20 @@ export class RasterBotController {
    * Run at most one diplomacy move per decision, in priority order:
    *  1. **Answer** the lowest-id pending alliance offer. Defensive personalities
    *     welcome any ally; aggressive ones accept only an offer from someone at
-   *     least as strong (never a weakling they could simply eat).
-   *  2. **Propose** peace to the strongest rival on its border that clearly
+   *     least as strong (never a weakling they could simply eat). A nation
+   *     refuses anyone who has betrayed more than {@link NATION_BETRAYAL_TOLERANCE}
+   *     pacts — a serial traitor's word is worthless.
+   *  2. **Renew** a pact inside its renewal window: tribes and defensive
+   *     nations always vote to extend; aggressive ones only keep an ally still
+   *     worth having (at least as strong as themselves).
+   *  3. **Propose** peace to the strongest rival on its border that clearly
    *     outguns it — only defensive bots sue for peace, and only against a real
    *     threat.
-   *  3. **Betray:** a ruthless bot hemmed in *only* by allies (no neutral land,
+   *  4. **Betray:** a ruthless bot hemmed in *only* by allies (no neutral land,
    *     no other rival to fight) turns on the weakest ally it decisively outguns
    *     rather than stagnate behind its own pacts.
-   * A passive Bot filler (`kind: "bot"`) only ever does step 1, and
-   * unconditionally accepts — OpenFront's Tribe welcomes every offer and
+   * A passive Bot filler (`kind: "bot"`) only ever does steps 1–2, and
+   * unconditionally accepts/renews — OpenFront's Tribe welcomes every offer and
    * never proposes or betrays on its own.
    * Deterministic throughout (ascending-id tiebreaks, no RNG).
    */
@@ -309,15 +381,28 @@ export class RasterBotController {
     const incoming = alliances.incomingProposals(me);
     if (incoming.length > 0) {
       const from = incoming[0];
-      const accept = kind === "bot" || p.aggression < 0.5 || grid.troopsOf(from) >= myPool;
+      const trusted = alliances.betrayalsOf(from) <= NATION_BETRAYAL_TOLERANCE;
+      const accept =
+        kind === "bot" || (trusted && (p.aggression < 0.5 || grid.troopsOf(from) >= myPool));
       session.respondAlliance(this.config.botId, from, accept);
+      return;
+    }
+
+    // 2) Renew an expiring pact (one vote per decision, lowest ally id first).
+    const now = session.peekTick();
+    for (const ally of alliances.alliesOf(me)) {
+      const left = alliances.ticksLeft(me, ally, now);
+      if (left === null || left > ALLIANCE_RENEWAL_WINDOW_TICKS) continue;
+      const wants = kind === "bot" || p.aggression < 0.5 || grid.troopsOf(ally) >= myPool;
+      if (!wants || alliances.hasRenewVote(me, ally)) continue;
+      session.renewAlliance(this.config.botId, ally);
       return;
     }
     if (kind === "bot") return;
 
     const bordering = grid.frontierTargets(me).filter((t) => t.target !== NEUTRAL_PLAYER);
 
-    // 2) Defensive bots sue for peace with a clearly stronger bordering rival.
+    // 3) Defensive bots sue for peace with a clearly stronger bordering rival.
     if (p.aggression < 0.5) {
       let threat: PlayerId | null = null;
       let threatPool = -1;
@@ -333,7 +418,7 @@ export class RasterBotController {
       return;
     }
 
-    // 3) Betrayal — only for the ruthless, and only when fully hemmed in by allies.
+    // 4) Betrayal — only for the ruthless, and only when fully hemmed in by allies.
     if (p.aggression >= 0.9) {
       const hasOpenTarget = grid.frontierTargets(me).some(
         (t) => t.target === NEUTRAL_PLAYER || !alliances.areAllied(me, t.target),
@@ -406,12 +491,27 @@ export class RasterBotController {
       // in which case further income is lost, so spend down on the softest target.
       // With nothing left to fight (only allies or neutral-free borders), bank.
       if (enemies.length === 0) return;
-      const cap = maxTroops(grid.tileCountOf(me), grid.activeBuildingCountOf(me, "city")) *
+      const cap = maxTroops(grid.tileCountOf(me), grid.activeLevelsOf(me, "city")) *
         grid.modifiersOf(me).troopCapMultiplier;
       if (pool < cap * 0.9) return;
       const softest = enemies.reduce((a, b) => (grid.troopsOf(b.target) < grid.troopsOf(a.target) ? b : a));
       sample = softest.sample;
       fraction = p.attackCommit;
+    }
+
+    // Nation confusion (OpenFront): on lower difficulties a nation sometimes
+    // misdirects its move at a *different* border target than the one it
+    // meant — a readable mistake, not a random click. Candidates exclude
+    // allies (the engine would just reject those); the roll and the pick are
+    // deterministic (hashed tick × seat), so replays stay identical.
+    const confusion = this.config.confusionChance ?? 0;
+    if (confusion > 0 && hash01(session.peekTick(), me) < confusion) {
+      const misdirects = targets.filter(
+        (t) => t.sample !== sample && (t.target === NEUTRAL_PLAYER || !alliances.areAllied(me, t.target)),
+      );
+      if (misdirects.length > 0) {
+        sample = misdirects[(session.peekTick() + me) % misdirects.length].sample;
+      }
     }
 
     const available = pool * (1 - p.reserveFraction);

@@ -54,7 +54,10 @@
     Tile erobert, verschwindet die Aura. (Es gibt **keine Hauptstadt** mehr — eine
     Nation wird besiegt, indem ihr *gesamtes* Territorium erobert wird, nicht durch
     Fall eines einzelnen Sitzes.)
-- **Win-Condition:** ein Spieler, der alle eroberbaren Tiles hält, gewinnt;
+- **Win-Condition:** Domination wie OpenFront — ein Spieler, der
+  `WIN_TILE_FRACTION` (80 %) der eroberbaren Tiles hält, gewinnt sofort
+  (öffentlich dokumentierter FFA-Wert; Teams nutzen bei OpenFront 95 % — für
+  einen künftigen Team-Modus als eigene Konstante vorgesehen);
   `SERVER_RASTER_MATCH_ENDED` wird einmalig gebroadcastet. Eine Nation ist
   eliminiert, sobald ihr letztes Tile erobert ist (der Eroberer behält das Land).
 
@@ -82,8 +85,18 @@
   Gold an jeder Stadt/jedem Hafen aus (`TRAIN_GOLD_PER_STATION`). `RasterConflict` tickt
   das System; Netz + Züge gehen als `rails`/`trains` in den Snapshot und werden im Client
   als Gleis-Polylinien und fahrende Punkte gezeichnet.
+- **Struktur-Upgrades (2026-07-02, PR D):** Bau auf ein eigenes, fertiges Gebäude
+  gleichen Typs ist ein **Upgrade** (OpenFront v24) — gleiche Kostenrampe (jeder
+  Bau *oder* Ausbau rückt den Zähler weiter), Effekt pro Level: City-Level heben
+  den Pop-Cap je +250k, Port-/Fabrik-Level takten Trade-Schiffe/Züge schneller.
+  Nur City/Port/Fabrik sind upgradebar (Fort/Silo/SAM-Level-Effekte sind bei
+  OpenFront nicht öffentlich dokumentiert — bewusst ausgelassen). Level-Badge im
+  Client, amber Upgrade-Ghost („Lv n+1"), Bots upgraden Citys, wenn der
+  Mindestabstand keinen Neubau mehr zulässt. Upgrades wirken sofort (ohne
+  Bauzeit) — dokumentierte Vereinfachung.
 - **Bauwerke leben mit ihrem Tile:** wird ein Tile erobert oder neutralisiert, fällt
-  die Struktur (und eine Fort-Aura) — der Eroberer erbt nacktes Land (`claim` → `destroyBuilding`).
+  die Struktur (und eine Fort-Aura, und die gesamte Upgrade-Investition) — der
+  Eroberer erbt nacktes Land (`claim` → `destroyBuilding`).
 - **Bots reinvestieren** Gold ab einer Mindestgröße in Städte (`maybeBuildCity`),
   deterministisch wie alle Bot-Entscheidungen.
 
@@ -93,9 +106,18 @@
   framework-frei wie der Rest von `Core` (keine RNG, aufsteigende Id-Ordnung).
 - **Beidseitige Zustimmung:** ein Spieler **schlägt vor** (`propose`), der Empfänger
   **nimmt an / lehnt ab** (`accept`/`decline`). Ein kreuzender Gegenvorschlag besiegelt
-  das Bündnis sofort. Jede Seite kann jederzeit **brechen** (`break`) — ein Verrat ohne
-  Zeitlimit (v1 hat keine Ablauf-Mechanik). Eliminierte Nationen verlassen den
-  Diplomatie-Graph (`removePlayer`).
+  das Bündnis sofort. Jede Seite kann jederzeit **brechen** (`break`) — ein Verrat.
+  Eliminierte Nationen verlassen den Diplomatie-Graph (`removePlayer`).
+- **Lebenszyklus (2026-07-02, PR C):** Allianzen laufen wie bei OpenFront nach
+  **5 Minuten** ab (`ALLIANCE_DURATION_TICKS = 3000`) — natürlicher Ablauf ist
+  **kein** Verrat (kein Traitor-Debuff, kein Reputations-Malus). In den letzten
+  ~30 s (`ALLIANCE_RENEWAL_WINDOW_TICKS = 300`) zeigt der Client einen
+  **Renew**-Button; stimmen **beide** Seiten (`voteRenew`), startet die Uhr neu.
+  Explizite Brüche zählen in ein permanentes, öffentliches **Verrats-Konto**
+  (`betrayalsOf`, Snapshot-Feld `betrayals`, 🗡-Marker im Leaderboard); Nationen
+  lehnen Angebote von Serien-Verrätern (>1 Bruch) ab und stimmen
+  persönlichkeitsbasiert über Verlängerungen ab (Tribes immer, defensive
+  Nationen immer, aggressive nur bei einem mindestens ebenbürtigen Partner).
 - **Nichtangriffspakt im Kampf** (`RasterConflict`): `launchAttack`/`launchShip` weisen
   ein Ziel zurück, das ein **Verbündeter** hält (`ALLIED`). Entsteht ein Bündnis *während*
   ein Angriff/Schiff schon unterwegs ist, **bricht die Offensive ab** und die Truppen
@@ -250,13 +272,13 @@ Architektur-Entscheidung und wird unten nicht erneut als Punkt geführt.
 | 3 | **Waffen-Tier unvollständig** | Missile Silo **+ SAM Launcher** (`min(3M,(n+1)·1.5M)`, Range `70..150` sichtbar als rotierender Dash-Kreis, `SamRadiusPass.ts`) **+ Atom/Hydrogen(5M)/MIRV(25M+n·15M)** Bombe, je eigenes HUD-Icon (`UnitDisplay.ts`, 10 Bautypen gesamt) | **erledigt (2026-07-02)** — SAM Launcher (`min(3M,(n+1)·1.5M)`, Range 70, 90-Tick-Cooldown, deterministisches Abfangen mit Cooldown-Verbrauch bei jedem Versuch) + Hydrogen Bomb (5M, größerer Radius) + MIRV (25M+n·15M, splittet in 6 einzeln fliegende, atombomben-große Sprengköpfe) — alle über den bestehenden Silo/Cooldown-Mechanismus, eigene Waffen-Buttons + Icon je Typ (`nukes.ts`, `RasterConflict.ts`, `rasterClient.ts`) | — |
 | 4 | **Karten-Katalog winzig** | 3-Tab-Browser Featured/All/Favorites + Textsuche + „Random Map"-Option (`MapPicker.ts`); Dutzende kuratierte Karten (14 neue allein in v0.32.0) — Welt, Kontinente, Länder, Kuriositäten wie „Amazon River" | Nur 3 Größenvarianten derselben Earth-Karte (`mapCatalog.ts`), kein Featured/Favorites/Suche, keine weiteren Landmassen | **P1** — größte Content-Lücke fürs „lebendige Welt"-Gefühl |
 | 5 | **Kein Bot/Nation-Zweiklassen-KI-System** | `PlayerType.Bot` = passiver „Tribe"-Filler (Slider 0–400, zivilisationsartige Zwei-Wort-Namen z. B. „Roman Empire", `troops/20` pro Angriff, akzeptiert jede Allianz) **getrennt von** `PlayerType.Nation` = volle KI aus Karten-Manifest + Nomen-generierten Namen (z. B. „Comically Large Snail"), Schwierigkeits-skalierte Entscheidungs-Kadenz 30–100 Ticks | **erledigt (2026-07-02)** — echter Zweiklassen-Split: jeder dritte KI-Sitz ist ein passiver „Bot" (flache, schwierigkeitsunabhängige OpenFront-Tribe-Zahlen, Zwei-Wort-Name z. B. „Roman Empire", baut nichts, nimmt jede Allianz bedingungslos an), der Rest volle „Nation"-KI (unverändert: 5 Persönlichkeiten, Schwierigkeits-Handicaps, kuratierte Namen). Weiterhin ohne Karten-Manifest/Slider — Feldgröße bleibt kartenskaliert statt 0–400-Slider (`botField.ts`, `RasterBotController.ts`) | — |
-| 6 | **Schwierigkeit „Impossible" fehlt** | 4 Stufen: Easy/Medium/Hard/**Impossible** (1.25× Start-/Max-Truppen, 1.05× Wachstum, KI entscheidet ~2× so oft wie auf Easy — 30–50 statt 65–100 Ticks) | Nur Easy/Medium/Hard (`mapCatalog.ts`/`main.ts`), exakt 3 Stufen | P2 |
+| 6 | **Schwierigkeit „Impossible" fehlt** | 4 Stufen: Easy/Medium/Hard/**Impossible** (1.25× Start-/Max-Truppen, 1.05× Wachstum, KI entscheidet ~2× so oft wie auf Easy — 30–50 statt 65–100 Ticks) | **erledigt (2026-07-02, PR J)** — 4. Stufe (Start 31 250, Cap ×1.25, Wachstum ×1.05, Kadenz ×0.5, dichteres Feld) + Menü-Karte; dazu **Nation-Confusion** (Fehlangriffs-Chance 10/5/2.5/0 %, deterministisch gehasht). Nebenbei behoben: der Solo-Worker-Pfad (Default-Transport!) hatte weder den Bot/Nation-Split noch die gewählte Difficulty an die Session weitergereicht — beide Seating-Pfade sind jetzt identisch. | — |
 | 7 | **Keine Kosmetik/Identität** | Nutzername, Flagge, Muster/Skin, Clan-Tags, seit v0.32 zusätzlich Territory-Skins | Farbe/Emoji rein deterministisch aus Spieler-Id (`rasterPalette.ts`), kein Namens-/Flaggen-/Skin-Picker im Menü | P2 |
 | 8 | **Kein PvP/Mehrspieler-Lobby** | Ranked 1v1, öffentliche Lobbys (FFA/Duos/Trios/Quads/HumansVsNations), Custom-Lobby erstellen/beitreten (`GameModeSelector.ts`) | Nur Solo-vs-Bots, ein „Start Run"-Button | P1 (bereits als offen dokumentiert) |
-| 9 | **Attack-Ratio-Slider weicht ab** | Bereich 1–100 %, Standard 20 %, Hotkey-Schrittweite 10 (`UserSettings.ts` `attackRatio`/`attackRatioIncrement`) | Bereich 10–90 %, Schritt 5, Standard 50 % (`index.html`) | P2 — leicht angleichbar |
-| 10 | **Zahlenformat weicht leicht ab** | Großbuchstaben-Suffixe „K"/„M"/„B", gestaffelte Nachkommastellen (1K–10K: 2 Dezimalstellen, 10K–100K: 1, ≥100K: ganzzahlig) | Kleinbuchstabe „k", andere Rundungsgrenzen (`formatCount` in `rasterClient.ts`) | P3 — kosmetisch |
-| 11 | **Zug-Tempo zu schnell** | `speed: 2` Tiles/Tick (Quelle: `TrainExecution.ts`, bereits im Balance-Plan §2.6 dokumentiert) | `TRAIN_TILES_PER_TICK = 3` (`buildings.ts:240`) — 50 % zu schnell | P3 — Ein-Zeilen-Fix |
-| 12 | **Tote, irreführende Konstanten** | — | `DEFENSE_POST_RADIUS=6`/`DEFENSE_POST_STRENGTH=3` in `rasterCombatConfig.ts` werden nirgends benutzt (Forts rufen `addDefensePost` immer mit den korrekten `FORT_DEFENSE_RADIUS=30`/`STRENGTH=5` aus `buildings.ts` auf) — verwirrend totes Code-Detail, kein Gameplay-Bug | P3 — Cleanup |
+| 9 | **Attack-Ratio-Slider weicht ab** | Bereich 1–100 %, Standard 20 %, Hotkey-Schrittweite 10 (`UserSettings.ts` `attackRatio`/`attackRatioIncrement`) | **erledigt (2026-07-02, PR A)** — Slider 1–100 %, Standard 20 %, Schritt 1; T/Y nudgen weiterhin ±10 (`index.html`; Server akzeptierte 1–100 schon) | — |
+| 10 | **Zahlenformat weicht leicht ab** | Großbuchstaben-Suffixe „K"/„M"/„B", gestaffelte Nachkommastellen (1K–10K: 2 Dezimalstellen, 10K–100K: 1, ≥100K: ganzzahlig) | **erledigt (2026-07-02, PR A)** — `formatCount` in eigenem, getestetem Modul `src/Client/format.ts` mit exakt dieser Staffel (inkl. Promotion 999 950 → „1.00M") | — |
+| 11 | **Zug-Tempo zu schnell** | `speed: 2` Tiles/Tick (Quelle: `TrainExecution.ts`, bereits im Balance-Plan §2.6 dokumentiert) | **erledigt (2026-07-02, PR A)** — `TRAIN_TILES_PER_TICK = 2` | — |
+| 12 | **Tote, irreführende Konstanten** | — | **erledigt (2026-07-02, PR A)** — `DEFENSE_POST_RADIUS/STRENGTH` gelöscht; `addDefensePost` verlangt Radius/Stärke jetzt explizit (Forts übergeben `FORT_DEFENSE_RADIUS=30`/`STRENGTH=5`) | — |
 | 13 | **Warship war ein statisches Gebäude, keine mobile Einheit** | Warship ist eine bewegliche Einheit (HP-Pool, Patrol-/Ziel-Reichweite, Schuss-Rate/-Schaden, passive Heilung, Rückzug-Schwelle, Ziel-Priorität Transport>Warship>Trade, Health-Bar-Farbverlauf rot→grün), **Veterancy-Pips** (gestapelte Rechtecke pro Level) (`BarPass.ts`, `UnitPass.ts`) | **erledigt (2026-07-02)** — Warship ist jetzt eine mobile Kampfeinheit, 1:1 an ihre Gebäudestruktur gekoppelt (Struktur fertig → Einheit spawnt; Einheit versenkt → Struktur fällt mit): HP-Pool 1000, Patrol-/Zielreichweite, 20-Tick-Schussrate/250 Schaden, passive Heilung, Rückzug-Hysterese (<750 HP zieht sich zurück, erst ab 900 HP wieder im Einsatz), feste Ziel-Priorität Transport>Warship>Trade, rot→grün Health-Bar + cyan Rückzugs-Halo im Client (`RasterConflict.ts` `advanceWarships`/`pickWarshipTarget`, `buildings.ts` `WARSHIP_*`, `rasterClient.ts` `drawWarships`). Bewegung ist geradliniges Verfolgen mit einfacher Land-Vermeidung, keine volle Wasser-Neu-Pfadfindung pro Tick (dokumentierte Vereinfachung). **Weiterhin offen:** Veterancy-Pips wurden in diesem Durchgang nicht umgesetzt. | P3 — nur noch Veterancy-Politur offen |
 | 14 | **Kein Farbenblind-Modus, kein Tag/Nacht-Ambient-Licht** | Seit v0.32: Grafik-Einstellungen mit Colorblind-Theme (`colorblind-theme.json`); kontinuierlicher (nicht togglebarer) Ambient-Licht-Pass (`NightCompositePass.ts`) | Keines von beidem | P3 |
 

@@ -203,8 +203,11 @@ export class TradeSystem {
       const rejected = this.rejections.get(src.ref) ?? 0;
       const rate = tradeShipSpawnRate(rejected, this.ships.length);
       if (rejected < rate) {
-        // Attempt "fails" this cycle: grow the counter so the port fires sooner.
-        this.rejections.set(src.ref, rejected + 1);
+        // Attempt "fails" this cycle: grow the counter so the port fires
+        // sooner. An upgraded port advances by its level per attempt, so a
+        // level-2 port reaches its spawn rate twice as fast (per-level station
+        // cadence, OpenFront's structure upgrades).
+        this.rejections.set(src.ref, rejected + this.grid.buildingLevelOf(src.ref));
         continue;
       }
 

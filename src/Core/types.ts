@@ -15,6 +15,7 @@
 
 import type {
   RasterAllyBreakClientMessage,
+  RasterAllyRenewClientMessage,
   RasterAllyProposeClientMessage,
   RasterAllyRespondClientMessage,
   RasterJoinClientMessage,
@@ -23,8 +24,25 @@ import type {
 import type { BuildingType } from "./buildings.js";
 import type { NukeKind } from "./nukes.js";
 
-/** An active alliance as a canonical `[lowId, highId]` player-id pair. */
+/**
+ * An active alliance in the snapshot: the canonical low/high player-id pair,
+ * how many ticks remain before the pact lapses (OpenFront's 5-minute alliance
+ * lifetime), and who has already voted to renew it — so a client can render a
+ * countdown next to the 🤝 marker and a renewal prompt near expiry.
+ */
+/** A bare alliance as a canonical `[lowId, highId]` pair (external AI API wire shape). */
 export type RasterAlliancePair = [number, number];
+
+export interface RasterAllianceInfo {
+  /** Lower player id of the pair. */
+  a: number;
+  /** Higher player id of the pair. */
+  b: number;
+  /** Ticks until the pact expires unless both sides renew. */
+  ticksLeft: number;
+  /** Player ids (of `a`/`b`) that have already voted to renew. */
+  renewVotes: number[];
+}
 
 /** A pending, directed alliance proposal awaiting the recipient's response. */
 export interface RasterAllianceRequest {
@@ -90,6 +108,12 @@ export interface RasterPlayerInfo {
    * the active leaderboard.
    */
   eliminated: boolean;
+  /**
+   * How many alliances this player has *betrayed* (explicitly broken) over the
+   * match — public reputation, mirroring OpenFront's permanent betrayal count.
+   * Natural pact expiry doesn't count. Bots weigh this when answering offers.
+   */
+  betrayals: number;
 }
 
 /**
@@ -203,6 +227,8 @@ export interface RasterBuilding {
   underConstruction: boolean;
   /** Construction progress in [0,1]; 1 once finished. Drives the build-progress bar. */
   buildProgress: number;
+  /** Structure level (1 = fresh; upgrades raise it). The client renders digits >1. */
+  level: number;
 }
 
 /**
@@ -331,10 +357,11 @@ export interface RasterSnapshot {
    */
   fronts: RasterAttackFront[];
   /**
-   * Active alliances as canonical `[lowId, highId]` pairs. Allied nations can't
-   * attack each other; the client marks them and offers a "break" action.
+   * Active alliances with their remaining lifetime and renewal votes. Allied
+   * nations can't attack each other; the client marks them, shows the pact's
+   * countdown and offers break/renew actions.
    */
-  alliances: RasterAlliancePair[];
+  alliances: RasterAllianceInfo[];
   /**
    * Pending alliance proposals (directed `from` → `to`). The client filters this
    * for offers addressed to it (to accept/decline) and its own outgoing offers.
@@ -470,7 +497,8 @@ export type RasterClientMessage =
   | RasterSpawnClientMessage
   | RasterAllyProposeClientMessage
   | RasterAllyRespondClientMessage
-  | RasterAllyBreakClientMessage;
+  | RasterAllyBreakClientMessage
+  | RasterAllyRenewClientMessage;
 
 /** Messages the server can send to the client. */
 export type RasterServerMessage =

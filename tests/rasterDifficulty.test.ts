@@ -41,7 +41,7 @@ test("harder difficulty packs a denser field onto the same map", () => {
 
 test("isRasterDifficulty accepts the known ids and rejects everything else", () => {
   for (const d of RASTER_DIFFICULTIES) assert.ok(isRasterDifficulty(d));
-  assert.equal(isRasterDifficulty("impossible"), false);
+  assert.equal(isRasterDifficulty("nightmare"), false);
   assert.equal(isRasterDifficulty(undefined), false);
   assert.equal(isRasterDifficulty(3), false);
 });

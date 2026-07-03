@@ -3,7 +3,7 @@ import type { TerritoryGrid } from "../Core/TerritoryGrid.js";
 import { maxTroops, troopsPerSecond } from "../Core/rasterCombatConfig.js";
 import { goldPerSecond } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
-import type { RasterAlliancePair, RasterAllianceRequest, RasterAttackFront, RasterBuilding, RasterCrossing, RasterMatchPhase, RasterNuke, RasterNukeDetonation, RasterNukeInterception, RasterPlayerInfo, RasterRail, RasterShip, RasterSnapshot, RasterTrade, RasterTrain, RasterWarship } from "../Core/types.js";
+import type { RasterAllianceInfo, RasterAllianceRequest, RasterAttackFront, RasterBuilding, RasterCrossing, RasterMatchPhase, RasterNuke, RasterNukeDetonation, RasterNukeInterception, RasterPlayerInfo, RasterRail, RasterShip, RasterSnapshot, RasterTrade, RasterTrain, RasterWarship } from "../Core/types.js";
 
 /**
  * Stable 12-hex-char fingerprint of the terrain bytes, used purely as a
@@ -170,12 +170,14 @@ export interface BuildSnapshotInput {
   omitOwner?: boolean;
   /** Players who have been wiped off the map (no tiles left). */
   eliminated?: Set<number>;
-  /** Active alliances as canonical `[lowId, highId]` pairs. */
-  alliances?: RasterAlliancePair[];
+  /** Active alliances with remaining lifetime + renewal votes. */
+  alliances?: RasterAllianceInfo[];
   /** Pending alliance proposals (directed `from` → `to`). */
   allianceRequests?: RasterAllianceRequest[];
   /** Player id who most recently attacked a given player, for `RasterPlayerInfo.lastAttackedBy`. */
   lastAttackerOf?: (playerId: number) => number;
+  /** How many alliances a given player has betrayed, for `RasterPlayerInfo.betrayals`. */
+  betrayalsOf?: (playerId: number) => number;
 }
 
 /**
@@ -192,16 +194,21 @@ export interface BuildSnapshotInput {
  * since they never read the ownership raster at all.
  */
 export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot => {
-  const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, terrainHash, winnerPlayerId, recentEvents, crossings, ships, warships = [], nukes, nukeDetonations, nukeInterceptions = [], falloutTiles = [], fronts, rails = [], trains = [], tradeShips = [], eliminated, alliances = [], allianceRequests = [], lastAttackerOf } = input;
+  const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, terrainHash, winnerPlayerId, recentEvents, crossings, ships, warships = [], nukes, nukeDetonations, nukeInterceptions = [], falloutTiles = [], fronts, rails = [], trains = [], tradeShips = [], eliminated, alliances = [], allianceRequests = [], lastAttackerOf, betrayalsOf } = input;
 
   const players: RasterPlayerInfo[] = [];
   for (const id of grid.players()) {
     const meta = playerMeta.get(id) ?? { name: `Player ${id}`, color: "#888" };
     const tiles = grid.tileCountOf(id);
-    const cities = grid.buildingCountOf(id, "city");
-    const ports = grid.buildingCountOf(id, "port");
-    // Only finished cities lift the population cap (under-construction ones don't yet).
-    const activeCities = grid.activeBuildingCountOf(id, "city");
+    // The wire per-type figures are **cost counters** (sum of levels): every
+    // build or upgrade advances them, so the client's build-menu price labels
+    // match the server's ramp exactly. Identical to instance counts for
+    // non-upgradable types.
+    const cities = grid.totalLevelsOf(id, "city");
+    const ports = grid.totalLevelsOf(id, "port");
+    // Only finished city levels lift the population cap (under-construction
+    // cities don't yet; upgrades apply instantly).
+    const activeCities = grid.activeLevelsOf(id, "city");
     players.push({
       playerId: id,
       name: meta.name,
@@ -211,16 +218,17 @@ export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
       goldPerSecond: goldPerSecond(SIMULATION_TICK_RATE),
       cities,
       ports,
-      forts: grid.buildingCountOf(id, "fort"),
-      factories: grid.buildingCountOf(id, "factory"),
-      silos: grid.buildingCountOf(id, "silo"),
-      warships: grid.buildingCountOf(id, "warship"),
-      sams: grid.buildingCountOf(id, "sam"),
+      forts: grid.totalLevelsOf(id, "fort"),
+      factories: grid.totalLevelsOf(id, "factory"),
+      silos: grid.totalLevelsOf(id, "silo"),
+      warships: grid.totalLevelsOf(id, "warship"),
+      sams: grid.totalLevelsOf(id, "sam"),
       tiles,
       troopsPerSecond: troopsPerSecond(tiles, grid.troopsOf(id), SIMULATION_TICK_RATE, grid.incomeMultiplierOf(id), activeCities, grid.modifiersOf(id).troopCapMultiplier),
       maxTroops: Math.floor(maxTroops(tiles, activeCities) * grid.modifiersOf(id).troopCapMultiplier),
       eliminated: eliminated?.has(id) ?? false,
       lastAttackedBy: lastAttackerOf?.(id) ?? 0,
+      betrayals: betrayalsOf?.(id) ?? 0,
     });
   }
 
@@ -232,6 +240,7 @@ export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
     type,
     underConstruction: grid.isUnderConstruction(ref),
     buildProgress: grid.constructionProgress(ref, tick),
+    level: grid.buildingLevelOf(ref),
   }));
 
   return {

@@ -93,6 +93,7 @@ export const DIFFICULTY_BOT_COUNT: Record<RasterDifficulty, number> = {
   easy: 4,
   medium: 6,
   hard: 8,
+  impossible: 10,
 };
 
 // --- AI strength by difficulty ---------------------------------------------
@@ -108,6 +109,7 @@ export const NATION_START_MANPOWER: Record<RasterDifficulty, number> = {
   easy: 12_500,
   medium: 18_750,
   hard: 25_000,
+  impossible: 31_250,
 };
 
 /** Multiplier on an AI nation's max-population ceiling, by difficulty. */
@@ -115,6 +117,7 @@ export const NATION_TROOP_CAP_MULTIPLIER: Record<RasterDifficulty, number> = {
   easy: 0.5,
   medium: 0.75,
   hard: 1,
+  impossible: 1.25,
 };
 
 /** Multiplier on an AI nation's troop growth (the income modifier), by difficulty. */
@@ -122,6 +125,21 @@ export const NATION_GROWTH_MULTIPLIER: Record<RasterDifficulty, number> = {
   easy: 0.9,
   medium: 0.95,
   hard: 1,
+  impossible: 1.05,
+};
+
+/**
+ * Chance per decision that a nation **misdirects** its move at a different
+ * border target than the one it meant — OpenFront's "nation confusion", which
+ * shrinks with difficulty (10%/5%/2.5%/0%) so weaker tiers make readable
+ * mistakes and Impossible plays flawlessly. Rolled deterministically (hashed
+ * tick × seat, no RNG) so replays stay identical.
+ */
+export const NATION_CONFUSION_CHANCE: Record<RasterDifficulty, number> = {
+  easy: 0.1,
+  medium: 0.05,
+  hard: 0.025,
+  impossible: 0,
 };
 
 /**
@@ -134,6 +152,7 @@ const DIFFICULTY_FIELD_DIVISOR: Record<RasterDifficulty, number> = {
   easy: 24,
   medium: 16,
   hard: 11,
+  impossible: 9,
 };
 
 /**
@@ -156,6 +175,15 @@ export const scalePersonality = (
   p: RasterBotPersonality,
   difficulty: RasterDifficulty,
 ): RasterBotPersonality => {
+  if (difficulty === "impossible") {
+    // OpenFront's Impossible nations decide roughly twice as often as Easy —
+    // the fastest cadence, on top of the biggest start/cap/growth handicaps.
+    return {
+      ...p,
+      decisionCooldownTicks: Math.max(3, Math.round(p.decisionCooldownTicks * 0.5)),
+      aggression: Math.min(1, p.aggression * 1.5),
+    };
+  }
   if (difficulty === "hard") {
     return {
       ...p,

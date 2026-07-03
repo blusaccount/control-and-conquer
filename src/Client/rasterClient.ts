@@ -1,7 +1,7 @@
 import { GameMap } from "../Core/GameMap.js";
 import type { PlayerId } from "../Core/TerritoryGrid.js";
 import type {
-  RasterAlliancePair,
+  RasterAllianceInfo,
   RasterAllianceRequest,
   RasterAttackFront,
   RasterBuilding,
@@ -24,6 +24,7 @@ import type {
   RasterTrain,
 } from "../Core/types.js";
 import { hideMenu, setStatus, type UiElements } from "./dom.js";
+import { formatCount, formatDuration, formatRate } from "./format.js";
 import { createWebSocketTransport, createWorkerTransport, type RasterTransport } from "./transport.js";
 import { paintRaster, paintTileInto } from "./rasterPaint.js";
 import { borderColor, playerColor, playerEmoji } from "./rasterPalette.js";
@@ -35,9 +36,12 @@ import {
   BUILDING_TYPES,
   buildingCost,
   costCounterTypes,
+  UPGRADABLE_BUILDING_TYPES,
   type BuildingType,
 } from "../Core/buildings.js";
 import type { RasterDifficulty } from "../Core/messages.js";
+import { ALLIANCE_RENEWAL_WINDOW_TICKS } from "../Core/alliances.js";
+import { WIN_TILE_FRACTION } from "../Core/rasterCombatConfig.js";
 import { SIMULATION_TICK_RATE } from "../Server/simulationConfig.js";
 import { sfx } from "./sound.js";
 import { NUKE_DEFS, NUKE_KINDS, nukeBlast, nukeCost, type NukeKind } from "../Core/nukes.js";
@@ -262,8 +266,8 @@ interface RasterRuntime {
   nukeIntercepts: NukeIntercept[];
   /** Active attack fronts this snapshot, drawn as on-map troop-count labels. */
   fronts: RasterAttackFront[];
-  /** Active alliances as [lowId, highId] pairs, mirrored from the snapshot. */
-  alliances: RasterAlliancePair[];
+  /** Active alliances (pair + countdown + renewal votes), mirrored from the snapshot. */
+  alliances: RasterAllianceInfo[];
   /** Pending alliance proposals (directed from→to), mirrored from the snapshot. */
   allianceRequests: RasterAllianceRequest[];
   /** Recently-captured tiles still glowing, for the conquest-ripple animation. */
@@ -554,6 +558,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
 
   const sendAllyBreak = (targetId: number): void => {
     const message: RasterClientMessage = { type: "CLIENT_RASTER_ALLY_BREAK", payload: { targetId } };
+    transport.send(message);
+  };
+
+  const sendAllyRenew = (targetId: number): void => {
+    const message: RasterClientMessage = { type: "CLIENT_RASTER_ALLY_RENEW", payload: { targetId } };
     transport.send(message);
   };
 
@@ -995,11 +1004,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     if (runtime.myPlayerId !== null) {
       const had = new Set(
         runtime.alliances
-          .filter(([a, b]) => a === runtime.myPlayerId || b === runtime.myPlayerId)
-          .map(([a, b]) => `${a}-${b}`),
+          .filter((al) => al.a === runtime.myPlayerId || al.b === runtime.myPlayerId)
+          .map((al) => `${al.a}-${al.b}`),
       );
       const gainedMine = nextAlliances.some(
-        ([a, b]) => (a === runtime.myPlayerId || b === runtime.myPlayerId) && !had.has(`${a}-${b}`),
+        (al) => (al.a === runtime.myPlayerId || al.b === runtime.myPlayerId) && !had.has(`${al.a}-${al.b}`),
       );
       if (gainedMine) sfx.allyAccepted();
     }
@@ -1767,6 +1776,26 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ctx.fillStyle = "rgba(255, 255, 255, 0.97)";
       drawIcon(ctx, b.type, sx, sy, iconPx * 0.5);
 
+      // 5b. Level badge on an upgraded structure (OpenFront's level digits): a
+      //     small dark disc with the level, bottom-right of the token.
+      if (b.level > 1) {
+        const br = Math.max(5, radius * 0.42);
+        const bcx = sx + radius * 0.78;
+        const bcy = sy + radius * 0.78;
+        ctx.beginPath();
+        ctx.arc(bcx, bcy, br, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(15, 17, 23, 0.92)";
+        ctx.fill();
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.7)";
+        ctx.stroke();
+        ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+        ctx.font = `600 ${Math.max(7, br * 1.3)}px system-ui, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(String(b.level), bcx, bcy + 0.5);
+      }
+
       // 6. Build-progress bar under a structure still under construction.
       if (b.underConstruction) {
         ctx.globalAlpha = 1;
@@ -1910,7 +1939,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
    * In build mode, outline the hovered tile with the structure's own colour
    * and icon before the player commits — OpenFront's ghost-build preview.
    * Green when the tile is a legal build site (owned, no existing structure),
-   * red otherwise, so the outline itself answers "can I build here?".
+   * amber over your own same-type structure (an **upgrade** — the click raises
+   * its level), red otherwise, so the outline itself answers "can I build here?".
    */
   const drawBuildGhost = (ctx: CanvasRenderingContext2D, scale: number): void => {
     const map = runtime.map;
@@ -1923,10 +1953,24 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
 
     const ref = map.ref(tx, ty);
     const isMine = owner[ref] === runtime.myPlayerId;
-    const alreadyBuilt = runtime.buildings.some((b) => b.x === tx && b.y === ty);
-    const valid = isMine && !alreadyBuilt;
-    const outline = valid ? "rgba(74, 222, 128, 0.9)" : "rgba(248, 113, 113, 0.9)";
-    const fill = valid ? "rgba(74, 222, 128, 0.22)" : "rgba(248, 113, 113, 0.18)";
+    const hoverBuilding = runtime.buildings.find((b) => b.x === tx && b.y === ty);
+    const isUpgrade =
+      hoverBuilding !== undefined &&
+      hoverBuilding.playerId === runtime.myPlayerId &&
+      hoverBuilding.type === type &&
+      !hoverBuilding.underConstruction &&
+      UPGRADABLE_BUILDING_TYPES.includes(type);
+    const valid = isMine && (hoverBuilding === undefined || isUpgrade);
+    const outline = isUpgrade
+      ? "rgba(250, 204, 21, 0.95)"
+      : valid
+        ? "rgba(74, 222, 128, 0.9)"
+        : "rgba(248, 113, 113, 0.9)";
+    const fill = isUpgrade
+      ? "rgba(250, 204, 21, 0.22)"
+      : valid
+        ? "rgba(74, 222, 128, 0.22)"
+        : "rgba(248, 113, 113, 0.18)";
 
     const { x: sx, y: sy } = worldToScreen(tx, ty);
     const size = scale;
@@ -1937,8 +1981,15 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     ctx.fillRect(sx, sy, size, size);
     ctx.strokeRect(sx, sy, size, size);
     if (scale >= 10) {
-      ctx.fillStyle = valid ? "#4ade80" : "#f87171";
+      ctx.fillStyle = isUpgrade ? "#facc15" : valid ? "#4ade80" : "#f87171";
       drawIcon(ctx, type, sx + size / 2, sy + size / 2, Math.min(scale * 0.3, 11));
+      if (isUpgrade) {
+        // Spell out what the click does: raise this structure to the next level.
+        ctx.font = `600 ${Math.max(9, Math.min(scale * 0.35, 13))}px system-ui, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText(`Lv ${hoverBuilding.level + 1}`, sx + size / 2, sy - 2);
+      }
     }
     ctx.restore();
   };
@@ -2390,43 +2441,63 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     renderLeaderboard();
   };
 
+  interface DiplomacyState {
+    allies: Set<number>;
+    incoming: Set<number>;
+    outgoing: Set<number>;
+    /** Per allied partner: the pact's countdown + standing renewal votes. */
+    pacts: Map<number, RasterAllianceInfo>;
+  }
+
   /**
    * Resolve, for the local player, who is an ally, who has an alliance offer out
-   * to us, and who we have offered. Derived fresh from the snapshot's alliance +
-   * proposal lists so the leaderboard can label each rival and pick the right
-   * diplomacy action button.
+   * to us, and who we have offered — plus each pact's remaining lifetime and
+   * renewal votes. Derived fresh from the snapshot's alliance + proposal lists
+   * so the leaderboard can label each rival and pick the right diplomacy action.
    */
-  const diplomacyState = (): { allies: Set<number>; incoming: Set<number>; outgoing: Set<number> } => {
+  const diplomacyState = (): DiplomacyState => {
     const me = runtime.myPlayerId;
     const allies = new Set<number>();
     const incoming = new Set<number>();
     const outgoing = new Set<number>();
+    const pacts = new Map<number, RasterAllianceInfo>();
     if (me !== null) {
-      for (const [a, b] of runtime.alliances) {
-        if (a === me) allies.add(b);
-        else if (b === me) allies.add(a);
+      for (const al of runtime.alliances) {
+        const partner = al.a === me ? al.b : al.b === me ? al.a : null;
+        if (partner === null) continue;
+        allies.add(partner);
+        pacts.set(partner, al);
       }
       for (const r of runtime.allianceRequests) {
         if (r.to === me) incoming.add(r.from);
         else if (r.from === me) outgoing.add(r.to);
       }
     }
-    return { allies, incoming, outgoing };
+    return { allies, incoming, outgoing, pacts };
   };
 
   /**
-   * The diplomacy action button(s) for a rival row: break an existing pact,
-   * accept/decline an incoming offer, mark an outgoing offer as sent, or propose
-   * a fresh alliance. Empty while we can't act (pre-game, match over, our own row).
+   * The diplomacy action button(s) for a rival row: an ally row shows the
+   * pact's countdown, a renew vote near expiry, and break; otherwise
+   * accept/decline an incoming offer, mark an outgoing offer as sent, or
+   * propose a fresh alliance. Empty while we can't act (pre-game, match over,
+   * our own row).
    */
-  const diplomacyActions = (
-    id: number,
-    rel: { allies: Set<number>; incoming: Set<number>; outgoing: Set<number> },
-    canDiplo: boolean,
-  ): string => {
+  const diplomacyActions = (id: number, rel: DiplomacyState, canDiplo: boolean): string => {
     if (!canDiplo) return "";
     if (rel.allies.has(id)) {
-      return `<button class="lb-act break" data-ally-break="${id}" title="Break alliance">Break</button>`;
+      const pact = rel.pacts.get(id);
+      const ticksLeft = pact?.ticksLeft ?? 0;
+      const clock = formatDuration(Math.ceil(ticksLeft / SIMULATION_TICK_RATE));
+      const timer = `<span class="lb-pact" title="Alliance expires in ${clock} unless both sides renew">${clock}</span>`;
+      const voted = runtime.myPlayerId !== null && (pact?.renewVotes.includes(runtime.myPlayerId) ?? false);
+      const renew =
+        ticksLeft > ALLIANCE_RENEWAL_WINDOW_TICKS
+          ? ""
+          : voted
+            ? `<button class="lb-act pending" disabled title="Waiting for your ally's renewal vote">⏳</button>`
+            : `<button class="lb-act renew" data-ally-renew="${id}" title="Vote to renew the alliance">Renew</button>`;
+      return timer + renew + `<button class="lb-act break" data-ally-break="${id}" title="Break alliance">Break</button>`;
     }
     if (rel.incoming.has(id)) {
       return (
@@ -2495,7 +2566,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         const isAlly = rel.allies.has(p.playerId);
         const rowClass = ["lb-row", isMe ? "me" : "", isLeader ? "leader" : "", isAlly ? "ally" : ""].filter(Boolean).join(" ");
         const allyMark = isAlly ? "🤝 " : "";
-        const name = `${allyMark}${playerEmoji(p.playerId)} ${escapeHtml(p.name)}` + (isMe ? " (you)" : "");
+        const traitorMark = p.betrayals > 0
+          ? ` <span class="lb-traitor" title="Broke ${p.betrayals} alliance${p.betrayals === 1 ? "" : "s"}">🗡${p.betrayals > 1 ? `×${p.betrayals}` : ""}</span>`
+          : "";
+        const name = `${allyMark}${playerEmoji(p.playerId)} ${escapeHtml(p.name)}` + (isMe ? " (you)" : "") + traitorMark;
         const own = runtime.capturableTotal > 0 ? (p.tiles / runtime.capturableTotal) * 100 : 0;
         const ownStr = own >= 10 ? `${Math.round(own)}%` : `${own.toFixed(1)}%`;
         const actions = isMe ? "" : diplomacyActions(p.playerId, rel, canDiplo);
@@ -2511,7 +2585,13 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         );
       })
       .join("");
-    ui.leaderboard.innerHTML = header + rows;
+    // Victory-progress footer: the domination threshold and how close the
+    // current territory leader is to it, so the race's stakes stay visible.
+    const leader = activeAll.find((p) => p.playerId === leaderId);
+    const leaderOwn = leader && runtime.capturableTotal > 0 ? (leader.tiles / runtime.capturableTotal) * 100 : 0;
+    const leaderOwnStr = leaderOwn >= 10 ? `${Math.round(leaderOwn)}%` : `${leaderOwn.toFixed(1)}%`;
+    const note = `<div class="lb-note">Win at ${Math.round(WIN_TILE_FRACTION * 100)}% of land — leader holds ${leaderOwnStr}</div>`;
+    ui.leaderboard.innerHTML = header + rows + note;
   };
 
   /** Apply a header click: toggle direction when re-clicking a column, else sort by it. */
@@ -3111,13 +3191,14 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       return;
     }
     const btn = node?.closest<HTMLButtonElement>(
-      "button[data-ally-propose], button[data-ally-accept], button[data-ally-decline], button[data-ally-break]",
+      "button[data-ally-propose], button[data-ally-accept], button[data-ally-decline], button[data-ally-break], button[data-ally-renew]",
     );
     if (!btn || btn.disabled) return;
     const propose = btn.getAttribute("data-ally-propose");
     const accept = btn.getAttribute("data-ally-accept");
     const decline = btn.getAttribute("data-ally-decline");
     const broke = btn.getAttribute("data-ally-break");
+    const renew = btn.getAttribute("data-ally-renew");
     if (propose !== null) {
       sendAllyPropose(Number(propose));
       setStatus(ui, "Alliance offer sent.");
@@ -3130,6 +3211,9 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     } else if (broke !== null) {
       sendAllyBreak(Number(broke));
       setStatus(ui, "Alliance broken.");
+    } else if (renew !== null) {
+      sendAllyRenew(Number(renew));
+      setStatus(ui, "Renewal vote sent — the pact extends when your ally agrees.");
     }
   });
 
@@ -3145,35 +3229,6 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   resizeCanvas();
 
   requestAnimationFrame(renderFrame);
-};
-
-/**
- * Compact integer formatting for large counts (troops, tiles): 1234 → "1.2k",
- * 19595 → "20k", 1_250_000 → "1.3M". Keeps the sidebar and leaderboard legible
- * once empires reach tens of thousands of tiles/troops instead of showing raw
- * six-digit numbers.
- */
-const formatCount = (n: number): string => {
-  const v = Math.round(n);
-  if (Math.abs(v) >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
-  if (Math.abs(v) >= 10_000) return `${Math.round(v / 1000)}k`;
-  if (Math.abs(v) >= 1000) return `${(v / 1000).toFixed(1)}k`;
-  return String(v);
-};
-
-/**
- * Format a troops-per-second rate compactly: large rates use the compact
- * notation (k/M); small early-game rates keep one decimal so they don't read as
- * "+0/s".
- */
-const formatRate = (rate: number): string =>
-  rate >= 1000 ? formatCount(rate) : rate >= 10 ? String(Math.round(rate)) : rate.toFixed(1);
-
-/** Format whole seconds as m:ss for the stats screen. */
-const formatDuration = (seconds: number): string => {
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${m}:${String(s).padStart(2, "0")}`;
 };
 
 /**

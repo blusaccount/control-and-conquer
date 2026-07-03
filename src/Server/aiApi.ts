@@ -35,6 +35,7 @@ import type {
   RasterExpandIntent,
   RasterBuildIntent,
   RasterAlliancePair,
+  RasterAllianceInfo,
   RasterAllianceRequest,
 } from "../Core/types.js";
 import { SPAWN_PHASE_SECONDS, SIMULATION_TICK_RATE } from "./simulationConfig.js";
@@ -82,7 +83,7 @@ export interface AiGameState {
   gameId: string;
   /** This agent's assigned player id. */
   playerId: number;
-  /** Current simulation tick (advances at 20 TPS). */
+  /** Current simulation tick (advances at 10 TPS). */
   tick: number;
   /** "spawn" — pick your start; "playing" — territory is live. */
   phase: string;
@@ -280,7 +281,7 @@ export class AiGameSession {
       spawned,
       me: toSummary(me),
       players: (snap?.players ?? []).map((p) => toSummary(p)!),
-      alliances: snap?.alliances ?? [],
+      alliances: (snap?.alliances ?? []).map((i: RasterAllianceInfo): RasterAlliancePair => [i.a, i.b]),
       allianceRequests: snap?.allianceRequests ?? [],
       recentEvents: snap?.recentEvents ?? [],
       winner: snap?.winnerPlayerId ?? null,
