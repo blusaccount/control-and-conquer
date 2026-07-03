@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { GameMap, type TileRef } from "../src/Core/GameMap.js";
 import { NEUTRAL_PLAYER, TerritoryGrid } from "../src/Core/TerritoryGrid.js";
 import { RasterConflict } from "../src/Core/RasterConflict.js";
-import { AllianceRegistry } from "../src/Core/alliances.js";
+import { ALLIANCE_DURATION_TICKS, AllianceRegistry } from "../src/Core/alliances.js";
 import { encodeTile } from "../src/Core/terrainCodec.js";
 import { RasterGameSession } from "../src/Server/RasterGameSession.js";
 import { RasterBotController, type RasterBotPersonality } from "../src/Server/RasterBotController.js";
@@ -132,7 +132,14 @@ test("propose + accept forms an alliance carried in the snapshot", () => {
   assert.equal(session.peekAlliances().areAllied(1, 2), true);
   session.tick();
   snap = lastSnapshot(c1);
-  assert.deepEqual(snap.alliances, [[1, 2]], "the formed alliance is broadcast");
+  assert.equal(snap.alliances.length, 1, "the formed alliance is broadcast");
+  assert.equal(snap.alliances[0].a, 1);
+  assert.equal(snap.alliances[0].b, 2);
+  assert.ok(
+    snap.alliances[0].ticksLeft > 0 && snap.alliances[0].ticksLeft <= ALLIANCE_DURATION_TICKS,
+    "a fresh pact carries its remaining lifetime",
+  );
+  assert.deepEqual(snap.alliances[0].renewVotes, [], "no renewal votes yet");
   assert.deepEqual(snap.allianceRequests, [], "the offer is cleared once accepted");
 });
 
@@ -231,4 +238,61 @@ test("an aggressive bot declines an offer from a weaker nation", () => {
 
   assert.equal(session.peekAlliances().areAllied(1, botId), false, "the offer is not accepted");
   assert.deepEqual(session.peekAlliances().incomingProposals(botId), [], "the offer is declined, not left pending");
+});
+
+test("a pact expires naturally after its lifetime — announced, no betrayal tally", () => {
+  const session = new RasterGameSession({ width: 32, height: 24, seed: 7 });
+  const c1 = collect(session, "c1");
+  collect(session, "c2");
+  session.proposeAlliance("c1", 2);
+  session.respondAlliance("c2", 1, true);
+  assert.equal(session.peekAlliances().areAllied(1, 2), true);
+
+  // Generous over-run: covers any spawn-phase ticks before the pact's clock ran.
+  for (let i = 0; i < ALLIANCE_DURATION_TICKS + 200; i += 1) session.tick();
+
+  assert.equal(session.peekAlliances().areAllied(1, 2), false, "the pact lapsed on its own");
+  const snap = lastSnapshot(c1);
+  assert.deepEqual(snap.alliances, [], "no alliance in the snapshot after expiry");
+  assert.ok(
+    snap.recentEvents.some((e) => e.includes("has expired")),
+    "the lapse is announced as an event",
+  );
+  const p1 = snap.players.find((p) => p.playerId === 1);
+  assert.equal(p1?.betrayals, 0, "natural expiry is not a betrayal");
+});
+
+test("renewal votes flow through the session and restart the pact's clock", () => {
+  const session = new RasterGameSession({ width: 32, height: 24, seed: 7 });
+  const c1 = collect(session, "c1");
+  collect(session, "c2");
+  session.proposeAlliance("c1", 2);
+  session.respondAlliance("c2", 1, true);
+
+  for (let i = 0; i < 50; i += 1) session.tick();
+  const before = lastSnapshot(c1).alliances[0].ticksLeft;
+
+  session.renewAlliance("c1", 2);
+  session.tick();
+  assert.deepEqual(lastSnapshot(c1).alliances[0].renewVotes, [1], "the first vote is visible");
+
+  session.renewAlliance("c2", 1);
+  session.tick();
+  const after = lastSnapshot(c1).alliances[0];
+  assert.deepEqual(after.renewVotes, [], "votes clear once the pact renews");
+  assert.ok(after.ticksLeft > before, "the renewed pact outlives its old deadline");
+});
+
+test("an explicit break is tallied in the snapshot's betrayal count", () => {
+  const session = new RasterGameSession({ width: 32, height: 24, seed: 7 });
+  const c1 = collect(session, "c1");
+  collect(session, "c2");
+  session.proposeAlliance("c1", 2);
+  session.respondAlliance("c2", 1, true);
+  session.breakAlliance("c1", 2);
+  session.tick();
+
+  const snap = lastSnapshot(c1);
+  assert.equal(snap.players.find((p) => p.playerId === 1)?.betrayals, 1, "the breaker is marked");
+  assert.equal(snap.players.find((p) => p.playerId === 2)?.betrayals, 0, "the betrayed side stays clean");
 });

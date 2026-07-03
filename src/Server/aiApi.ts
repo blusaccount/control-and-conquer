@@ -35,6 +35,7 @@ import type {
   RasterExpandIntent,
   RasterBuildIntent,
   RasterAlliancePair,
+  RasterAllianceInfo,
   RasterAllianceRequest,
 } from "../Core/types.js";
 import { SPAWN_PHASE_SECONDS, SIMULATION_TICK_RATE } from "./simulationConfig.js";
@@ -280,7 +281,7 @@ export class AiGameSession {
       spawned,
       me: toSummary(me),
       players: (snap?.players ?? []).map((p) => toSummary(p)!),
-      alliances: snap?.alliances ?? [],
+      alliances: (snap?.alliances ?? []).map((i: RasterAllianceInfo): RasterAlliancePair => [i.a, i.b]),
       allianceRequests: snap?.allianceRequests ?? [],
       recentEvents: snap?.recentEvents ?? [],
       winner: snap?.winnerPlayerId ?? null,

@@ -125,6 +125,10 @@ export class MatchRegistry {
     this.clientToSession.get(clientId)?.breakAlliance(clientId, targetId);
   }
 
+  public renewRasterAlliance(clientId: string, targetId: number): void {
+    this.clientToSession.get(clientId)?.renewAlliance(clientId, targetId);
+  }
+
   public tickAll(): void {
     for (const session of this.activeMatches.values()) {
       session.tick();

@@ -3,7 +3,7 @@ import type { TerritoryGrid } from "../Core/TerritoryGrid.js";
 import { maxTroops, troopsPerSecond } from "../Core/rasterCombatConfig.js";
 import { goldPerSecond } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
-import type { RasterAlliancePair, RasterAllianceRequest, RasterAttackFront, RasterBuilding, RasterCrossing, RasterMatchPhase, RasterNuke, RasterNukeDetonation, RasterNukeInterception, RasterPlayerInfo, RasterRail, RasterShip, RasterSnapshot, RasterTrade, RasterTrain, RasterWarship } from "../Core/types.js";
+import type { RasterAllianceInfo, RasterAllianceRequest, RasterAttackFront, RasterBuilding, RasterCrossing, RasterMatchPhase, RasterNuke, RasterNukeDetonation, RasterNukeInterception, RasterPlayerInfo, RasterRail, RasterShip, RasterSnapshot, RasterTrade, RasterTrain, RasterWarship } from "../Core/types.js";
 
 /**
  * Stable 12-hex-char fingerprint of the terrain bytes, used purely as a
@@ -170,12 +170,14 @@ export interface BuildSnapshotInput {
   omitOwner?: boolean;
   /** Players who have been wiped off the map (no tiles left). */
   eliminated?: Set<number>;
-  /** Active alliances as canonical `[lowId, highId]` pairs. */
-  alliances?: RasterAlliancePair[];
+  /** Active alliances with remaining lifetime + renewal votes. */
+  alliances?: RasterAllianceInfo[];
   /** Pending alliance proposals (directed `from` → `to`). */
   allianceRequests?: RasterAllianceRequest[];
   /** Player id who most recently attacked a given player, for `RasterPlayerInfo.lastAttackedBy`. */
   lastAttackerOf?: (playerId: number) => number;
+  /** How many alliances a given player has betrayed, for `RasterPlayerInfo.betrayals`. */
+  betrayalsOf?: (playerId: number) => number;
 }
 
 /**
@@ -192,7 +194,7 @@ export interface BuildSnapshotInput {
  * since they never read the ownership raster at all.
  */
 export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot => {
-  const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, terrainHash, winnerPlayerId, recentEvents, crossings, ships, warships = [], nukes, nukeDetonations, nukeInterceptions = [], falloutTiles = [], fronts, rails = [], trains = [], tradeShips = [], eliminated, alliances = [], allianceRequests = [], lastAttackerOf } = input;
+  const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, terrainHash, winnerPlayerId, recentEvents, crossings, ships, warships = [], nukes, nukeDetonations, nukeInterceptions = [], falloutTiles = [], fronts, rails = [], trains = [], tradeShips = [], eliminated, alliances = [], allianceRequests = [], lastAttackerOf, betrayalsOf } = input;
 
   const players: RasterPlayerInfo[] = [];
   for (const id of grid.players()) {
@@ -221,6 +223,7 @@ export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
       maxTroops: Math.floor(maxTroops(tiles, activeCities) * grid.modifiersOf(id).troopCapMultiplier),
       eliminated: eliminated?.has(id) ?? false,
       lastAttackedBy: lastAttackerOf?.(id) ?? 0,
+      betrayals: betrayalsOf?.(id) ?? 0,
     });
   }
 

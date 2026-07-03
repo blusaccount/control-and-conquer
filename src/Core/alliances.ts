@@ -18,6 +18,24 @@
 
 import { NEUTRAL_PLAYER, type PlayerId } from "./TerritoryGrid.js";
 
+/**
+ * How long a freshly-formed (or renewed) alliance lasts, in ticks — 5 minutes
+ * at 10 TPS, mirroring OpenFront's alliance duration (community wiki, 2026-07;
+ * the value has shifted between OpenFront versions, so it lives here as one
+ * constant). Expiry is *natural*: the pact simply lapses, with no traitor mark
+ * for either side — betrayal is only an explicit {@link AllianceRegistry.breakAlliance}.
+ */
+export const ALLIANCE_DURATION_TICKS = 3000;
+
+/**
+ * The renewal window: within this many ticks of a pact's expiry (~30 s), the
+ * client surfaces a "renew?" prompt and bots consider their vote, mirroring
+ * OpenFront's renewal prompt shortly before an alliance lapses. Votes are
+ * *accepted* at any time while allied (simpler and still deterministic); the
+ * window only gates when the prompt is shown and when bots bother voting.
+ */
+export const ALLIANCE_RENEWAL_WINDOW_TICKS = 300;
+
 /** The minimal read shape the conflict engine needs: "are A and B allied?". */
 export interface AllianceView {
   areAllied(a: PlayerId, b: PlayerId): boolean;
@@ -25,6 +43,25 @@ export interface AllianceView {
 
 /** A null alliance layer — nobody is ever allied. The engine's default. */
 export const NO_ALLIANCES: AllianceView = { areAllied: () => false };
+
+/** Outcome of an {@link AllianceRegistry.voteRenew} call. */
+export type RenewResult =
+  /** Both sides have now voted — the pact's clock restarted. */
+  | "renewed"
+  /** The vote is recorded; the partner's is still outstanding. */
+  | "voted"
+  /** The voter had already voted (a duplicate) — nothing to do. */
+  | "already-voted"
+  /** The two are not allied (or an invalid id). */
+  | "invalid";
+
+/** Per-pact bookkeeping: when it lapses and who has voted to renew it. */
+interface PactState {
+  /** Tick at which the pact expires unless renewed. */
+  expiresAt: number;
+  /** Players who have voted to renew; renewal fires when both sides have. */
+  readonly renewVotes: Set<PlayerId>;
+}
 
 /** Outcome of an {@link AllianceRegistry.propose} call. */
 export type ProposeResult =
@@ -52,6 +89,14 @@ export class AllianceRegistry implements AllianceView {
   private readonly allies = new Map<PlayerId, Set<PlayerId>>();
   /** `outgoing.get(from)` = the set of players `from` has a pending offer out to. */
   private readonly outgoing = new Map<PlayerId, Set<PlayerId>>();
+  /** Per-pact expiry/renewal state, keyed by the canonical `"lo:hi"` pair. */
+  private readonly pacts = new Map<string, PactState>();
+  /** How many alliances each player has *betrayed* (explicit breaks, ever). */
+  private readonly betrayals = new Map<PlayerId, number>();
+
+  private pactKey(a: PlayerId, b: PlayerId): string {
+    return `${Math.min(a, b)}:${Math.max(a, b)}`;
+  }
 
   /** True only for two distinct real players bound by an active alliance. */
   areAllied(a: PlayerId, b: PlayerId): boolean {
@@ -93,14 +138,14 @@ export class AllianceRegistry implements AllianceView {
    * otherwise the offer is parked pending the recipient's response
    * (`"proposed"`). Already-allied and duplicate offers are no-ops.
    */
-  propose(from: PlayerId, to: PlayerId): ProposeResult {
+  propose(from: PlayerId, to: PlayerId, now = 0): ProposeResult {
     if (from === to || !this.isRealPlayer(from) || !this.isRealPlayer(to)) return "invalid";
     if (this.areAllied(from, to)) return "already-allied";
     // A crossing offer (they already proposed to us) seals the pact immediately.
     if (this.hasProposal(to, from)) {
       this.clearProposal(to, from);
       this.clearProposal(from, to);
-      this.bindAlliance(from, to);
+      this.bindAlliance(from, to, now);
       return "accepted";
     }
     if (this.hasProposal(from, to)) return "already-proposed";
@@ -109,14 +154,15 @@ export class AllianceRegistry implements AllianceView {
   }
 
   /**
-   * `by` accepts a pending proposal from `from`, forming the alliance. Returns
-   * whether a matching pending proposal existed (and the pact was formed).
+   * `by` accepts a pending proposal from `from`, forming the alliance (its
+   * clock starts at `now`). Returns whether a matching pending proposal
+   * existed (and the pact was formed).
    */
-  accept(by: PlayerId, from: PlayerId): boolean {
+  accept(by: PlayerId, from: PlayerId, now = 0): boolean {
     if (!this.hasProposal(from, by)) return false;
     this.clearProposal(from, by);
     this.clearProposal(by, from); // tidy any crossing offer too
-    this.bindAlliance(by, from);
+    this.bindAlliance(by, from, now);
     return true;
   }
 
@@ -133,11 +179,78 @@ export class AllianceRegistry implements AllianceView {
     return this.clearProposal(from, to);
   }
 
-  /** Dissolve the alliance between `a` and `b`. Returns whether one existed. */
-  breakAlliance(a: PlayerId, b: PlayerId): boolean {
+  /**
+   * `breaker` dissolves its alliance with `partner` — an explicit **betrayal**,
+   * counted against the breaker's permanent reputation (see {@link betrayalsOf}).
+   * Natural expiry goes through {@link expireDue} instead and counts nothing.
+   * Returns whether a pact existed.
+   */
+  breakAlliance(breaker: PlayerId, partner: PlayerId): boolean {
+    if (!this.dissolve(breaker, partner)) return false;
+    this.betrayals.set(breaker, this.betrayalsOf(breaker) + 1);
+    return true;
+  }
+
+  /** How many alliances `id` has betrayed (explicitly broken), ever. */
+  betrayalsOf(id: PlayerId): number {
+    return this.betrayals.get(id) ?? 0;
+  }
+
+  /**
+   * Record `voter`'s wish to renew its pact with `partner`. When both sides
+   * have voted, the pact's clock restarts at `now` (+{@link ALLIANCE_DURATION_TICKS})
+   * and the votes clear. Votes may be cast at any point in the pact's life;
+   * the client/bots only *prompt* inside {@link ALLIANCE_RENEWAL_WINDOW_TICKS}.
+   */
+  voteRenew(voter: PlayerId, partner: PlayerId, now: number): RenewResult {
+    if (!this.areAllied(voter, partner)) return "invalid";
+    const pact = this.pacts.get(this.pactKey(voter, partner));
+    if (!pact) return "invalid";
+    if (pact.renewVotes.has(voter)) return "already-voted";
+    pact.renewVotes.add(voter);
+    if (pact.renewVotes.has(partner)) {
+      pact.expiresAt = now + ALLIANCE_DURATION_TICKS;
+      pact.renewVotes.clear();
+      return "renewed";
+    }
+    return "voted";
+  }
+
+  /** True if `voter` has an outstanding renewal vote on its pact with `partner`. */
+  hasRenewVote(voter: PlayerId, partner: PlayerId): boolean {
+    return this.pacts.get(this.pactKey(voter, partner))?.renewVotes.has(voter) ?? false;
+  }
+
+  /** Ticks until the pact between `a` and `b` lapses, or `null` if not allied. */
+  ticksLeft(a: PlayerId, b: PlayerId, now: number): number | null {
+    const pact = this.pacts.get(this.pactKey(a, b));
+    if (!pact || !this.areAllied(a, b)) return null;
+    return Math.max(0, pact.expiresAt - now);
+  }
+
+  /**
+   * Lapse every pact whose time is up at `now`, returning the dissolved pairs
+   * (canonical `[lo, hi]`, ascending) so the caller can announce them. Natural
+   * expiry is **not** betrayal: no traitor mark, no reputation hit.
+   */
+  expireDue(now: number): Array<[PlayerId, PlayerId]> {
+    const lapsed: Array<[PlayerId, PlayerId]> = [];
+    for (const [key, pact] of this.pacts) {
+      if (pact.expiresAt > now) continue;
+      const [lo, hi] = key.split(":").map(Number);
+      lapsed.push([lo, hi]);
+    }
+    lapsed.sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+    for (const [lo, hi] of lapsed) this.dissolve(lo, hi);
+    return lapsed;
+  }
+
+  /** Remove the pact between `a` and `b` (adjacency + metadata), if any. */
+  private dissolve(a: PlayerId, b: PlayerId): boolean {
     if (!this.areAllied(a, b)) return false;
     this.allies.get(a)?.delete(b);
     this.allies.get(b)?.delete(a);
+    this.pacts.delete(this.pactKey(a, b));
     return true;
   }
 
@@ -147,9 +260,13 @@ export class AllianceRegistry implements AllianceView {
    * leave no dangling pacts.
    */
   removePlayer(id: PlayerId): void {
-    for (const ally of this.allies.get(id) ?? []) this.allies.get(ally)?.delete(id);
+    for (const ally of this.allies.get(id) ?? []) {
+      this.allies.get(ally)?.delete(id);
+      this.pacts.delete(this.pactKey(id, ally));
+    }
     this.allies.delete(id);
     this.outgoing.delete(id);
+    this.betrayals.delete(id);
     for (const targets of this.outgoing.values()) targets.delete(id);
   }
 
@@ -186,9 +303,27 @@ export class AllianceRegistry implements AllianceView {
     return out.sort((p, q) => p.from - q.from || p.to - q.to);
   }
 
-  private bindAlliance(a: PlayerId, b: PlayerId): void {
+  /**
+   * Every active alliance with its remaining lifetime and standing renewal
+   * votes, in canonical ascending order — the snapshot's richer companion to
+   * {@link pairs} so clients can render countdowns and renewal prompts.
+   */
+  infos(now: number): Array<{ a: PlayerId; b: PlayerId; ticksLeft: number; renewVotes: PlayerId[] }> {
+    return this.pairs().map(([a, b]) => {
+      const pact = this.pacts.get(this.pactKey(a, b));
+      return {
+        a,
+        b,
+        ticksLeft: pact ? Math.max(0, pact.expiresAt - now) : 0,
+        renewVotes: pact ? [...pact.renewVotes].sort((x, y) => x - y) : [],
+      };
+    });
+  }
+
+  private bindAlliance(a: PlayerId, b: PlayerId, now: number): void {
     this.adjacency(this.allies, a).add(b);
     this.adjacency(this.allies, b).add(a);
+    this.pacts.set(this.pactKey(a, b), { expiresAt: now + ALLIANCE_DURATION_TICKS, renewVotes: new Set() });
   }
 
   private addOutgoing(from: PlayerId, to: PlayerId): void {

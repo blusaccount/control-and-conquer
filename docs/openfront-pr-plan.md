@@ -84,7 +84,7 @@ Defeat/Spectate.
 |---|---|---|---|---|
 | L1 | Attack-Ratio-Slider | 1–100 %, Default 20 %, Schritt 10 | **erledigt (PR A)** — 1–100 %, Default 20, T/Y ±10 | — |
 | L2 | Boot-Kapazität | `floor(troops/5)` pro Boot | **war bereits umgesetzt** (Session kappt auf `floor(pool/5)`; PR A pinnt das per Test) | — |
-| L3 | **Allianz-Lebenszyklus** | ~5 min Laufzeit, Renewal-Prompt ~30 s vor Ablauf, natürlicher Ablauf ≠ Verrat; Verrats-Zähler; Auto-Embargo | Allianzen laufen **nie** ab (`alliances.ts` kennt keine Zeit) | **hoch** — prägt die ganze Diplomatie-Dynamik |
+| L3 | **Allianz-Lebenszyklus** | ~5 min Laufzeit, Renewal-Prompt ~30 s vor Ablauf, natürlicher Ablauf ≠ Verrat; Verrats-Zähler; Auto-Embargo | **erledigt (PR C)** — 5-min-Ablauf, beidseitiges Renewal, Verrats-Konto + 🗡-Marker, Bot-Verhalten; Auto-Embargo folgt mit PR F (Embargo-System) | — |
 | L4 | **Struktur-Upgrades (Level)** | seit v24: Bau auf bestehendes Gebäude = Upgrade (City-Level ×250k Cap, Stations-Level etc.), Level-Ziffern im Render | Gebäude sind one-shot, kein Level-Feld | **hoch** — zentrales Spätspiel-Element |
 | L5 | **Win-Condition** | Prozent-Schwelle der Landfläche (FFA; Teams 95 %) → Spiele *enden* | **erledigt (PR B)** — `WIN_TILE_FRACTION = 0.8`, Match endet an der Schwelle; Leaderboard zeigt Sieg-Fortschritt | — |
 | L6 | Emojis / Quick-Chat | Emoji-Reaktionen übers Territorium, Preset-Nachrichten | fehlt komplett | mittel |
@@ -160,7 +160,7 @@ Unterschiede im Matchverlauf.
   Leaderboard), Victory-Banner unverändert.
 - **Tests:** Schwellen-Sieg, kein Doppel-Sieg, Zeitlimit-Fallback bleibt.
 
-### PR C — Allianz-Lebenszyklus (M, P1)
+### PR C — Allianz-Lebenszyklus (M, P1) — ✅ umgesetzt (2026-07-02; Auto-Embargo bewusst zu PR F verschoben)
 
 Größte verbleibende **Mechanik**-Lücke: ewige Allianzen erstarren die
 Diplomatie; OpenFronts 5-Minuten-Puls (verlängern oder auslaufen lassen)

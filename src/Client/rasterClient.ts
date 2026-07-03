@@ -1,7 +1,7 @@
 import { GameMap } from "../Core/GameMap.js";
 import type { PlayerId } from "../Core/TerritoryGrid.js";
 import type {
-  RasterAlliancePair,
+  RasterAllianceInfo,
   RasterAllianceRequest,
   RasterAttackFront,
   RasterBuilding,
@@ -39,6 +39,7 @@ import {
   type BuildingType,
 } from "../Core/buildings.js";
 import type { RasterDifficulty } from "../Core/messages.js";
+import { ALLIANCE_RENEWAL_WINDOW_TICKS } from "../Core/alliances.js";
 import { WIN_TILE_FRACTION } from "../Core/rasterCombatConfig.js";
 import { SIMULATION_TICK_RATE } from "../Server/simulationConfig.js";
 import { sfx } from "./sound.js";
@@ -264,8 +265,8 @@ interface RasterRuntime {
   nukeIntercepts: NukeIntercept[];
   /** Active attack fronts this snapshot, drawn as on-map troop-count labels. */
   fronts: RasterAttackFront[];
-  /** Active alliances as [lowId, highId] pairs, mirrored from the snapshot. */
-  alliances: RasterAlliancePair[];
+  /** Active alliances (pair + countdown + renewal votes), mirrored from the snapshot. */
+  alliances: RasterAllianceInfo[];
   /** Pending alliance proposals (directed from→to), mirrored from the snapshot. */
   allianceRequests: RasterAllianceRequest[];
   /** Recently-captured tiles still glowing, for the conquest-ripple animation. */
@@ -556,6 +557,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
 
   const sendAllyBreak = (targetId: number): void => {
     const message: RasterClientMessage = { type: "CLIENT_RASTER_ALLY_BREAK", payload: { targetId } };
+    transport.send(message);
+  };
+
+  const sendAllyRenew = (targetId: number): void => {
+    const message: RasterClientMessage = { type: "CLIENT_RASTER_ALLY_RENEW", payload: { targetId } };
     transport.send(message);
   };
 
@@ -997,11 +1003,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     if (runtime.myPlayerId !== null) {
       const had = new Set(
         runtime.alliances
-          .filter(([a, b]) => a === runtime.myPlayerId || b === runtime.myPlayerId)
-          .map(([a, b]) => `${a}-${b}`),
+          .filter((al) => al.a === runtime.myPlayerId || al.b === runtime.myPlayerId)
+          .map((al) => `${al.a}-${al.b}`),
       );
       const gainedMine = nextAlliances.some(
-        ([a, b]) => (a === runtime.myPlayerId || b === runtime.myPlayerId) && !had.has(`${a}-${b}`),
+        (al) => (al.a === runtime.myPlayerId || al.b === runtime.myPlayerId) && !had.has(`${al.a}-${al.b}`),
       );
       if (gainedMine) sfx.allyAccepted();
     }
@@ -2392,43 +2398,63 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     renderLeaderboard();
   };
 
+  interface DiplomacyState {
+    allies: Set<number>;
+    incoming: Set<number>;
+    outgoing: Set<number>;
+    /** Per allied partner: the pact's countdown + standing renewal votes. */
+    pacts: Map<number, RasterAllianceInfo>;
+  }
+
   /**
    * Resolve, for the local player, who is an ally, who has an alliance offer out
-   * to us, and who we have offered. Derived fresh from the snapshot's alliance +
-   * proposal lists so the leaderboard can label each rival and pick the right
-   * diplomacy action button.
+   * to us, and who we have offered — plus each pact's remaining lifetime and
+   * renewal votes. Derived fresh from the snapshot's alliance + proposal lists
+   * so the leaderboard can label each rival and pick the right diplomacy action.
    */
-  const diplomacyState = (): { allies: Set<number>; incoming: Set<number>; outgoing: Set<number> } => {
+  const diplomacyState = (): DiplomacyState => {
     const me = runtime.myPlayerId;
     const allies = new Set<number>();
     const incoming = new Set<number>();
     const outgoing = new Set<number>();
+    const pacts = new Map<number, RasterAllianceInfo>();
     if (me !== null) {
-      for (const [a, b] of runtime.alliances) {
-        if (a === me) allies.add(b);
-        else if (b === me) allies.add(a);
+      for (const al of runtime.alliances) {
+        const partner = al.a === me ? al.b : al.b === me ? al.a : null;
+        if (partner === null) continue;
+        allies.add(partner);
+        pacts.set(partner, al);
       }
       for (const r of runtime.allianceRequests) {
         if (r.to === me) incoming.add(r.from);
         else if (r.from === me) outgoing.add(r.to);
       }
     }
-    return { allies, incoming, outgoing };
+    return { allies, incoming, outgoing, pacts };
   };
 
   /**
-   * The diplomacy action button(s) for a rival row: break an existing pact,
-   * accept/decline an incoming offer, mark an outgoing offer as sent, or propose
-   * a fresh alliance. Empty while we can't act (pre-game, match over, our own row).
+   * The diplomacy action button(s) for a rival row: an ally row shows the
+   * pact's countdown, a renew vote near expiry, and break; otherwise
+   * accept/decline an incoming offer, mark an outgoing offer as sent, or
+   * propose a fresh alliance. Empty while we can't act (pre-game, match over,
+   * our own row).
    */
-  const diplomacyActions = (
-    id: number,
-    rel: { allies: Set<number>; incoming: Set<number>; outgoing: Set<number> },
-    canDiplo: boolean,
-  ): string => {
+  const diplomacyActions = (id: number, rel: DiplomacyState, canDiplo: boolean): string => {
     if (!canDiplo) return "";
     if (rel.allies.has(id)) {
-      return `<button class="lb-act break" data-ally-break="${id}" title="Break alliance">Break</button>`;
+      const pact = rel.pacts.get(id);
+      const ticksLeft = pact?.ticksLeft ?? 0;
+      const clock = formatDuration(Math.ceil(ticksLeft / SIMULATION_TICK_RATE));
+      const timer = `<span class="lb-pact" title="Alliance expires in ${clock} unless both sides renew">${clock}</span>`;
+      const voted = runtime.myPlayerId !== null && (pact?.renewVotes.includes(runtime.myPlayerId) ?? false);
+      const renew =
+        ticksLeft > ALLIANCE_RENEWAL_WINDOW_TICKS
+          ? ""
+          : voted
+            ? `<button class="lb-act pending" disabled title="Waiting for your ally's renewal vote">⏳</button>`
+            : `<button class="lb-act renew" data-ally-renew="${id}" title="Vote to renew the alliance">Renew</button>`;
+      return timer + renew + `<button class="lb-act break" data-ally-break="${id}" title="Break alliance">Break</button>`;
     }
     if (rel.incoming.has(id)) {
       return (
@@ -2497,7 +2523,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         const isAlly = rel.allies.has(p.playerId);
         const rowClass = ["lb-row", isMe ? "me" : "", isLeader ? "leader" : "", isAlly ? "ally" : ""].filter(Boolean).join(" ");
         const allyMark = isAlly ? "🤝 " : "";
-        const name = `${allyMark}${playerEmoji(p.playerId)} ${escapeHtml(p.name)}` + (isMe ? " (you)" : "");
+        const traitorMark = p.betrayals > 0
+          ? ` <span class="lb-traitor" title="Broke ${p.betrayals} alliance${p.betrayals === 1 ? "" : "s"}">🗡${p.betrayals > 1 ? `×${p.betrayals}` : ""}</span>`
+          : "";
+        const name = `${allyMark}${playerEmoji(p.playerId)} ${escapeHtml(p.name)}` + (isMe ? " (you)" : "") + traitorMark;
         const own = runtime.capturableTotal > 0 ? (p.tiles / runtime.capturableTotal) * 100 : 0;
         const ownStr = own >= 10 ? `${Math.round(own)}%` : `${own.toFixed(1)}%`;
         const actions = isMe ? "" : diplomacyActions(p.playerId, rel, canDiplo);
@@ -3119,13 +3148,14 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       return;
     }
     const btn = node?.closest<HTMLButtonElement>(
-      "button[data-ally-propose], button[data-ally-accept], button[data-ally-decline], button[data-ally-break]",
+      "button[data-ally-propose], button[data-ally-accept], button[data-ally-decline], button[data-ally-break], button[data-ally-renew]",
     );
     if (!btn || btn.disabled) return;
     const propose = btn.getAttribute("data-ally-propose");
     const accept = btn.getAttribute("data-ally-accept");
     const decline = btn.getAttribute("data-ally-decline");
     const broke = btn.getAttribute("data-ally-break");
+    const renew = btn.getAttribute("data-ally-renew");
     if (propose !== null) {
       sendAllyPropose(Number(propose));
       setStatus(ui, "Alliance offer sent.");
@@ -3138,6 +3168,9 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     } else if (broke !== null) {
       sendAllyBreak(Number(broke));
       setStatus(ui, "Alliance broken.");
+    } else if (renew !== null) {
+      sendAllyRenew(Number(renew));
+      setStatus(ui, "Renewal vote sent — the pact extends when your ally agrees.");
     }
   });
 

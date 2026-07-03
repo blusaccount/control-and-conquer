@@ -2,6 +2,7 @@ import type { RasterGameSession } from "./RasterGameSession.js";
 import type { GameMap, TileRef } from "../Core/GameMap.js";
 import { NEUTRAL_PLAYER, type PlayerId, type TerritoryGrid } from "../Core/TerritoryGrid.js";
 import { maxTroops } from "../Core/rasterCombatConfig.js";
+import { ALLIANCE_RENEWAL_WINDOW_TICKS } from "../Core/alliances.js";
 import { buildingCost } from "../Core/buildings.js";
 import type { RasterServerMessage, RasterSnapshot } from "../Core/types.js";
 import type { RasterPlayerKind } from "./botField.js";
@@ -35,6 +36,15 @@ export interface RasterBotPersonality {
    * At >= 0.5 the bot opens a war the moment it holds a decisive edge. */
   readonly aggression: number;
 }
+
+/**
+ * The most betrayals a nation forgives when weighing an alliance offer: anyone
+ * who has broken more pacts than this is refused outright, whatever the
+ * personality — a serial traitor's word is worthless. (Reputation heuristic of
+ * our own; OpenFront tracks a public betrayal count but doesn't document how
+ * its nations weigh it.)
+ */
+const NATION_BETRAYAL_TOLERANCE = 1;
 
 /**
  * A spread of opponent archetypes. {@link MatchRegistry} hands these out in
@@ -285,15 +295,20 @@ export class RasterBotController {
    * Run at most one diplomacy move per decision, in priority order:
    *  1. **Answer** the lowest-id pending alliance offer. Defensive personalities
    *     welcome any ally; aggressive ones accept only an offer from someone at
-   *     least as strong (never a weakling they could simply eat).
-   *  2. **Propose** peace to the strongest rival on its border that clearly
+   *     least as strong (never a weakling they could simply eat). A nation
+   *     refuses anyone who has betrayed more than {@link NATION_BETRAYAL_TOLERANCE}
+   *     pacts — a serial traitor's word is worthless.
+   *  2. **Renew** a pact inside its renewal window: tribes and defensive
+   *     nations always vote to extend; aggressive ones only keep an ally still
+   *     worth having (at least as strong as themselves).
+   *  3. **Propose** peace to the strongest rival on its border that clearly
    *     outguns it — only defensive bots sue for peace, and only against a real
    *     threat.
-   *  3. **Betray:** a ruthless bot hemmed in *only* by allies (no neutral land,
+   *  4. **Betray:** a ruthless bot hemmed in *only* by allies (no neutral land,
    *     no other rival to fight) turns on the weakest ally it decisively outguns
    *     rather than stagnate behind its own pacts.
-   * A passive Bot filler (`kind: "bot"`) only ever does step 1, and
-   * unconditionally accepts — OpenFront's Tribe welcomes every offer and
+   * A passive Bot filler (`kind: "bot"`) only ever does steps 1–2, and
+   * unconditionally accepts/renews — OpenFront's Tribe welcomes every offer and
    * never proposes or betrays on its own.
    * Deterministic throughout (ascending-id tiebreaks, no RNG).
    */
@@ -309,15 +324,28 @@ export class RasterBotController {
     const incoming = alliances.incomingProposals(me);
     if (incoming.length > 0) {
       const from = incoming[0];
-      const accept = kind === "bot" || p.aggression < 0.5 || grid.troopsOf(from) >= myPool;
+      const trusted = alliances.betrayalsOf(from) <= NATION_BETRAYAL_TOLERANCE;
+      const accept =
+        kind === "bot" || (trusted && (p.aggression < 0.5 || grid.troopsOf(from) >= myPool));
       session.respondAlliance(this.config.botId, from, accept);
+      return;
+    }
+
+    // 2) Renew an expiring pact (one vote per decision, lowest ally id first).
+    const now = session.peekTick();
+    for (const ally of alliances.alliesOf(me)) {
+      const left = alliances.ticksLeft(me, ally, now);
+      if (left === null || left > ALLIANCE_RENEWAL_WINDOW_TICKS) continue;
+      const wants = kind === "bot" || p.aggression < 0.5 || grid.troopsOf(ally) >= myPool;
+      if (!wants || alliances.hasRenewVote(me, ally)) continue;
+      session.renewAlliance(this.config.botId, ally);
       return;
     }
     if (kind === "bot") return;
 
     const bordering = grid.frontierTargets(me).filter((t) => t.target !== NEUTRAL_PLAYER);
 
-    // 2) Defensive bots sue for peace with a clearly stronger bordering rival.
+    // 3) Defensive bots sue for peace with a clearly stronger bordering rival.
     if (p.aggression < 0.5) {
       let threat: PlayerId | null = null;
       let threatPool = -1;
@@ -333,7 +361,7 @@ export class RasterBotController {
       return;
     }
 
-    // 3) Betrayal — only for the ruthless, and only when fully hemmed in by allies.
+    // 4) Betrayal — only for the ruthless, and only when fully hemmed in by allies.
     if (p.aggression >= 0.9) {
       const hasOpenTarget = grid.frontierTargets(me).some(
         (t) => t.target === NEUTRAL_PLAYER || !alliances.areAllied(me, t.target),

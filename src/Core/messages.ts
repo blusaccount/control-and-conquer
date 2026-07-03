@@ -51,7 +51,7 @@ export type RasterSpawnClientMessage = {
 // ---------------------------------------------------------------------------
 // Diplomacy (alliances).
 //
-// All three carry the *other* nation's engine playerId. The server resolves the
+// Each carries the *other* nation's engine playerId. The server resolves the
 // sender from their socket, so the client only ever names the counterparty.
 // ---------------------------------------------------------------------------
 
@@ -84,4 +84,18 @@ export interface RasterAllyBreakPayload {
 export type RasterAllyBreakClientMessage = {
   type: "CLIENT_RASTER_ALLY_BREAK";
   payload: RasterAllyBreakPayload;
+};
+
+/**
+ * Client → server: vote to renew the alliance with `targetId`. Alliances are
+ * time-limited (OpenFront's 5-minute pacts); both sides must vote for the
+ * pact's clock to restart.
+ */
+export interface RasterAllyRenewPayload {
+  targetId: number;
+}
+
+export type RasterAllyRenewClientMessage = {
+  type: "CLIENT_RASTER_ALLY_RENEW";
+  payload: RasterAllyRenewPayload;
 };

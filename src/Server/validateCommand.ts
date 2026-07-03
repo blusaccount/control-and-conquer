@@ -2,6 +2,7 @@ import { RasterBuildIntent, RasterClientMessage, RasterExpandIntent, RasterExpan
 import {
   isRasterDifficulty,
   RasterAllyBreakPayload,
+  RasterAllyRenewPayload,
   RasterAllyProposePayload,
   RasterAllyRespondPayload,
   RasterJoinPayload,
@@ -29,6 +30,10 @@ const parseAllyPropose = (payload: unknown): RasterAllyProposePayload => ({
 
 const parseAllyBreak = (payload: unknown): RasterAllyBreakPayload => ({
   targetId: parseTargetId(payload, "CLIENT_RASTER_ALLY_BREAK"),
+});
+
+const parseAllyRenew = (payload: unknown): RasterAllyRenewPayload => ({
+  targetId: parseTargetId(payload, "CLIENT_RASTER_ALLY_RENEW"),
 });
 
 const parseAllyRespond = (payload: unknown): RasterAllyRespondPayload => {
@@ -163,6 +168,9 @@ export const validateCommand = (raw: unknown): RasterClientMessage => {
   }
   if (message.type === "CLIENT_RASTER_ALLY_BREAK") {
     return { type: "CLIENT_RASTER_ALLY_BREAK", payload: parseAllyBreak(message.payload) };
+  }
+  if (message.type === "CLIENT_RASTER_ALLY_RENEW") {
+    return { type: "CLIENT_RASTER_ALLY_RENEW", payload: parseAllyRenew(message.payload) };
   }
   throw new Error(`Unknown message type: ${String(message.type)}.`);
 };

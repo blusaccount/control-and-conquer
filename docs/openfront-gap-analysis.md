@@ -96,9 +96,18 @@
   framework-frei wie der Rest von `Core` (keine RNG, aufsteigende Id-Ordnung).
 - **Beidseitige Zustimmung:** ein Spieler **schlägt vor** (`propose`), der Empfänger
   **nimmt an / lehnt ab** (`accept`/`decline`). Ein kreuzender Gegenvorschlag besiegelt
-  das Bündnis sofort. Jede Seite kann jederzeit **brechen** (`break`) — ein Verrat ohne
-  Zeitlimit (v1 hat keine Ablauf-Mechanik). Eliminierte Nationen verlassen den
-  Diplomatie-Graph (`removePlayer`).
+  das Bündnis sofort. Jede Seite kann jederzeit **brechen** (`break`) — ein Verrat.
+  Eliminierte Nationen verlassen den Diplomatie-Graph (`removePlayer`).
+- **Lebenszyklus (2026-07-02, PR C):** Allianzen laufen wie bei OpenFront nach
+  **5 Minuten** ab (`ALLIANCE_DURATION_TICKS = 3000`) — natürlicher Ablauf ist
+  **kein** Verrat (kein Traitor-Debuff, kein Reputations-Malus). In den letzten
+  ~30 s (`ALLIANCE_RENEWAL_WINDOW_TICKS = 300`) zeigt der Client einen
+  **Renew**-Button; stimmen **beide** Seiten (`voteRenew`), startet die Uhr neu.
+  Explizite Brüche zählen in ein permanentes, öffentliches **Verrats-Konto**
+  (`betrayalsOf`, Snapshot-Feld `betrayals`, 🗡-Marker im Leaderboard); Nationen
+  lehnen Angebote von Serien-Verrätern (>1 Bruch) ab und stimmen
+  persönlichkeitsbasiert über Verlängerungen ab (Tribes immer, defensive
+  Nationen immer, aggressive nur bei einem mindestens ebenbürtigen Partner).
 - **Nichtangriffspakt im Kampf** (`RasterConflict`): `launchAttack`/`launchShip` weisen
   ein Ziel zurück, das ein **Verbündeter** hält (`ALLIED`). Entsteht ein Bündnis *während*
   ein Angriff/Schiff schon unterwegs ist, **bricht die Offensive ab** und die Truppen

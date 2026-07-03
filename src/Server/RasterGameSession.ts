@@ -685,7 +685,7 @@ export class RasterGameSession {
   public proposeAlliance(clientId: string, targetId: PlayerId): void {
     const me = this.resolveDiplomacy(clientId, targetId);
     if (me === null) return;
-    const outcome = this.alliances.propose(me, targetId);
+    const outcome = this.alliances.propose(me, targetId, this.conflict.tick);
     if (outcome === "proposed") {
       this.pushEvent(`${this.nameOf(me)} proposed an alliance to ${this.nameOf(targetId)}.`);
     } else if (outcome === "accepted") {
@@ -698,11 +698,27 @@ export class RasterGameSession {
     const me = this.resolveDiplomacy(clientId, targetId);
     if (me === null) return;
     if (accept) {
-      if (this.alliances.accept(me, targetId)) {
+      if (this.alliances.accept(me, targetId, this.conflict.tick)) {
         this.pushEvent(`${this.nameOf(me)} and ${this.nameOf(targetId)} formed an alliance.`);
       }
     } else if (this.alliances.decline(me, targetId)) {
       this.pushEvent(`${this.nameOf(me)} declined ${this.nameOf(targetId)}'s alliance offer.`);
+    }
+  }
+
+  /**
+   * Vote to renew the alliance with `targetId`. Both sides must vote; the
+   * pact's clock restarts on the second vote (OpenFront's renewal prompt
+   * shortly before an alliance lapses).
+   */
+  public renewAlliance(clientId: string, targetId: PlayerId): void {
+    const me = this.resolveDiplomacy(clientId, targetId);
+    if (me === null) return;
+    const outcome = this.alliances.voteRenew(me, targetId, this.conflict.tick);
+    if (outcome === "voted") {
+      this.pushEvent(`${this.nameOf(me)} wants to renew the alliance with ${this.nameOf(targetId)}.`);
+    } else if (outcome === "renewed") {
+      this.pushEvent(`${this.nameOf(me)} and ${this.nameOf(targetId)} renewed their alliance.`);
     }
   }
 
@@ -896,6 +912,12 @@ export class RasterGameSession {
         `${this.nameOf(interception.defender)}'s SAM Launcher shot down a warhead from ${this.nameOf(interception.attacker)}.`,
       );
     }
+    // Alliances are time-limited pacts (OpenFront's 5-minute lifetime): lapse
+    // any whose clock ran out this tick. Natural expiry is not a betrayal — no
+    // traitor mark, no reputation hit — the two sides simply part ways.
+    for (const [a, b] of this.alliances.expireDue(this.conflict.tick)) {
+      this.pushEvent(`The alliance between ${this.nameOf(a)} and ${this.nameOf(b)} has expired.`);
+    }
     // Active land-attack fronts → wire coordinates for the on-map troop labels,
     // so each contested border shows how many troops are fighting there.
     this.lastFronts = this.conflict.activeFronts().map((f) => ({
@@ -1051,6 +1073,11 @@ export class RasterGameSession {
   /** Test/bot helper: peek at the diplomacy state (alliances + proposals). */
   public peekAlliances(): AllianceRegistry {
     return this.alliances;
+  }
+
+  /** Test/bot helper: the engine's current tick (for pact countdowns). */
+  public peekTick(): number {
+    return this.conflict.tick;
   }
 
   /**
@@ -1479,9 +1506,10 @@ export class RasterGameSession {
       trains: this.lastTrains,
       tradeShips: this.lastTradeShips,
       eliminated: this.eliminated,
-      alliances: this.alliances.pairs(),
+      alliances: this.alliances.infos(this.conflict.tick),
       allianceRequests: this.alliances.proposals(),
       lastAttackerOf: (playerId) => this.conflict.lastAttackerOf(playerId) ?? 0,
+      betrayalsOf: (playerId) => this.alliances.betrayalsOf(playerId),
     });
   }
 
