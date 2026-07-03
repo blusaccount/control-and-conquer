@@ -26,10 +26,17 @@ test("the field scales up with the land a map offers", () => {
   assert.ok(large <= huge, `large (${large}) should not exceed huge (${huge})`);
 });
 
-test("the field is denser than the old 47-cap — a big map fills like OpenFront", () => {
-  // earth-standard (~155k land) seats a real crowd, not a handful.
-  assert.ok(scaleFieldCount(155_000, "medium") >= 60, "a standard Earth map seats a dense field");
-  assert.ok(scaleFieldCount(620_000, "medium") >= 120, "a large Earth map is crowded");
+test("the default field is OpenFront-dense — a packed mosaic, not a handful", () => {
+  // OpenFront's World is ~1370 tiles/player (651k land, ~475 AI). Our default
+  // scaling lands in the same ballpark: earth-standard (~155k) ~130 opponents
+  // (~1200 tiles/player), earth-large (~620k) ~260. Far past the old ~80.
+  const standard = scaleFieldCount(155_000, "medium");
+  const large = scaleFieldCount(620_000, "medium");
+  assert.ok(standard >= 110, `a standard Earth map seats a packed field, got ${standard}`);
+  assert.ok(155_000 / standard <= 1600, "density is in OpenFront's tiles-per-player range");
+  assert.ok(large >= 220, `a large Earth map is densely crowded, got ${large}`);
+  // The ceiling matches OpenFront's default bot count.
+  assert.equal(MAX_FIELD, 400);
 });
 
 test("a tiny map floors at the difficulty minimum, a vast one caps at MAX_FIELD", () => {

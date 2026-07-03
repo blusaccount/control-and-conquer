@@ -991,7 +991,10 @@ export class RasterConflict {
   private applyGoldIncome(): void {
     for (const id of this.grid.players()) {
       if (this.grid.tileCountOf(id) <= 0) continue; // eliminated — earns nothing
-      this.grid.addGold(id, GOLD_BASE_PER_TICK);
+      // OpenFront's goldAdditionRate pays a PlayerType.Bot a 50 base where
+      // everyone else gets 100 — expressed here as the 0.5 goldMultiplier a
+      // Tribe seat carries.
+      this.grid.addGold(id, Math.floor(GOLD_BASE_PER_TICK * this.grid.modifiersOf(id).goldMultiplier));
     }
   }
 

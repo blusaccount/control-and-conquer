@@ -9,6 +9,8 @@ import {
   type RasterBotPersonality,
 } from "../src/Server/RasterBotController.js";
 import type { RasterServerMessage } from "../src/Core/types.js";
+import { buildTerrainFromMask } from "../src/Core/terrainBuilder.js";
+import { IDENTITY_MODIFIERS } from "../src/Core/playerModifiers.js";
 
 /** A snappy, eager personality for tests: decides every tick, almost no reserve. */
 const EAGER: RasterBotPersonality = {
@@ -178,4 +180,43 @@ test("a Bot filler unconditionally accepts an incoming alliance offer", () => {
     allied = session.peekAlliances().areAllied(1, botId);
   }
   assert.ok(allied, "the Bot filler accepted the human's alliance offer");
+});
+
+test("a Tribe (bot) keeps poking a neighbour when no neutral land is left — no dead map", () => {
+  // OpenFront's Tribes never go idle: with the map full and a rival on their
+  // border, they weakly poke it (troops/20) instead of banking forever. Set up
+  // a bot boxed by a weak rival with zero neutral land and confirm the poke
+  // actually takes ground (churn), proving decideBot isn't passive.
+  const flat = buildTerrainFromMask({
+    width: 6, height: 1,
+    land: new Uint8Array([1, 1, 1, 1, 1, 1]),
+    elevation: new Uint8Array(6),
+  });
+  const session = new RasterGameSession({ prebuiltMap: flat, spawnPhaseTicks: 0 });
+  session.subscribe("human", () => {}); // player 1 (the rival)
+  const bot = new RasterBotController({
+    botId: "tribe",
+    kind: "bot",
+    personality: { ...FILLER_PERSONALITY, decisionCooldownTicks: 1, minPool: 1 },
+  });
+  bot.attach(session); // player 2 (the tribe)
+  const p2 = bot.getPlayerId()!;
+  const grid = session.peekGrid();
+  session.tick(); // leave the (0-tick) spawn phase before arranging the board
+
+  // Whole row to the weak rival, one border tile to the tribe — no neutral left.
+  for (let r = 0; r < 6; r += 1) grid.claim(r, 1);
+  grid.claim(0, p2);
+  // Freeze income and make the rival thin so the weak poke can land.
+  grid.setModifiers(1, { ...IDENTITY_MODIFIERS, income: 0 });
+  grid.setModifiers(p2, { ...IDENTITY_MODIFIERS, income: 0, neutralCostMultiplier: 0.5 });
+  grid.addTroops(1, 40 - grid.troopsOf(1)); // rival down to ~40 troops over 5 tiles
+
+  const rivalBefore = grid.tileCountOf(1);
+  for (let i = 0; i < 400; i += 1) session.tick();
+
+  assert.ok(
+    grid.tileCountOf(1) < rivalBefore,
+    `the tribe should keep poking and take ground (rival ${rivalBefore} → ${grid.tileCountOf(1)})`,
+  );
 });

@@ -110,7 +110,7 @@ export const tribeName = (seatIndex: number): string => {
  * than a sparse handful. The field scales with the map up to this ceiling
  * (see {@link scaleFieldCount}).
  */
-export const MAX_FIELD = 200;
+export const MAX_FIELD = 400;
 
 /**
  * @deprecated Kept as an alias of {@link MAX_FIELD} for callers/tests that
@@ -123,10 +123,10 @@ export const MAX_RASTER_BOTS = MAX_FIELD;
  * the procedural fallback. Bigger maps grow well past this (see {@link scaleFieldCount}).
  */
 export const DIFFICULTY_BOT_COUNT: Record<RasterDifficulty, number> = {
-  easy: 12,
-  medium: 18,
-  hard: 24,
-  impossible: 30,
+  easy: 20,
+  medium: 30,
+  hard: 40,
+  impossible: 50,
 };
 
 // --- AI strength by difficulty ---------------------------------------------
@@ -219,16 +219,18 @@ export const seatPhaseOffset = (seatIndex: number, cadence: number): number =>
  * Land-per-opponent density as a square-root divisor, by difficulty: the field
  * grows with the square root of the capturable land divided by this, so a 4×
  * larger map roughly doubles the field rather than quadrupling it. Smaller =
- * denser, so Impossible packs the most opponents onto the same map. Tuned so
- * earth-standard (~155k land) seats ~80, earth-large (~620k) ~160 and
- * earth-huge (~2.5M) hits the {@link MAX_FIELD} ceiling — an OpenFront-scale
- * crowd rather than the old sparse handful.
+ * denser, so Impossible packs the most opponents onto the same map. Tuned for
+ * OpenFront's *packed* feel (its default is a flat 400 bots): earth-standard
+ * (~155k land) seats ~130, earth-large (~620k) ~260, and earth-huge (~2.5M)
+ * hits the {@link MAX_FIELD} 400 ceiling — a dense mosaic of tribes, not the
+ * old sparse handful. (Server tick cost is ~3.5 ms even at 500 seats, so the
+ * ceiling is a rendering/legibility choice, not a perf one.)
  */
 const DIFFICULTY_FIELD_DIVISOR: Record<RasterDifficulty, number> = {
-  easy: 7,
-  medium: 5,
-  hard: 4.2,
-  impossible: 3.6,
+  easy: 4,
+  medium: 3,
+  hard: 2.6,
+  impossible: 2.2,
 };
 
 /**
