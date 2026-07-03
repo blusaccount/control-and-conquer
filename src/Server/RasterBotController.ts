@@ -46,6 +46,12 @@ export interface RasterBotPersonality {
  */
 const NATION_BETRAYAL_TOLERANCE = 1;
 
+// Emoji indices into RASTER_EMOJIS (["👍","👎","😂","😡","🤝","🫡","💀","🔥"])
+// that nations flash as contextual reactions.
+const EMOJI_THUMBS_DOWN = 1;
+const EMOJI_ANGRY = 3;
+const EMOJI_HANDSHAKE = 4;
+
 /**
  * Cheap deterministic hash of two integers onto [0, 1) — the confusion roll.
  * No RNG anywhere in bot decisions, so identical (terrain, intents) replays
@@ -385,6 +391,9 @@ export class RasterBotController {
       const accept =
         kind === "bot" || (trusted && (p.aggression < 0.5 || grid.troopsOf(from) >= myPool));
       session.respondAlliance(this.config.botId, from, accept);
+      // React like an OpenFront nation: 🤝 on a new pact, 👎 on a snub. The
+      // session rate-limits emoji, so this never spams.
+      session.sendEmoji(this.config.botId, from, accept ? EMOJI_HANDSHAKE : EMOJI_THUMBS_DOWN);
       return;
     }
 
@@ -434,7 +443,10 @@ export class RasterBotController {
           prey = t.target;
         }
       }
-      if (prey !== null) session.breakAlliance(this.config.botId, prey);
+      if (prey !== null) {
+        session.breakAlliance(this.config.botId, prey);
+        session.sendEmoji(this.config.botId, prey, EMOJI_ANGRY); // 😡 at the ally it just stabbed
+      }
     }
   }
 
@@ -456,6 +468,24 @@ export class RasterBotController {
     const enemies = targets.filter(
       (t) => t.target !== NEUTRAL_PLAYER && !alliances.areAllied(me, t.target),
     );
+
+    // Honour an ally's target request (OpenFront): if an ally has asked us to
+    // attack someone we border and can plausibly beat, oblige at once — a
+    // nation is a helpful ally. Deterministic (lowest requester/target first).
+    const requested = new Set(alliances.targetRequestsFor(me).map((r) => r.target));
+    if (requested.size > 0) {
+      const ask = enemies.find((e) => requested.has(e.target) && pool >= grid.troopsOf(e.target) * p.attackPoolRatio);
+      if (ask) {
+        const available = pool * (1 - p.reserveFraction);
+        const troops = Math.max(1, Math.floor(available * p.attackCommit));
+        session.queueExpand(this.config.botId, {
+          targetX: map.x(ask.sample),
+          targetY: map.y(ask.sample),
+          percent: Math.min(100, Math.max(1, Math.round((troops / pool) * 100))),
+        });
+        return;
+      }
+    }
 
     // Weakest rival we can currently beat on troop pool (deterministic tiebreak:
     // lowest pool, then lowest target id thanks to ascending `targets` order).

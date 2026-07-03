@@ -131,6 +131,18 @@ ctx.onmessage = (event): void => {
     case "CLIENT_RASTER_ALLY_RENEW":
       session.renewAlliance(LOCAL_CLIENT_ID, message.payload.targetId);
       break;
+    case "CLIENT_RASTER_DONATE":
+      session.donate(LOCAL_CLIENT_ID, message.payload.targetId, message.payload.resource, message.payload.percent);
+      break;
+    case "CLIENT_RASTER_EMBARGO":
+      session.setEmbargo(LOCAL_CLIENT_ID, message.payload.targetId, message.payload.on);
+      break;
+    case "CLIENT_RASTER_TARGET_REQUEST":
+      session.requestTarget(LOCAL_CLIENT_ID, message.payload.allyId, message.payload.targetId);
+      break;
+    case "CLIENT_RASTER_EMOJI":
+      session.sendEmoji(LOCAL_CLIENT_ID, message.payload.targetId, message.payload.emoji);
+      break;
   }
 };
 

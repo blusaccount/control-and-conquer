@@ -349,7 +349,9 @@ export class RasterConflict {
     this.grid = grid;
     this.allies = allies;
     this.rails = new RailSystem(grid);
-    this.trade = new TradeSystem(grid);
+    // The trade system consults the (deferred) diplomacy view so an embargoed
+    // pair never dispatches trade ships to each other.
+    this.trade = new TradeSystem(grid, (a, b) => this.allies.isEmbargoed?.(a, b) ?? false);
   }
 
   /** Live trade ships, for the snapshot (empty until two ports share a sea). */

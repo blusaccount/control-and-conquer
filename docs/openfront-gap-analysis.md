@@ -134,8 +134,21 @@
   defensive Nation Frieden mit einem klar stärkeren Grenz-Rivalen und **verraten** (nur die
   rücksichtslosen) ein Bündnis, das sie sonst komplett einkesselt. Alles deterministisch.
 - **Client-UI:** das Leaderboard zeigt pro Rivale eine Aktion (Ally / Annehmen / Ablehnen /
-  Brechen) und markiert Verbündete mit 🤝; das Orders-Panel weist auf eingehende Angebote
-  hin.
+  Brechen / Renew) und markiert Verbündete mit 🤝, Verräter mit 🗕, eigene Embargos mit 🚫 und
+  eingehende Zielanfragen mit 🎯; das Orders-Panel weist auf eingehende Angebote hin.
+- **Diplomatie-Interaktionen (2026-07-03, PR E + F):** Das Rechtsklick-Radialmenü hat einen
+  **Diplomatie-Ast** mit kontextabhängigen Aktionen: gegenüber einem Verbündeten
+  **Truppen-/Gold-Spende** (Slider-%-Anteil des eigenen Pools) und **Bündnis brechen**;
+  gegenüber einem Nicht-Verbündeten **Allianz anbieten**, **Handels-Embargo** setzen/aufheben
+  und **„Verbündete angreifen lassen"** (Zielanfrage an alle eigenen Allianzen). Ein
+  **Emoji-Sub-Ring** (8er-Set) flasht Reaktionen über dem Ziel-Territorium (steigt auf +
+  verblasst). **Embargo** filtert das Trade-Schiff-Routing (`tradeSystem.ts`) und wird bei
+  Verrat automatisch gesetzt; **Zielanfragen** werden von Nation-Bots befolgt (bevorzugtes
+  Angriffsziel); **Bots reagieren** mit Emojis (🤝 bei neuem Pakt, 👎 bei Absage, 😡 bei
+  Verrat). Alles deterministisch/rate-limitiert; Emojis sind reine Anzeige (Snapshot-transient,
+  nicht in der Sim). Kein Gold-/Truppen-Spende- oder Emoji-System existierte vorher — jetzt
+  vollständig (`alliances.ts` Embargo/Target-Request, `RasterGameSession` donate/setEmbargo/
+  requestTarget/sendEmoji).
 
 ### Networking / Multiplayer
 - WebSocket + autoritativer Server (`ws`, `src/Server/index.ts`).

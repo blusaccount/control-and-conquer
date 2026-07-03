@@ -1,12 +1,17 @@
 import { RasterBuildIntent, RasterClientMessage, RasterExpandIntent, RasterExpandMode, RasterNukeIntent } from "../Core/types.js";
 import {
   isRasterDifficulty,
+  RASTER_EMOJIS,
   RasterAllyBreakPayload,
   RasterAllyRenewPayload,
   RasterAllyProposePayload,
   RasterAllyRespondPayload,
+  RasterDonatePayload,
+  RasterEmbargoPayload,
+  RasterEmojiPayload,
   RasterJoinPayload,
   RasterSpawnPayload,
+  RasterTargetRequestPayload,
 } from "../Core/messages.js";
 import { isMapChoiceId } from "../Core/mapCatalog.js";
 import { isBuildingType } from "../Core/buildings.js";
@@ -35,6 +40,47 @@ const parseAllyBreak = (payload: unknown): RasterAllyBreakPayload => ({
 const parseAllyRenew = (payload: unknown): RasterAllyRenewPayload => ({
   targetId: parseTargetId(payload, "CLIENT_RASTER_ALLY_RENEW"),
 });
+
+const parseDonate = (payload: unknown): RasterDonatePayload => {
+  const targetId = parseTargetId(payload, "CLIENT_RASTER_DONATE");
+  const { resource, percent } = payload as Record<string, unknown>;
+  if (resource !== "troops" && resource !== "gold") {
+    throw new Error("resource must be 'troops' or 'gold'.");
+  }
+  if (typeof percent !== "number" || !Number.isInteger(percent) || percent < 1 || percent > 100) {
+    throw new Error("percent must be an integer 1..100.");
+  }
+  return { targetId, resource, percent };
+};
+
+const parseEmbargo = (payload: unknown): RasterEmbargoPayload => {
+  const targetId = parseTargetId(payload, "CLIENT_RASTER_EMBARGO");
+  const { on } = payload as Record<string, unknown>;
+  if (typeof on !== "boolean") throw new Error("on must be a boolean.");
+  return { targetId, on };
+};
+
+const parseTargetRequest = (payload: unknown): RasterTargetRequestPayload => {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("CLIENT_RASTER_TARGET_REQUEST.payload must be an object.");
+  }
+  const { allyId, targetId } = payload as Record<string, unknown>;
+  for (const [name, id] of [["allyId", allyId], ["targetId", targetId]] as const) {
+    if (typeof id !== "number" || !Number.isInteger(id) || id < 1) {
+      throw new Error(`${name} must be a positive integer player id.`);
+    }
+  }
+  return { allyId: allyId as number, targetId: targetId as number };
+};
+
+const parseEmoji = (payload: unknown): RasterEmojiPayload => {
+  const targetId = parseTargetId(payload, "CLIENT_RASTER_EMOJI");
+  const { emoji } = payload as Record<string, unknown>;
+  if (typeof emoji !== "number" || !Number.isInteger(emoji) || emoji < 0 || emoji >= RASTER_EMOJIS.length) {
+    throw new Error(`emoji must be an integer index 0..${RASTER_EMOJIS.length - 1}.`);
+  }
+  return { targetId, emoji };
+};
 
 const parseAllyRespond = (payload: unknown): RasterAllyRespondPayload => {
   const targetId = parseTargetId(payload, "CLIENT_RASTER_ALLY_RESPOND");
@@ -171,6 +217,18 @@ export const validateCommand = (raw: unknown): RasterClientMessage => {
   }
   if (message.type === "CLIENT_RASTER_ALLY_RENEW") {
     return { type: "CLIENT_RASTER_ALLY_RENEW", payload: parseAllyRenew(message.payload) };
+  }
+  if (message.type === "CLIENT_RASTER_DONATE") {
+    return { type: "CLIENT_RASTER_DONATE", payload: parseDonate(message.payload) };
+  }
+  if (message.type === "CLIENT_RASTER_EMBARGO") {
+    return { type: "CLIENT_RASTER_EMBARGO", payload: parseEmbargo(message.payload) };
+  }
+  if (message.type === "CLIENT_RASTER_TARGET_REQUEST") {
+    return { type: "CLIENT_RASTER_TARGET_REQUEST", payload: parseTargetRequest(message.payload) };
+  }
+  if (message.type === "CLIENT_RASTER_EMOJI") {
+    return { type: "CLIENT_RASTER_EMOJI", payload: parseEmoji(message.payload) };
   }
   throw new Error(`Unknown message type: ${String(message.type)}.`);
 };

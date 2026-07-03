@@ -154,3 +154,23 @@ test("a port dispatches on OpenFront's cadence, not instantly", () => {
   for (let tick = 51; tick <= 120; tick += 1) trade.advance(tick);
   assert.ok(trade.shipCount > 0 || grid.goldOf(1) > 0, "a ship dispatched (or already arrived) by ~tick 110");
 });
+
+test("an embargo stops trade ships routing between the two owners", () => {
+  // Same two-port setup as the trade test, but owner 1 embargoes owner 2, so
+  // no ship should ever dispatch between them.
+  const grid = new TerritoryGrid(rowMap("##  ##"));
+  grid.addPlayer(1, 0);
+  grid.addPlayer(2, 0);
+  grid.claim(1, 1);
+  grid.claim(4, 2);
+  grid.placeBuilding(1, "port");
+  grid.placeBuilding(4, "port");
+
+  // Embargo in force: owner 1 refuses to trade with owner 2 (either direction).
+  const trade = new TradeSystem(grid, (a, b) => (a === 1 && b === 2) || (a === 2 && b === 1));
+  for (let tick = 0; tick <= 300; tick += 1) trade.advance(tick);
+
+  assert.equal(trade.shipCount, 0, "no ship ever sails an embargoed lane");
+  assert.equal(grid.goldOf(1), 0, "and neither owner earns trade gold");
+  assert.equal(grid.goldOf(2), 0);
+});

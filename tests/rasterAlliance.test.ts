@@ -296,3 +296,99 @@ test("an explicit break is tallied in the snapshot's betrayal count", () => {
   assert.equal(snap.players.find((p) => p.playerId === 1)?.betrayals, 1, "the breaker is marked");
   assert.equal(snap.players.find((p) => p.playerId === 2)?.betrayals, 0, "the betrayed side stays clean");
 });
+
+test("donating troops to an ally moves pool from donor to recipient", () => {
+  const session = new RasterGameSession({ width: 32, height: 24, seed: 7 });
+  collect(session, "c1");
+  collect(session, "c2");
+  const grid = session.peekGrid();
+  grid.setGold(1, 0);
+  // Ally the two, then donate 50% of player 1's troops to player 2.
+  session.proposeAlliance("c1", 2);
+  session.respondAlliance("c2", 1, true);
+  const before1 = grid.troopsOf(1);
+  const before2 = grid.troopsOf(2);
+  session.donate("c1", 2, "troops", 50);
+  const moved = before1 - grid.troopsOf(1);
+  assert.ok(moved > 0, "the donor's pool falls");
+  assert.equal(grid.troopsOf(2) - before2, moved, "the ally receives exactly what the donor sent");
+});
+
+test("donating is refused between non-allies", () => {
+  const session = new RasterGameSession({ width: 32, height: 24, seed: 7 });
+  collect(session, "c1");
+  collect(session, "c2");
+  const grid = session.peekGrid();
+  const before1 = grid.troopsOf(1);
+  session.donate("c1", 2, "troops", 50); // not allied
+  assert.equal(grid.troopsOf(1), before1, "no troops leave when the two aren't allied");
+});
+
+test("gold donation transfers gold to an ally", () => {
+  const session = new RasterGameSession({ width: 32, height: 24, seed: 7 });
+  collect(session, "c1");
+  collect(session, "c2");
+  const grid = session.peekGrid();
+  grid.setGold(1, 100_000);
+  grid.setGold(2, 0);
+  session.proposeAlliance("c1", 2);
+  session.respondAlliance("c2", 1, true);
+  session.donate("c1", 2, "gold", 25);
+  assert.equal(grid.goldOf(1), 75_000, "donor keeps the rest");
+  assert.equal(grid.goldOf(2), 25_000, "ally gets the donated gold");
+});
+
+test("an embargo is carried in the snapshot and auto-set on betrayal", () => {
+  const session = new RasterGameSession({ width: 32, height: 24, seed: 7 });
+  const c1 = collect(session, "c1");
+  collect(session, "c2");
+  session.setEmbargo("c1", 2, true);
+  session.tick();
+  assert.deepEqual(lastSnapshot(c1).embargoes, [[1, 2]], "the embargo shows in the snapshot");
+
+  session.setEmbargo("c1", 2, false);
+  session.tick();
+  assert.deepEqual(lastSnapshot(c1).embargoes, [], "lifting clears it");
+
+  // Betrayal auto-embargoes.
+  session.proposeAlliance("c1", 2);
+  session.respondAlliance("c2", 1, true);
+  session.breakAlliance("c1", 2);
+  session.tick();
+  assert.deepEqual(lastSnapshot(c1).embargoes, [[1, 2]], "betrayal raises an automatic embargo");
+});
+
+test("a target request reaches the ally in the snapshot", () => {
+  const session = new RasterGameSession({ width: 40, height: 28, seed: 9 });
+  const c1 = collect(session, "c1"); // player 1
+  collect(session, "c2"); // player 2
+  // A third player to name as the target (headless nation seat → player 3).
+  session.subscribe("c3", () => {}, true, false, undefined, "nation");
+  session.proposeAlliance("c1", 2);
+  session.respondAlliance("c2", 1, true);
+  session.requestTarget("c1", 2, 3);
+  session.tick();
+  const reqs = lastSnapshot(c1).targetRequests;
+  assert.ok(reqs.some((r) => r.from === 1 && r.to === 2 && r.target === 3), "the request is broadcast to the ally");
+});
+
+test("an emoji reaction rides the snapshot, then ages out, and is rate-limited", () => {
+  const session = new RasterGameSession({ width: 32, height: 24, seed: 7 });
+  const c1 = collect(session, "c1");
+  collect(session, "c2");
+  session.sendEmoji("c1", 2, 0);
+  session.tick();
+  const first = lastSnapshot(c1).emojis;
+  assert.equal(first.length, 1, "the emoji floats in the snapshot");
+  assert.equal(first[0].from, 1);
+  assert.equal(first[0].emoji, 0);
+
+  // A second emoji immediately is dropped (rate limit).
+  session.sendEmoji("c1", 2, 1);
+  session.tick();
+  assert.equal(lastSnapshot(c1).emojis.length, 1, "a spammed second emoji is rate-limited");
+
+  // After the lifetime elapses the reaction is gone.
+  for (let i = 0; i < 25; i += 1) session.tick();
+  assert.equal(lastSnapshot(c1).emojis.length, 0, "the reaction ages out");
+});

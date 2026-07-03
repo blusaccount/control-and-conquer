@@ -18,8 +18,12 @@ import type {
   RasterAllyRenewClientMessage,
   RasterAllyProposeClientMessage,
   RasterAllyRespondClientMessage,
+  RasterDonateClientMessage,
+  RasterEmbargoClientMessage,
+  RasterEmojiClientMessage,
   RasterJoinClientMessage,
   RasterSpawnClientMessage,
+  RasterTargetRequestClientMessage,
 } from "./messages.js";
 import type { BuildingType } from "./buildings.js";
 import type { NukeKind } from "./nukes.js";
@@ -367,6 +371,47 @@ export interface RasterSnapshot {
    * for offers addressed to it (to accept/decline) and its own outgoing offers.
    */
   allianceRequests: RasterAllianceRequest[];
+  /**
+   * Active trade embargoes as directed `[from, to]` pairs — `from` refuses to
+   * trade with `to`. The client marks its own embargoes and offers a lift/set
+   * toggle. Empty when nobody is embargoing anyone.
+   */
+  embargoes: RasterEmbargoPair[];
+  /**
+   * Standing target requests (directed: `from` asks ally `to` to attack
+   * `target`). The client surfaces requests addressed to it. Empty when none.
+   */
+  targetRequests: RasterTargetRequestInfo[];
+  /**
+   * Transient emoji reactions floating this snapshot — a sender, the tile they
+   * float over (the reacted-to player's territory), the emoji, and how long
+   * they've been alive. Purely visual; drained a couple of seconds after they
+   * are sent. Empty on the vast majority of ticks.
+   */
+  emojis: RasterEmojiReaction[];
+}
+
+/** A directed trade embargo in the snapshot: `from` refuses to trade with `to`. */
+export type RasterEmbargoPair = [number, number];
+
+/** A standing target request in the snapshot (directed `from` → ally `to`, against `target`). */
+export interface RasterTargetRequestInfo {
+  from: number;
+  to: number;
+  target: number;
+}
+
+/** A floating emoji reaction in the snapshot. */
+export interface RasterEmojiReaction {
+  /** Player who sent the reaction. */
+  from: number;
+  /** Tile the emoji floats over (world coords). */
+  x: number;
+  y: number;
+  /** Index into the shared emoji set (`RASTER_EMOJIS`). */
+  emoji: number;
+  /** Ticks the reaction has been alive, for the client's rise-and-fade. */
+  age: number;
 }
 
 /** Reasons the server can reject a raster expand or build intent. */
@@ -498,7 +543,11 @@ export type RasterClientMessage =
   | RasterAllyProposeClientMessage
   | RasterAllyRespondClientMessage
   | RasterAllyBreakClientMessage
-  | RasterAllyRenewClientMessage;
+  | RasterAllyRenewClientMessage
+  | RasterDonateClientMessage
+  | RasterEmbargoClientMessage
+  | RasterTargetRequestClientMessage
+  | RasterEmojiClientMessage;
 
 /** Messages the server can send to the client. */
 export type RasterServerMessage =

@@ -36,13 +36,27 @@ export const ALLIANCE_DURATION_TICKS = 3000;
  */
 export const ALLIANCE_RENEWAL_WINDOW_TICKS = 300;
 
-/** The minimal read shape the conflict engine needs: "are A and B allied?". */
+/**
+ * The minimal read shape the conflict/trade engine needs: "are A and B
+ * allied?" and "is trade between A and B embargoed?" (either direction). Both
+ * are read-only projections of the diplomacy graph, injected into the
+ * deterministic engine so it never depends on the session.
+ */
 export interface AllianceView {
   areAllied(a: PlayerId, b: PlayerId): boolean;
+  /** True if either side has an active trade embargo against the other. Optional (defaults false). */
+  isEmbargoed?(a: PlayerId, b: PlayerId): boolean;
 }
 
-/** A null alliance layer — nobody is ever allied. The engine's default. */
-export const NO_ALLIANCES: AllianceView = { areAllied: () => false };
+/** A null alliance layer — nobody is ever allied or embargoed. The engine's default. */
+export const NO_ALLIANCES: AllianceView = { areAllied: () => false, isEmbargoed: () => false };
+
+/** A directed target request: `from` asks its ally `to` to attack `target`. */
+export interface TargetRequest {
+  from: PlayerId;
+  to: PlayerId;
+  target: PlayerId;
+}
 
 /** Outcome of an {@link AllianceRegistry.voteRenew} call. */
 export type RenewResult =
@@ -93,6 +107,10 @@ export class AllianceRegistry implements AllianceView {
   private readonly pacts = new Map<string, PactState>();
   /** How many alliances each player has *betrayed* (explicit breaks, ever). */
   private readonly betrayals = new Map<PlayerId, number>();
+  /** `embargoes.get(from)` = the set of players `from` refuses to trade with (directed). */
+  private readonly embargoes = new Map<PlayerId, Set<PlayerId>>();
+  /** Directed, pending "attack them for me" requests between allies. */
+  private targetRequests: TargetRequest[] = [];
 
   private pactKey(a: PlayerId, b: PlayerId): string {
     return `${Math.min(a, b)}:${Math.max(a, b)}`;
@@ -188,7 +206,81 @@ export class AllianceRegistry implements AllianceView {
   breakAlliance(breaker: PlayerId, partner: PlayerId): boolean {
     if (!this.dissolve(breaker, partner)) return false;
     this.betrayals.set(breaker, this.betrayalsOf(breaker) + 1);
+    // Betrayal auto-embargoes the wronged partner (OpenFront): the breaker
+    // stops trading with the ally it just stabbed.
+    this.setEmbargo(breaker, partner);
     return true;
+  }
+
+  // --- Trade embargoes -------------------------------------------------------
+
+  /** `from` stops trading with `to`. No-op on invalid/self ids. Returns whether it changed. */
+  setEmbargo(from: PlayerId, to: PlayerId): boolean {
+    if (from === to || !this.isRealPlayer(from) || !this.isRealPlayer(to)) return false;
+    const set = this.adjacency(this.embargoes, from);
+    if (set.has(to)) return false;
+    set.add(to);
+    return true;
+  }
+
+  /** Lift `from`'s embargo on `to`. Returns whether one existed. */
+  clearEmbargo(from: PlayerId, to: PlayerId): boolean {
+    return this.embargoes.get(from)?.delete(to) ?? false;
+  }
+
+  /** True if `from` currently embargoes `to` (directed). */
+  hasEmbargo(from: PlayerId, to: PlayerId): boolean {
+    return this.embargoes.get(from)?.has(to) ?? false;
+  }
+
+  /**
+   * True if trade between `a` and `b` is blocked — by an embargo in **either**
+   * direction. Trade needs both ends willing, so one side's embargo stops the
+   * route. This is the {@link AllianceView} projection the trade system reads.
+   */
+  isEmbargoed(a: PlayerId, b: PlayerId): boolean {
+    return this.hasEmbargo(a, b) || this.hasEmbargo(b, a);
+  }
+
+  /** Players `id` currently embargoes (directed, ascending). */
+  embargoesOf(id: PlayerId): PlayerId[] {
+    return [...(this.embargoes.get(id) ?? [])].sort((x, y) => x - y);
+  }
+
+  /** Every active embargo as a directed `[from, to]` pair, canonical order — for the snapshot. */
+  allEmbargoes(): Array<[PlayerId, PlayerId]> {
+    const out: Array<[PlayerId, PlayerId]> = [];
+    for (const [from, targets] of this.embargoes) {
+      for (const to of targets) out.push([from, to]);
+    }
+    return out.sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+  }
+
+  // --- Target requests ("attack them for me") --------------------------------
+
+  /**
+   * `from` asks its ally `to` to attack `target`. Recorded only between current
+   * allies and against a real third party; a duplicate is a no-op. Returns
+   * whether a fresh request was stored.
+   */
+  requestTarget(from: PlayerId, to: PlayerId, target: PlayerId): boolean {
+    if (!this.areAllied(from, to)) return false;
+    if (!this.isRealPlayer(target) || target === from || target === to) return false;
+    if (this.targetRequests.some((r) => r.from === from && r.to === to && r.target === target)) return false;
+    this.targetRequests.push({ from, to, target });
+    return true;
+  }
+
+  /** Standing target requests addressed to `to` (ascending by requester, then target). */
+  targetRequestsFor(to: PlayerId): TargetRequest[] {
+    return this.targetRequests
+      .filter((r) => r.to === to)
+      .sort((p, q) => p.from - q.from || p.target - q.target);
+  }
+
+  /** Every standing target request, canonical order — for the snapshot. */
+  allTargetRequests(): TargetRequest[] {
+    return [...this.targetRequests].sort((p, q) => p.from - q.from || p.to - q.to || p.target - q.target);
   }
 
   /** How many alliances `id` has betrayed (explicitly broken), ever. */
@@ -251,6 +343,11 @@ export class AllianceRegistry implements AllianceView {
     this.allies.get(a)?.delete(b);
     this.allies.get(b)?.delete(a);
     this.pacts.delete(this.pactKey(a, b));
+    // A target request only makes sense between standing allies; once the pact
+    // is gone (broken or expired), drop any request in either direction.
+    this.targetRequests = this.targetRequests.filter(
+      (r) => !((r.from === a && r.to === b) || (r.from === b && r.to === a)),
+    );
     return true;
   }
 
@@ -267,7 +364,12 @@ export class AllianceRegistry implements AllianceView {
     this.allies.delete(id);
     this.outgoing.delete(id);
     this.betrayals.delete(id);
+    this.embargoes.delete(id);
     for (const targets of this.outgoing.values()) targets.delete(id);
+    for (const targets of this.embargoes.values()) targets.delete(id);
+    // Drop any target request touching the departed player (as requester,
+    // recipient or the named target).
+    this.targetRequests = this.targetRequests.filter((r) => r.from !== id && r.to !== id && r.target !== id);
   }
 
   /**

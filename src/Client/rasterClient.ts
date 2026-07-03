@@ -7,6 +7,9 @@ import type {
   RasterBuilding,
   RasterClientMessage,
   RasterCrossing,
+  RasterEmbargoPair,
+  RasterEmojiReaction,
+  RasterTargetRequestInfo,
   RasterExpandMode,
   RasterMatchEndedPayload,
   RasterMatchPhase,
@@ -39,7 +42,7 @@ import {
   UPGRADABLE_BUILDING_TYPES,
   type BuildingType,
 } from "../Core/buildings.js";
-import type { RasterDifficulty } from "../Core/messages.js";
+import { RASTER_EMOJIS, type RasterDifficulty } from "../Core/messages.js";
 import { ALLIANCE_RENEWAL_WINDOW_TICKS } from "../Core/alliances.js";
 import { WIN_TILE_FRACTION } from "../Core/rasterCombatConfig.js";
 import { SIMULATION_TICK_RATE } from "../Server/simulationConfig.js";
@@ -270,6 +273,12 @@ interface RasterRuntime {
   alliances: RasterAllianceInfo[];
   /** Pending alliance proposals (directed from→to), mirrored from the snapshot. */
   allianceRequests: RasterAllianceRequest[];
+  /** Active trade embargoes (directed [from, to] pairs), mirrored from the snapshot. */
+  embargoes: RasterEmbargoPair[];
+  /** Standing target requests (from→ally, against target), mirrored from the snapshot. */
+  targetRequests: RasterTargetRequestInfo[];
+  /** Floating emoji reactions this snapshot, with client-side interpolated rise. */
+  emojis: RasterEmojiReaction[];
   /** Recently-captured tiles still glowing, for the conquest-ripple animation. */
   captureFlashes: CaptureFlash[];
   /** Expanding rings confirming recent expand/spawn clicks. */
@@ -498,6 +507,9 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     fronts: [],
     alliances: [],
     allianceRequests: [],
+    embargoes: [],
+    targetRequests: [],
+    emojis: [],
     captureFlashes: [],
     clickRipples: [],
     spawnX: -1,
@@ -564,6 +576,27 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   const sendAllyRenew = (targetId: number): void => {
     const message: RasterClientMessage = { type: "CLIENT_RASTER_ALLY_RENEW", payload: { targetId } };
     transport.send(message);
+  };
+
+  const sendDonate = (targetId: number, resource: "troops" | "gold"): void => {
+    const percent = Number(ui.attackPercentInput.value) || 20;
+    transport.send({ type: "CLIENT_RASTER_DONATE", payload: { targetId, resource, percent } });
+  };
+
+  const sendEmbargo = (targetId: number, on: boolean): void => {
+    transport.send({ type: "CLIENT_RASTER_EMBARGO", payload: { targetId, on } });
+  };
+
+  const sendEmoji = (targetId: number, emoji: number): void => {
+    transport.send({ type: "CLIENT_RASTER_EMOJI", payload: { targetId, emoji } });
+  };
+
+  /** Ask every current ally to attack `targetId` (OpenFront's target request, fanned out). */
+  const requestAlliesAttack = (targetId: number): void => {
+    const { allies } = diplomacyState();
+    for (const allyId of allies) {
+      transport.send({ type: "CLIENT_RASTER_TARGET_REQUEST", payload: { allyId, targetId } });
+    }
   };
 
   /** How many of `type` we currently own — feeds the geometric cost ramp. */
@@ -1014,6 +1047,9 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     }
     runtime.alliances = nextAlliances;
     runtime.allianceRequests = snapshot.allianceRequests ?? [];
+    runtime.embargoes = snapshot.embargoes ?? [];
+    runtime.targetRequests = snapshot.targetRequests ?? [];
+    runtime.emojis = snapshot.emojis ?? [];
     runtime.phase = snapshot.phase;
     runtime.spawnRemainingSeconds = snapshot.spawnRemainingSeconds;
     updateStartBanner();
@@ -1309,6 +1345,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       drawNukeIntercepts(now, ctx, scale);
       drawClickRipples(now, ctx, scale);
       drawFronts(ctx, scale);
+      drawEmojis(ctx, scale);
       drawBuildGhost(ctx, scale);
       drawNukeTargetPreview(ctx, scale);
     }
@@ -1936,6 +1973,40 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   /**
+   * Float the transient emoji reactions over the map — each rises and fades
+   * over its ~2s life (server-supplied `age` in ticks, EMOJI_LIFETIME_TICKS=20).
+   * A small owner-coloured dot ties the emoji to who sent it. Purely cosmetic.
+   */
+  const drawEmojis = (ctx: CanvasRenderingContext2D, scale: number): void => {
+    if (runtime.emojis.length === 0) return;
+    const cw = ui.mapCanvas.width;
+    const ch = ui.mapCanvas.height;
+    const px = clamp(scale * 1.4, 18, 40);
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = `${px}px system-ui, sans-serif`;
+    for (const e of runtime.emojis) {
+      const glyph = RASTER_EMOJIS[e.emoji];
+      if (!glyph) continue;
+      const life = Math.min(1, e.age / 20); // 0 fresh → 1 expiring
+      const { x: bx, y: by } = worldToScreen(e.x + 0.5, e.y + 0.5);
+      const sx = bx;
+      const sy = by - life * px * 1.6; // rise as it ages
+      if (sx < -px || sy < -px || sx > cw + px || sy > ch + px) continue;
+      ctx.globalAlpha = 1 - life * 0.85;
+      // A small sender-coloured dot anchors the reaction to its author.
+      ctx.beginPath();
+      ctx.arc(sx, sy + px * 0.55, Math.max(2, px * 0.12), 0, Math.PI * 2);
+      ctx.fillStyle = rgbaToCss(playerColor(e.from));
+      ctx.fill();
+      ctx.fillText(glyph, sx, sy);
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  };
+
+  /**
    * In build mode, outline the hovered tile with the structure's own colour
    * and icon before the player commits — OpenFront's ghost-build preview.
    * Green when the tile is a legal build site (owned, no existing structure),
@@ -2447,6 +2518,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     outgoing: Set<number>;
     /** Per allied partner: the pact's countdown + standing renewal votes. */
     pacts: Map<number, RasterAllianceInfo>;
+    /** Players I currently embargo (my outgoing embargoes). */
+    embargoed: Set<number>;
+    /** Players who have asked me to attack someone (incoming target requests → set of targets). */
+    incomingTargetRequests: Set<number>;
   }
 
   /**
@@ -2461,6 +2536,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const incoming = new Set<number>();
     const outgoing = new Set<number>();
     const pacts = new Map<number, RasterAllianceInfo>();
+    const embargoed = new Set<number>();
+    const incomingTargetRequests = new Set<number>();
     if (me !== null) {
       for (const al of runtime.alliances) {
         const partner = al.a === me ? al.b : al.b === me ? al.a : null;
@@ -2472,8 +2549,14 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         if (r.to === me) incoming.add(r.from);
         else if (r.from === me) outgoing.add(r.to);
       }
+      for (const [from, to] of runtime.embargoes) {
+        if (from === me) embargoed.add(to);
+      }
+      for (const r of runtime.targetRequests) {
+        if (r.to === me) incomingTargetRequests.add(r.target);
+      }
     }
-    return { allies, incoming, outgoing, pacts };
+    return { allies, incoming, outgoing, pacts, embargoed, incomingTargetRequests };
   };
 
   /**
@@ -2569,7 +2652,9 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         const traitorMark = p.betrayals > 0
           ? ` <span class="lb-traitor" title="Broke ${p.betrayals} alliance${p.betrayals === 1 ? "" : "s"}">🗡${p.betrayals > 1 ? `×${p.betrayals}` : ""}</span>`
           : "";
-        const name = `${allyMark}${playerEmoji(p.playerId)} ${escapeHtml(p.name)}` + (isMe ? " (you)" : "") + traitorMark;
+        const embargoMark = rel.embargoed.has(p.playerId) ? ` <span class="lb-embargo" title="You are embargoing this player">🚫</span>` : "";
+        const targetMark = rel.incomingTargetRequests.has(p.playerId) ? ` <span class="lb-target" title="An ally asked you to attack this player">🎯</span>` : "";
+        const name = `${allyMark}${playerEmoji(p.playerId)} ${escapeHtml(p.name)}` + (isMe ? " (you)" : "") + traitorMark + embargoMark + targetMark;
         const own = runtime.capturableTotal > 0 ? (p.tiles / runtime.capturableTotal) * 100 : 0;
         const ownStr = own >= 10 ? `${Math.round(own)}%` : `${own.toFixed(1)}%`;
         const actions = isMe ? "" : diplomacyActions(p.playerId, rel, canDiplo);
@@ -2633,7 +2718,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   }
 
   /** Which tile the currently-open radial menu targets, and which ring it's showing. */
-  let radial: { tileX: number; tileY: number; owner: number; level: "root" | "build" | "nuke" } | null = null;
+  let radial: { tileX: number; tileY: number; owner: number; level: "root" | "build" | "nuke" | "diplomacy" | "emoji" } | null = null;
 
   const RADIAL_RADIUS = 78;
 
@@ -2725,37 +2810,100 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       },
     ];
 
+    // Every interaction with a rival's tile — ally/break/donate/embargo/target/
+    // emoji — lives behind one Diplomacy branch so the root ring stays compact
+    // (OpenFront's nested pie). Only shown for a living rival's own tile.
     if (owner !== 0 && owner !== runtime.myPlayerId) {
-      const { allies, incoming } = diplomacyState();
-      if (incoming.has(owner)) {
+      ring.push({
+        label: "Diplomacy",
+        className: "ally-action",
+        html: `<span class="glyph">\u{1F91D}</span>`,
+        onClick: () => { radial!.level = "diplomacy"; renderRadialDiplomacy(); },
+      });
+    }
+    renderRadialSlices(center, ring);
+  };
+
+  /** Diplomacy sub-ring for the right-clicked rival: context actions by relationship. */
+  const renderRadialDiplomacy = (): void => {
+    if (!radial) return;
+    const owner = radial.owner;
+    const center: RadialItem = {
+      label: "Back",
+      className: "center",
+      html: `<span class="glyph">←</span>`,
+      onClick: () => { radial!.level = "root"; renderRadialRoot(); },
+    };
+    const ring: RadialItem[] = [];
+    const rel = diplomacyState();
+    // Emoji is always available against any rival.
+    ring.push({
+      label: "Emoji",
+      html: `<span class="glyph">\u{1F642}</span>`,
+      onClick: () => { radial!.level = "emoji"; renderRadialEmoji(); },
+    });
+
+    if (rel.incoming.has(owner)) {
+      ring.push({
+        label: "Accept", className: "ally-action", html: `<span class="glyph">✓</span>`,
+        onClick: () => { sendAllyRespond(owner, true); closeRadialMenu(); },
+      });
+      ring.push({
+        label: "Decline", className: "break-action", html: `<span class="glyph">✕</span>`,
+        onClick: () => { sendAllyRespond(owner, false); closeRadialMenu(); },
+      });
+    } else if (rel.allies.has(owner)) {
+      // An ally: break, or send them troops/gold (a slice of your own pool).
+      ring.push({
+        label: "Break ally", className: "break-action", html: `<span class="glyph">\u{1F494}</span>`,
+        onClick: () => { sendAllyBreak(owner); closeRadialMenu(); },
+      });
+      ring.push({
+        label: "Send troops", className: "ally-action", html: `<span class="glyph">\u{1F6E1}️</span>`,
+        onClick: () => { sendDonate(owner, "troops"); setStatus(ui, `Sent troops to ${playerName(owner)}.`); closeRadialMenu(); },
+      });
+      ring.push({
+        label: "Send gold", className: "ally-action", html: `<span class="glyph">\u{1FA99}</span>`,
+        onClick: () => { sendDonate(owner, "gold"); setStatus(ui, `Sent gold to ${playerName(owner)}.`); closeRadialMenu(); },
+      });
+    } else {
+      // A non-ally: propose a pact, toggle a trade embargo, or flag them as a
+      // target for all your allies.
+      ring.push({
+        label: "Ally", className: "ally-action", html: `<span class="glyph">\u{1F91D}</span>`,
+        onClick: () => { sendAllyPropose(owner); setStatus(ui, "Alliance offer sent."); closeRadialMenu(); },
+      });
+      const embargoing = rel.embargoed.has(owner);
+      ring.push({
+        label: embargoing ? "Lift embargo" : "Embargo", className: "break-action",
+        html: `<span class="glyph">\u{1F6AB}</span>`,
+        onClick: () => { sendEmbargo(owner, !embargoing); setStatus(ui, embargoing ? `Lifted embargo on ${playerName(owner)}.` : `Embargoed ${playerName(owner)}.`); closeRadialMenu(); },
+      });
+      if (rel.allies.size > 0) {
         ring.push({
-          label: "Accept",
-          className: "ally-action",
-          html: `<span class="glyph">✓</span>`,
-          onClick: () => { sendAllyRespond(owner, true); closeRadialMenu(); },
-        });
-        ring.push({
-          label: "Decline",
-          className: "break-action",
-          html: `<span class="glyph">✕</span>`,
-          onClick: () => { sendAllyRespond(owner, false); closeRadialMenu(); },
-        });
-      } else if (allies.has(owner)) {
-        ring.push({
-          label: "Break ally",
-          className: "break-action",
-          html: `<span class="glyph">\u{1F494}</span>`,
-          onClick: () => { sendAllyBreak(owner); closeRadialMenu(); },
-        });
-      } else {
-        ring.push({
-          label: "Ally",
-          className: "ally-action",
-          html: `<span class="glyph">\u{1F91D}</span>`,
-          onClick: () => { sendAllyPropose(owner); closeRadialMenu(); },
+          label: "Ask allies to attack", className: "break-action", html: `<span class="glyph">\u{1F3AF}</span>`,
+          onClick: () => { requestAlliesAttack(owner); setStatus(ui, `Asked your allies to attack ${playerName(owner)}.`); closeRadialMenu(); },
         });
       }
     }
+    renderRadialSlices(center, ring);
+  };
+
+  /** Emoji sub-ring: flash one of the shared emojis over the targeted rival. */
+  const renderRadialEmoji = (): void => {
+    if (!radial) return;
+    const owner = radial.owner;
+    const center: RadialItem = {
+      label: "Back",
+      className: "center",
+      html: `<span class="glyph">←</span>`,
+      onClick: () => { radial!.level = "diplomacy"; renderRadialDiplomacy(); },
+    };
+    const ring: RadialItem[] = RASTER_EMOJIS.map((glyph, i) => ({
+      label: glyph,
+      html: `<span class="glyph">${glyph}</span>`,
+      onClick: () => { sendEmoji(owner, i); closeRadialMenu(); },
+    }));
     renderRadialSlices(center, ring);
   };
 

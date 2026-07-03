@@ -103,3 +103,68 @@ export type RasterAllyRenewClientMessage = {
   type: "CLIENT_RASTER_ALLY_RENEW";
   payload: RasterAllyRenewPayload;
 };
+
+/**
+ * Client → server: donate a slice of your own resource to an ally — troops or
+ * gold, `percent` (1..100) of your current pool. OpenFront's ally donation;
+ * only ever between standing allies.
+ */
+export interface RasterDonatePayload {
+  targetId: number;
+  resource: "troops" | "gold";
+  percent: number;
+}
+
+export type RasterDonateClientMessage = {
+  type: "CLIENT_RASTER_DONATE";
+  payload: RasterDonatePayload;
+};
+
+/**
+ * Client → server: set (`on: true`) or lift a trade embargo against
+ * `targetId` — no trade ships will route between your ports and theirs while
+ * it stands. OpenFront's embargo; also raised automatically on betrayal.
+ */
+export interface RasterEmbargoPayload {
+  targetId: number;
+  on: boolean;
+}
+
+export type RasterEmbargoClientMessage = {
+  type: "CLIENT_RASTER_EMBARGO";
+  payload: RasterEmbargoPayload;
+};
+
+/**
+ * Client → server: ask an ally (`allyId`) to attack `targetId` — OpenFront's
+ * target request. The ally sees it as an event/marker and its AI weights the
+ * named target; a human ally is simply informed.
+ */
+export interface RasterTargetRequestPayload {
+  allyId: number;
+  targetId: number;
+}
+
+export type RasterTargetRequestClientMessage = {
+  type: "CLIENT_RASTER_TARGET_REQUEST";
+  payload: RasterTargetRequestPayload;
+};
+
+/**
+ * Client → server: flash an emoji over a player's territory — `targetId` is
+ * the reacted-to player (yourself for a broadcast). `emoji` is an index into
+ * the client's shared emoji set (validated server-side). Pure social signal;
+ * it never touches the simulation, only the transient reactions in the snapshot.
+ */
+export interface RasterEmojiPayload {
+  targetId: number;
+  emoji: number;
+}
+
+export type RasterEmojiClientMessage = {
+  type: "CLIENT_RASTER_EMOJI";
+  payload: RasterEmojiPayload;
+};
+
+/** The emoji set a client may flash, by index (server validates the index range). */
+export const RASTER_EMOJIS: readonly string[] = ["👍", "👎", "😂", "😡", "🤝", "🫡", "💀", "🔥"];

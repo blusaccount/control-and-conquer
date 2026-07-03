@@ -136,6 +136,22 @@ export class MatchRegistry {
     this.clientToSession.get(clientId)?.renewAlliance(clientId, targetId);
   }
 
+  public donateRaster(clientId: string, targetId: number, resource: "troops" | "gold", percent: number): void {
+    this.clientToSession.get(clientId)?.donate(clientId, targetId, resource, percent);
+  }
+
+  public setRasterEmbargo(clientId: string, targetId: number, on: boolean): void {
+    this.clientToSession.get(clientId)?.setEmbargo(clientId, targetId, on);
+  }
+
+  public requestRasterTarget(clientId: string, allyId: number, targetId: number): void {
+    this.clientToSession.get(clientId)?.requestTarget(clientId, allyId, targetId);
+  }
+
+  public sendRasterEmoji(clientId: string, targetId: number, emoji: number): void {
+    this.clientToSession.get(clientId)?.sendEmoji(clientId, targetId, emoji);
+  }
+
   public tickAll(): void {
     for (const session of this.activeMatches.values()) {
       session.tick();

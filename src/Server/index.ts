@@ -234,6 +234,14 @@ wss.on("connection", (socket) => {
         registry.breakRasterAlliance(clientId, message.payload.targetId);
       } else if (message.type === "CLIENT_RASTER_ALLY_RENEW") {
         registry.renewRasterAlliance(clientId, message.payload.targetId);
+      } else if (message.type === "CLIENT_RASTER_DONATE") {
+        registry.donateRaster(clientId, message.payload.targetId, message.payload.resource, message.payload.percent);
+      } else if (message.type === "CLIENT_RASTER_EMBARGO") {
+        registry.setRasterEmbargo(clientId, message.payload.targetId, message.payload.on);
+      } else if (message.type === "CLIENT_RASTER_TARGET_REQUEST") {
+        registry.requestRasterTarget(clientId, message.payload.allyId, message.payload.targetId);
+      } else if (message.type === "CLIENT_RASTER_EMOJI") {
+        registry.sendRasterEmoji(clientId, message.payload.targetId, message.payload.emoji);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown command error.";
