@@ -12,8 +12,8 @@
  *  - **Hydrogen Bomb** — one much bigger blast. OpenFront's exact inner/outer
  *    radii weren't available in the source excerpts this project could reach,
  *    so {@link HYDROGEN_BOMB_INNER_RADIUS}/{@link HYDROGEN_BOMB_OUTER_RADIUS}
- *    are a documented clean-room scale-up of the Atom Bomb's (same shape,
- *    ~1.7×), not a source-verified figure.
+ *    are a documented scale-up of the Atom Bomb's (same shape), not a
+ *    source-verified figure.
  *  - **MIRV** — splits into several independent, atom-sized warheads that
  *    scatter around the aim point ({@link MIRV_WARHEAD_COUNT}/
  *    {@link MIRV_SCATTER_RADIUS} are likewise this project's own choice, not
@@ -141,7 +141,7 @@ export const SAM_RELOAD_TICKS = 90;
 /**
  * Chance a SAM Launcher's interceptor destroys a warhead that comes within
  * {@link SAM_RANGE} of it (deterministic, hashed — see RasterConflict). Our
- * own clean-room constant — see the module header for why.
+ * own constant — see the module header for why.
  */
 export const SAM_INTERCEPT_CHANCE = 0.75;
 

@@ -33,7 +33,7 @@ export const COASTAL_BUILDING_TYPES: readonly BuildingType[] = ["port", "warship
  * Values are OpenFront's publicly documented warship figures (maxHealth,
  * patrol/target range, shellRate, shell damage, passiveHeal, retreat
  * threshold). Two figures aren't in our source material and are this
- * project's own clean-room approximations, called out below.
+ * project's own approximations, called out below.
  */
 export const WARSHIP_MAX_HP = 1000;
 

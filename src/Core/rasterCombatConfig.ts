@@ -161,12 +161,11 @@ export const TRAITOR_SPEED_DEBUFF = 0.8;
 // ---------------------------------------------------------------------------
 // Combat model
 //
-// An independent, clean-room reimplementation of the openfront-style combat
-// mechanics, written from the publicly documented behaviour (the OpenFront wiki
-// and gameplay guides) — NOT ported from OpenFront's source, which is AGPL-3.0.
-// No OpenFront code or assets are used here; only the (uncopyrightable) game
-// rules and formula shapes are reproduced, with our own constants. This keeps
-// the project freely (re)licensable.
+// An independent reimplementation of the openfront-style combat mechanics.
+// No OpenFront code or assets are used here (nothing copied, translated or
+// ported from its AGPL-3.0 source); only the (uncopyrightable) game rules,
+// formula shapes and numeric constants are reproduced, in our own original
+// expression. This keeps the project freely (re)licensable.
 //
 // Per captured tile the attacker spends `captureCost` troops; the defender (if a
 // player) bleeds `defenderLossPerTile` troops. Both mirror OpenFront's

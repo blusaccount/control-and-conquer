@@ -99,10 +99,11 @@ cost = base · terrain · attackerEfficiency · garrisonFactor · fortifications
 
 The defender's per-tile loss is density-based (its pool spread over its
 territory), and a front advances faster the bigger the attacker's troop
-advantage. These mechanics are an **independent, clean-room reimplementation
-inspired by the publicly documented behaviour of [OpenFront.io](https://openfront.io)**.
-This project contains no OpenFront source code or assets, is not affiliated with
-or endorsed by OpenFront, and reproduces only the (uncopyrightable) game rules —
+advantage. These mechanics are an **independent reimplementation of
+[OpenFront.io](https://openfront.io)'s publicly observable game rules**.
+This project contains no OpenFront source code or assets (nothing copied,
+translated, or ported), is not affiliated with or endorsed by OpenFront, and
+reproduces only the (uncopyrightable) game rules and numeric constants —
 keeping the project freely licensable.
 
 ## Scripts
@@ -161,9 +162,9 @@ prioritized roadmap.
 
 ## License
 
-Proprietary — see [`LICENSE`](LICENSE). This project is an independent,
-clean-room reimplementation of certain OpenFront.io gameplay mechanics (game
-rules and numeric formulas are not copyrightable); no OpenFront source code or
-assets are used. See
+Proprietary — see [`LICENSE`](LICENSE). This project is an independent
+reimplementation of certain OpenFront.io gameplay mechanics (game rules and
+numeric formulas are not copyrightable); no OpenFront source code or assets
+are included or copied. See
 [`docs/openfront-pr-plan.md`](docs/openfront-pr-plan.md#1-lizenz-evaluierung-grundlage-für-alles-weitere)
 for the licensing evaluation and sourcing methodology.
