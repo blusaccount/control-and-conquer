@@ -143,14 +143,15 @@ export class TerritoryGrid {
    */
   private readonly construction = new Map<TileRef, { start: number; ready: number }>();
   /**
-   * Radioactive fallout: tile → ticks of fallout remaining. A nuked tile is
-   * cleared to neutral and marked here; while present it cannot be (re)captured
-   * (see {@link landFrontierOf}/{@link hasLandBorderWith}) and the client tints
-   * it. {@link tickFallout} counts every entry down and drops it at zero, so the
-   * ground recovers after the blast — OpenFront's decaying fallout. Empty =
-   * nowhere is irradiated (the common case, so lookups stay O(1)-ish).
+   * Radioactive fallout tiles, exactly OpenFront's model: a nuked tile is
+   * cleared to neutral and marked here **permanently** — there is no decay
+   * timer. Fallout land stays capturable (at a stiff combat penalty, see
+   * `falloutCombatModifier` in `rasterCombatConfig`) and the mark is lifted the
+   * moment the tile is conquered ({@link claim}), mirroring OpenFront's
+   * `conquer(...) → setFallout(tile, false)`. The client tints marked tiles.
+   * Empty = nowhere is irradiated (the common case, so lookups stay O(1)-ish).
    */
-  private readonly fallout = new Map<TileRef, number>();
+  private readonly fallout = new Set<TileRef>();
 
   // Lazily-allocated, generation-stamped scratch buffers reused by every
   // {@link findSeaPath} call so per-launch pathfinding stays allocation-free.
@@ -358,31 +359,28 @@ export class TerritoryGrid {
     return this.map.isLand(ref) && !this.map.isImpassable(ref);
   }
 
-  /** Mark `ref` radioactive for `ticks` ticks (a nuke blast). Refreshes if already fallout. */
-  setFallout(ref: TileRef, ticks: number): void {
-    if (ticks > 0) this.fallout.set(ref, ticks);
+  /** Mark `ref` radioactive (a nuke blast). Permanent until the tile is conquered. */
+  setFallout(ref: TileRef): void {
+    this.fallout.add(ref);
   }
 
-  /** Whether `ref` is currently radioactive fallout (temporarily un-capturable). */
+  /** Whether `ref` is currently radioactive fallout (dearer and slower to capture). */
   hasFallout(ref: TileRef): boolean {
     return this.fallout.has(ref);
   }
 
   /** Active fallout tiles, ascending — for the snapshot's fallout overlay. */
   falloutTiles(): TileRef[] {
-    return [...this.fallout.keys()].sort((a, b) => a - b);
+    return [...this.fallout].sort((a, b) => a - b);
   }
 
   /**
-   * Count every fallout tile down one tick, dropping any that reach zero so the
-   * ground recovers. Called once per engine tick from {@link RasterConflict}.
+   * Number of tiles currently under fallout — the numerator of OpenFront's
+   * `falloutRatio` (over the map's land tiles), which scales the fallout
+   * combat penalty as the world grows more irradiated.
    */
-  tickFallout(): void {
-    if (this.fallout.size === 0) return;
-    for (const [ref, remaining] of this.fallout) {
-      if (remaining <= 1) this.fallout.delete(ref);
-      else this.fallout.set(ref, remaining - 1);
-    }
+  get falloutCount(): number {
+    return this.fallout.size;
   }
 
   /**
@@ -572,6 +570,10 @@ export class TerritoryGrid {
     if (id !== NEUTRAL_PLAYER) {
       this.standing(id).tiles.add(ref);
       this.bumpComponent(id, comp, 1);
+      // Conquering ground scrubs it clean, mirroring OpenFront's
+      // `conquer(...) → setFallout(tile, false)`: fallout lives only on
+      // unowned land, and taking the tile is the (one) way to reclaim it.
+      this.fallout.delete(ref);
     }
     this.owner[ref] = id;
   }
@@ -605,22 +607,27 @@ export class TerritoryGrid {
   }
 
   /**
-   * Capture-cost multiplier (>= 1) at `ref` from any overlapping defense posts.
-   * Mirrors OpenFront's defense post exactly: the bonus is **binary in-range** —
+   * Capture-cost multiplier (>= 1) at `ref` from the **tile owner's** overlapping
+   * defense posts. Mirrors OpenFront's defense post exactly: only a post owned by
+   * the defender itself protects the tile (OpenFront checks
+   * `dp.unit.owner() === defender`, so a fort near a border never taxes its own
+   * owner's or a third party's assaults), and the bonus is **binary in-range** —
    * every tile within a post's Chebyshev `radius` costs the full `strength`× (no
-   * linear falloff), and beyond it nothing. The strongest covering post wins
-   * (auras don't stack). Returns 1 where no post reaches. In OpenFront this is
-   * `defensePostDefenseBonus` (5×) inside `defensePostRange` (30); its companion
-   * `defensePostSpeedBonus` (3×, which slows the attack) is folded into this cost
-   * multiplier — our advance is cost-driven, so a 5× dearer tile already grinds a
-   * front to the crawl the speed bonus is meant to impose.
+   * linear falloff), beyond it nothing. The strongest covering post wins (auras
+   * don't stack). Returns 1 where no post of the owner reaches, and always 1 on
+   * neutral ground. In OpenFront this is `defensePostDefenseBonus` (5×) inside
+   * `defensePostRange` (30); the companion `defensePostSpeedBonus` (3×) is
+   * applied by the conflict engine to the tile's advance-budget drain.
    */
   defenseFactorAt(ref: TileRef): number {
     if (this.defensePosts.size === 0) return 1;
+    const owner = this.ownerOf(ref);
+    if (owner === NEUTRAL_PLAYER) return 1;
     const x = this.map.x(ref);
     const y = this.map.y(ref);
     let factor = 1;
     for (const [post, { radius, strength }] of this.defensePosts) {
+      if (this.ownerOf(post) !== owner) continue;
       const dist = Math.max(Math.abs(x - this.map.x(post)), Math.abs(y - this.map.y(post)));
       if (dist > radius) continue;
       if (strength > factor) factor = strength;
@@ -842,8 +849,9 @@ export class TerritoryGrid {
     const found = new Set<TileRef>();
     for (const ref of this.standing(attacker).tiles) {
       for (const n of this.map.neighbors(ref)) {
-        // Radioactive ground can't be advanced onto until its fallout decays.
-        if (this.owner[n] === target && this.isCapturable(n) && !this.hasFallout(n)) found.add(n);
+        // Fallout ground stays on the frontier — OpenFront keeps it capturable,
+        // just at a stiff combat penalty (see falloutCombatModifier).
+        if (this.owner[n] === target && this.isCapturable(n)) found.add(n);
       }
     }
     return [...found].sort((a, b) => a - b);
@@ -857,7 +865,7 @@ export class TerritoryGrid {
   hasLandBorderWith(attacker: PlayerId, target: PlayerId): boolean {
     for (const ref of this.standing(attacker).tiles) {
       for (const n of this.map.neighbors(ref)) {
-        if (this.owner[n] === target && this.isCapturable(n) && !this.hasFallout(n)) return true;
+        if (this.owner[n] === target && this.isCapturable(n)) return true;
       }
     }
     return false;

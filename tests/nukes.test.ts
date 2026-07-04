@@ -144,31 +144,32 @@ test("a real Atom Bomb blast marks its cleared ground as fallout", () => {
   assert.ok(grid.falloutTiles().length > 0, "fallout tiles are exposed for the snapshot");
 });
 
-test("fallout blocks an advance onto the tile until it decays, then reopens", () => {
-  // Focused grid-level test of the fallout gate + decay, independent of blast
+test("fallout is permanent, stays capturable, and is scrubbed only by conquest (OpenFront)", () => {
+  // Focused grid-level test of OpenFront's fallout rule, independent of blast
   // geometry: player 1 owns a tile directly left of a hand-set fallout tile.
+  // Fallout never decays on its own; the ground stays on the frontier (dearer
+  // and slower via falloutCombatModifier), and conquering it lifts the mark —
+  // OpenFront's `conquer(...) → setFallout(tile, false)`.
   const grid = landSquare(20);
   grid.addPlayer(1, 5_000);
   const owned = grid.map.ref(5, 5);
   const target = grid.map.ref(6, 5); // eastern neighbour of the owned tile
   grid.claim(owned, 1);
-  grid.setFallout(target, 3);
+  grid.setFallout(target);
 
   assert.ok(
-    !grid.landFrontierOf(1, NEUTRAL_PLAYER).includes(target),
-    "a radioactive neighbour is excluded from the land frontier",
+    grid.landFrontierOf(1, NEUTRAL_PLAYER).includes(target),
+    "a radioactive neighbour stays on the land frontier (capturable at a penalty)",
   );
 
   const conflict = new RasterConflict(grid);
-  conflict.processTick(); // fallout 3 → 2
-  conflict.processTick(); // 2 → 1
-  assert.equal(grid.hasFallout(target), true, "still radioactive mid-decay");
-  conflict.processTick(); // 1 → 0, cleared
-  assert.equal(grid.hasFallout(target), false, "fallout has decayed");
-  assert.ok(
-    grid.landFrontierOf(1, NEUTRAL_PLAYER).includes(target),
-    "the recovered tile is back on the frontier",
-  );
+  for (let i = 0; i < 30; i += 1) conflict.processTick();
+  assert.equal(grid.hasFallout(target), true, "fallout never decays on its own");
+
+  conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 4_000 });
+  for (let i = 0; i < 30 && grid.ownerOf(target) !== 1; i += 1) conflict.processTick();
+  assert.equal(grid.ownerOf(target), 1, "the irradiated tile can be conquered");
+  assert.equal(grid.hasFallout(target), false, "conquest scrubs the fallout mark");
 });
 
 // --- RasterGameSession: end-to-end silo + launch flow ----------------------

@@ -594,6 +594,36 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     transport.send({ type: "CLIENT_RASTER_EMBARGO", payload: { targetId, on } });
   };
 
+  /** Order a manual retreat of our active attack against `targetId` (0 = neutral land). */
+  const sendRetreat = (targetId: number): void => {
+    transport.send({ type: "CLIENT_RASTER_RETREAT", payload: { targetId } });
+  };
+
+  /** Targets (player ids / 0 for neutral) of our own attacks currently pushing a front. */
+  const myFrontTargets = (): number[] => {
+    const targets = new Set<number>();
+    for (const front of runtime.fronts) {
+      if (front.playerId === runtime.myPlayerId) targets.add(front.targetId);
+    }
+    return [...targets];
+  };
+
+  /**
+   * R hotkey: pull every one of our active fronts back — OpenFront's manual
+   * retreat, as a single panic button. Survivors return, taxed 25% off a
+   * player, free off neutral land.
+   */
+  const retreatAll = (): void => {
+    const targets = myFrontTargets();
+    if (targets.length === 0) {
+      setStatus(ui, "No active attack to retreat.");
+      return;
+    }
+    for (const targetId of targets) sendRetreat(targetId);
+    setStatus(ui, "Retreating — surviving troops are coming home (25% lost when pulling off a player).");
+    sfx.click();
+  };
+
   const sendEmoji = (targetId: number, emoji: number): void => {
     transport.send({ type: "CLIENT_RASTER_EMOJI", payload: { targetId, emoji } });
   };
@@ -2832,6 +2862,25 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         onClick: () => { radial!.level = "diplomacy"; renderRadialDiplomacy(); },
       });
     }
+
+    // An active front of ours against the clicked tile's owner gets a
+    // white-flag Retreat slice — OpenFront's manual retreat on an outgoing
+    // attack. Survivors return, taxed 25% off a player, free off neutral land.
+    if (owner !== runtime.myPlayerId && myFrontTargets().includes(owner)) {
+      ring.push({
+        label: "Retreat",
+        className: "break-action",
+        html: `<span class="glyph">\u{1F3F3}\u{FE0F}</span>`,
+        onClick: () => {
+          sendRetreat(owner);
+          setStatus(ui, owner === 0
+            ? "Retreating from neutral land — troops return in full."
+            : `Retreating from ${playerName(owner)} — 25% of the survivors are lost.`);
+          ripple();
+          closeRadialMenu();
+        },
+      });
+    }
     renderRadialSlices(center, ring);
   };
 
@@ -3351,7 +3400,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       case "g": toggleExpandMode("land"); break; //          force a ground attack
       case "k": proposeAllianceAtCursor(); break; // OpenFront: request alliance
       case "l": breakAllianceAtCursor(); break; //             break alliance
-      case "r": if (event.shiftKey) retaliate(); else handled = false; break; // Shift+R: retaliate
+      case "r": if (event.shiftKey) retaliate(); else retreatAll(); break; // R: retreat all fronts · Shift+R: retaliate
       case " ": runtime.showTerrainOnly = true; break; // alt terrain view — HOLD (released on keyup), like OpenFront
       case "m": runtime.showCoordinateGrid = !runtime.showCoordinateGrid; break; // coordinate grid
       case "q": case "-": zoomBy(1 / 1.2); break; // zoom out (Q or -)

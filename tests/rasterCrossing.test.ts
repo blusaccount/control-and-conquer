@@ -87,10 +87,11 @@ test("troops left after the beachhead push inland from the landing", () => {
   assert.ok(grid.ownerOf(6) === 1 && grid.ownerOf(7) === 1, "survivors expand inland from the beachhead");
 });
 
-test("a ship too small to pay the beachhead cost is repelled and refunds its troops", () => {
-  // A one-tile river: with no amphibious surcharge (OpenFront), the beachhead is
-  // just the normal neutral capture cost, ⌈mag/5⌉ = 16 on plains. A handful of
-  // troops can't pay it, so the landing is repelled and the troops fall back.
+test("a landing always conquers its beachhead outright, even a token force (OpenFront)", () => {
+  // A one-tile river: OpenFront's TransportShipExecution calls `conquer(dst)`
+  // with no toll and no repel roll — the beachhead tile always falls, and the
+  // boat load then fights inland as a normal land attack. A 5-troop landing
+  // takes the beachhead, then dies overdrawing itself on the next tile.
   const grid = new TerritoryGrid(rowMap("## ##"));
   grid.addPlayer(1, 50);
   grid.claim(0, 1);
@@ -98,17 +99,19 @@ test("a ship too small to pay the beachhead cost is repelled and refunds its tro
   freezeIncome(grid);
   const conflict = new RasterConflict(grid);
 
-  const tooFew = 5; // < ⌈mag/5⌉, can't afford to land
-  assert.equal(conflict.launchShip({ attacker: 1, dest: 3, troops: tooFew }), null);
+  const tokenForce = 5; // far below the 16-troop plains capture price
+  assert.equal(conflict.launchShip({ attacker: 1, dest: 3, troops: tokenForce }), null);
   for (let i = 0; i < 10; i += 1) conflict.processTick();
 
-  assert.equal(grid.ownerOf(3), NEUTRAL_PLAYER, "the assault is repelled");
-  assert.equal(grid.troopsOf(1), 50, "repelled troops fall back into the pool");
+  assert.equal(grid.ownerOf(3), 1, "the beachhead falls regardless of the boat's size");
+  assert.equal(grid.troopsOf(1), 45, "the token force is spent inland — nothing returns");
 });
 
-test("a landing repelled off a player-held shore loses the retreat malus", () => {
-  // owned 0,1 | water 2 | player-2 shore 3,4. A one-troop assault can't pay the
-  // beachhead cost and recoils off a *defended* coast, so it returns taxed (75%).
+test("a landing on a defended shore still takes the beachhead; the fight happens inland", () => {
+  // owned 0,1 | water 2 | player-2 shore 3,4. In OpenFront a landing cannot be
+  // repelled at the waterline: the beachhead is conquered outright and the
+  // troops then push inland via the normal attackLogic — where a one-troop
+  // force promptly bleeds out with no refund.
   const grid = new TerritoryGrid(rowMap("## ##"));
   grid.addPlayer(1, 1);
   grid.addPlayer(2, 5);
@@ -122,8 +125,34 @@ test("a landing repelled off a player-held shore loses the retreat malus", () =>
   assert.equal(conflict.launchShip({ attacker: 1, dest: 3, troops: 1 }), null);
   for (let i = 0; i < 10; i += 1) conflict.processTick();
 
-  assert.equal(grid.ownerOf(3), 2, "the defended shore holds");
-  assert.equal(grid.troopsOf(1), 0.75, "1 troop returns as 0.75 (25% malus off a player shore)");
+  assert.equal(grid.ownerOf(3), 1, "the beachhead falls even on a defended shore");
+  assert.equal(grid.troopsOf(1), 0, "the token force dies inland — no refund");
+});
+
+test("a ship arriving at a shore that is already ours returns its troops minus the retreat malus", () => {
+  // owned 0,1 | water 2,3,4 | far bank 5..10. Two ships sail for the same
+  // neutral tile; the first to arrive conquers it, so the second arrives at
+  // friendly ground. OpenFront charges `malusForRetreat` (25%) on exactly this
+  // arrival — the assault evaporated mid-voyage, and the pull-back costs a
+  // quarter. (The far bank is long enough that nobody dominates the map.)
+  const grid = new TerritoryGrid(rowMap("##   ######"));
+  grid.addPlayer(1, 50);
+  grid.claim(0, 1);
+  grid.claim(1, 1);
+  freezeIncome(grid);
+  const conflict = new RasterConflict(grid);
+
+  assert.equal(conflict.launchShip({ attacker: 1, dest: 5, troops: 20 }), null);
+  assert.equal(conflict.launchShip({ attacker: 1, dest: 5, troops: 20 }), null);
+  assert.equal(grid.troopsOf(1), 10, "both loads leave the pool");
+  for (let i = 0; i < 15; i += 1) conflict.processTick();
+
+  assert.equal(grid.ownerOf(5), 1, "the first ship conquered the beachhead");
+  assert.equal(grid.ownerOf(6), 1, "the first load pushed inland");
+  // Pool: 10 held back + 15 back from the second ship (20 minus the 25% malus).
+  // The first load spent itself inland (16 for tile 6, the rest overdrawn on
+  // tile 7) and returned nothing, per the no-refund death rule.
+  assert.equal(grid.troopsOf(1), 25, "10 held back + 15 from the malus arrival");
 });
 
 test("a beachhead's owner gaining immunity mid-voyage calls off the landing", () => {

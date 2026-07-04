@@ -2,6 +2,7 @@ import type { TileRef } from "./GameMap.js";
 import { NEUTRAL_PLAYER, type PlayerId, type TerritoryGrid } from "./TerritoryGrid.js";
 import { NO_ALLIANCES, type AllianceView } from "./alliances.js";
 import {
+  FORT_SPEED_BONUS,
   GOLD_BASE_PER_TICK,
   WARSHIP_ENGAGE_RANGE,
   WARSHIP_MAX_HP,
@@ -14,7 +15,6 @@ import {
   WARSHIP_TILES_PER_TICK,
 } from "./buildings.js";
 import {
-  FALLOUT_DURATION_TICKS,
   MIRV_SCATTER_RADIUS,
   MIRV_WARHEAD_COUNT,
   NUKE_TILES_PER_TICK,
@@ -24,23 +24,30 @@ import {
   SAM_RELOAD_TICKS,
   type NukeKind,
 } from "./nukes.js";
+import { Prng } from "./prng.js";
 import { RailSystem, type RailView, type TrainView } from "./railSystem.js";
 import { TradeSystem, type TradeShipTarget, type TradeView } from "./tradeSystem.js";
 import {
+  ATTACK_RNG_SEED,
   attackerLossPerTile,
   attackTilesPerTick,
+  BORDER_JITTER_STEPS,
+  DEAD_DEFENDER_MAX_TILES,
   defenderLossPerTile,
   defenderStrengthFactor,
-  FRONTIER_JITTER_SPAN,
+  enemySpeedCost,
+  falloutCombatModifier,
+  FRONTIER_JITTER_BASE,
+  FRONTIER_JITTER_STEPS,
   FRONTIER_SURROUND_WEIGHT,
-  FRONTIER_TOWARD_WEIGHT,
+  neutralSpeedCost,
   terrainPriorityWeight,
   largeAttackerLossFactor,
+  largeAttackerSpeedFactor,
   largeDefenderLossFactor,
   maxTroops,
   troopGrowth,
   MAX_TRANSPORT_SHIPS_PER_PLAYER,
-  NEUTRAL_CAPTURE_COST,
   neutralLossPerTile,
   RETREAT_MALUS_FRACTION,
   SHIP_TILES_PER_TICK,
@@ -51,20 +58,18 @@ import {
   WIN_TILE_FRACTION,
 } from "./rasterCombatConfig.js";
 
-/** A request to expand from `attacker`'s territory into `target`'s tiles. */
+/**
+ * A request to expand from `attacker`'s territory into `target`'s tiles.
+ * Like OpenFront, an attack is undirected: it presses the *whole* shared
+ * frontier with the target, ordered purely by the capture-priority key — the
+ * click only picks whose land is attacked, never which flank advances first.
+ */
 export interface AttackIntent {
   attacker: PlayerId;
   /** Player whose tiles are targeted, or {@link NEUTRAL_PLAYER} for free land. */
   target: PlayerId;
   /** Troops to commit from the attacker's pool. Positive integer. */
   troops: number;
-  /**
-   * The tile the player actually clicked, used to bias which part of the front
-   * advances first so the push heads *toward* the click (see
-   * {@link FRONTIER_TOWARD_WEIGHT}). Optional: omitted (e.g. a beachhead's inland
-   * push) means undirected, radial growth.
-   */
-  toward?: TileRef;
 }
 
 /**
@@ -204,6 +209,16 @@ export interface RasterTickResult {
   nukeInterceptions: NukeInterception[];
 }
 
+/**
+ * One tile's enqueue record on an attack's frontier: the tick it first joined
+ * (OpenFront's `+ tick` priority term) and the jitter rolled for it at that
+ * moment (OpenFront's `nextInt(0, 7)` — one roll per enqueue, never re-rolled).
+ */
+interface FrontierEntry {
+  tick: number;
+  jitter: number;
+}
+
 /** An in-flight expansion. `committed` troops are drained as tiles are taken. */
 interface RasterAttack {
   attacker: PlayerId;
@@ -216,11 +231,18 @@ interface RasterAttack {
    */
   anchor: TileRef;
   /**
-   * The tile the attacker pointed at, biasing the front to advance toward it
-   * (see {@link FRONTIER_TOWARD_WEIGHT}). `-1` means undirected (radial). The
-   * latest reinforcing click wins, so re-clicking elsewhere redirects the push.
+   * This attack's own random stream, exactly OpenFront's model: every
+   * `AttackExecution` owns a `PseudoRandom` seeded with the same fixed
+   * constant ({@link ATTACK_RNG_SEED}), drawn sequentially for the frontier
+   * tile jitter and the per-tick border jitter. Seeded deterministically, so
+   * replays stay identical.
    */
-  toward: TileRef;
+  rng: Prng;
+  /**
+   * Per-tile enqueue records ({@link FrontierEntry}) for ground this front has
+   * touched. Grows with the frontier and dies with the attack.
+   */
+  seen: Map<TileRef, FrontierEntry>;
 }
 
 /** A transport ship en route to its landing tile. */
@@ -269,14 +291,6 @@ interface Nuke {
 }
 
 /**
- * Deterministic [0,1) draw from a cheap integer hash of two seeds — the same
- * technique the nuke-blast outer-ring roll and the frontier jitter use, so
- * replays stay exact (no `Math.random`).
- */
-const pseudoRandom01 = (a: number, b: number): number =>
-  ((a * 2654435761 + b * 40503) >>> 0) / 0x100000000;
-
-/**
  * Autonomous border-expansion conflict engine over a {@link TerritoryGrid}.
  *
  * Each tick: players earn income proportional to territory size, then every
@@ -311,6 +325,12 @@ export class RasterConflict {
   private nukeInterceptions: NukeInterception[] = [];
   /** Tick (exclusive) each SAM Launcher, keyed by tile, is ready to fire again. */
   private readonly samCooldownUntil = new Map<TileRef, number>();
+  /**
+   * Each SAM Launcher's own random stream for its intercept rolls, seeded with
+   * its tile — OpenFront's SAMLauncherExecution seeds a per-launcher
+   * `PseudoRandom(sam.id())` the same way. Lazily created on first shot.
+   */
+  private readonly samRng = new Map<TileRef, Prng>();
   /**
    * Most recent attacker of each player (land or sea), for the client's
    * "retaliate" hotkey. Public information — combat is already visible on the
@@ -504,18 +524,65 @@ export class RasterConflict {
     if (!this.grid.hasLandBorderWith(attacker, target)) return "NO_FRONTIER";
 
     this.grid.addTroops(attacker, -troops);
-    const toward = intent.toward ?? -1;
+    let committed = troops;
+
+    // Opposing attacks annihilate at launch, mirroring OpenFront's init: if the
+    // target is already pushing a front INTO us, the two committed forces are
+    // netted against each other man for man. The larger force survives with the
+    // difference; the smaller one is wiped out entirely (both sides' troops were
+    // already paid out of their pools, so the netted losses are real).
+    if (target !== NEUTRAL_PLAYER) {
+      const idx = this.attacks.findIndex((a) => a.attacker === target && a.target === attacker);
+      if (idx !== -1) {
+        const incoming = this.attacks[idx];
+        if (incoming.committed > committed) {
+          incoming.committed -= committed;
+          this.lastAttackedBy.set(target, attacker);
+          return null;
+        }
+        committed -= incoming.committed;
+        this.attacks.splice(idx, 1);
+        if (committed < 1) {
+          this.lastAttackedBy.set(target, attacker);
+          return null;
+        }
+      }
+    }
+
     const existing = this.attacks.find((a) => a.attacker === attacker && a.target === target);
     if (existing) {
-      existing.committed += troops;
-      // The freshest click redirects the combined push; an undirected reinforce
-      // (no toward) leaves the existing heading untouched.
-      if (toward >= 0) existing.toward = toward;
+      existing.committed += committed;
     } else {
-      this.attacks.push({ attacker, target, committed: troops, anchor: -1, toward });
+      this.attacks.push({
+        attacker,
+        target,
+        committed,
+        anchor: -1,
+        rng: new Prng(ATTACK_RNG_SEED),
+        seen: new Map(),
+      });
     }
     if (target !== NEUTRAL_PLAYER) this.lastAttackedBy.set(target, attacker);
     return null;
+  }
+
+  /**
+   * Manually pull an active attack back — OpenFront's ordered retreat (the
+   * white-flag button on an outgoing attack). The front is dissolved and its
+   * committed troops return home, taxed {@link RETREAT_MALUS_FRACTION} when
+   * pulling off a *player* (OpenFront's `malusForRetreat`); retreating from
+   * neutral land is free. Returns the troops refunded, or `null` if `attacker`
+   * has no active attack against `target`.
+   */
+  orderRetreat(attacker: PlayerId, target: PlayerId): number | null {
+    const idx = this.attacks.findIndex((a) => a.attacker === attacker && a.target === target);
+    if (idx === -1) return null;
+    const [attack] = this.attacks.splice(idx, 1);
+    const kept = target === NEUTRAL_PLAYER
+      ? attack.committed
+      : attack.committed * (1 - RETREAT_MALUS_FRACTION);
+    this.grid.addTroops(attacker, kept);
+    return kept;
   }
 
   /**
@@ -573,10 +640,15 @@ export class RasterConflict {
     kind: NukeKind = "atom",
   ): void {
     if (kind === "mirv") {
+      // The warhead spread draws from a PRNG seeded with the launch tick plus
+      // the launching player — OpenFront's MIRVExecution seeds its spread
+      // stream `ticks + hash(player)` — so each salvo scatters differently but
+      // replays identically.
+      const rng = new Prng(this.tickCount + attacker);
       for (let i = 0; i < MIRV_WARHEAD_COUNT; i += 1) {
         const id = this.nextNukeId++;
-        const angle = pseudoRandom01(id, 17) * Math.PI * 2;
-        const dist = pseudoRandom01(id, 31) * MIRV_SCATTER_RADIUS;
+        const angle = rng.next() * Math.PI * 2;
+        const dist = rng.next() * MIRV_SCATTER_RADIUS;
         const wx = targetX + Math.cos(angle) * dist;
         const wy = targetY + Math.sin(angle) * dist;
         this.enqueueNuke(id, attacker, fromX, fromY, wx, wy, "mirv");
@@ -618,6 +690,10 @@ export class RasterConflict {
     const tilesBefore = new Map<PlayerId, number>();
     const tilesCleared = new Map<PlayerId, number>();
 
+    // The outer-ring destruction rolls come from a PRNG seeded with the
+    // detonation tick — OpenFront's NukeExecution does exactly this
+    // (`new PseudoRandom(mg.ticks())` + `chance(2)` per outer tile).
+    const rand = new Prng(this.tickCount);
     const { inner, outer, outerChance } = nukeBlast(nuke.kind);
     const minX = Math.max(0, cx - outer);
     const maxX = Math.min(map.width - 1, cx + outer);
@@ -635,12 +711,7 @@ export class RasterConflict {
         const ref = map.ref(x, y);
         if (!this.grid.isCapturable(ref)) continue;
 
-        let destroy = distSq <= innerSq;
-        if (!destroy) {
-          // Deterministic [0,1) draw from a cheap integer hash of (ref, nuke id) —
-          // same wobble technique as the frontier jitter, so replays stay exact.
-          destroy = pseudoRandom01(ref, nuke.id) < outerChance;
-        }
+        const destroy = distSq <= innerSq || rand.roll(outerChance);
         if (!destroy) continue;
 
         const owner = this.grid.ownerOf(ref);
@@ -648,10 +719,11 @@ export class RasterConflict {
           if (!tilesBefore.has(owner)) tilesBefore.set(owner, this.grid.tileCountOf(owner));
           tilesCleared.set(owner, (tilesCleared.get(owner) ?? 0) + 1);
         }
-        // Clear to neutral, then leave the ground radioactive: it can't be
-        // recaptured and renders as fallout until it decays (see tickFallout).
+        // Clear to neutral, then leave the ground permanently radioactive:
+        // still capturable, but at the fallout combat penalty, and scrubbed
+        // clean only when conquered — OpenFront's default (non-waterNukes) rule.
         this.grid.claim(ref, NEUTRAL_PLAYER);
-        this.grid.setFallout(ref, FALLOUT_DURATION_TICKS);
+        this.grid.setFallout(ref);
       }
     }
 
@@ -702,7 +774,12 @@ export class RasterConflict {
 
         engagedThisTick.add(sam);
         this.samCooldownUntil.set(sam, this.tickCount + SAM_RELOAD_TICKS);
-        if (pseudoRandom01(sam, nuke.id) < SAM_INTERCEPT_CHANCE) {
+        let rng = this.samRng.get(sam);
+        if (!rng) {
+          rng = new Prng(sam);
+          this.samRng.set(sam, rng);
+        }
+        if (rng.roll(SAM_INTERCEPT_CHANCE)) {
           intercepted = true;
           this.nukeInterceptions.push({ attacker: nuke.attacker, defender: owner, x: cx, y: cy });
         }
@@ -771,9 +848,6 @@ export class RasterConflict {
     // SAM Launchers shoot down in-flight warheads before they can detonate.
     this.interceptNukes();
     this.advanceNukes();
-    // Decay fallout before attacks advance, so ground that recovered this tick
-    // is immediately available to the frontier again.
-    this.grid.tickFallout();
     this.advanceAttacks();
     this.checkVictory();
 
@@ -790,22 +864,26 @@ export class RasterConflict {
   }
 
   /**
-   * Troop cost to capture a single tile across a land border, factoring terrain,
-   * ownership, fortifications and — via `strengthFactor` — how strongly the
-   * defender is garrisoned relative to the assault (see
-   * {@link defenderStrengthFactor}). Transport-ship landings price their
-   * beachhead separately via {@link beachheadCost}. `strengthFactor` defaults to
-   * 1 (no defender-strength effect), which neutral grabs always use.
+   * The current fallout combat multiplier (OpenFront's `falloutDefenseModifier`),
+   * scaled by how much of the map's land is irradiated: ×5 on a pristine map,
+   * easing toward ×3 as fallout blankets the world. 1 when nothing glows.
    */
+  private falloutModifier(): number {
+    if (this.grid.falloutCount === 0) return 1;
+    return falloutCombatModifier(this.grid.falloutCount / Math.max(1, this.grid.capturableCount));
+  }
+
   /**
    * Effective troop-loss magnitude for capturing `ref`: the tile's terrain
    * magnitude (OpenFront's plains/highland/mountain `mag`), raised by the
-   * defender's Fortress Wall and any nearby defense-post aura.
+   * defender's Fortress Wall, any nearby defense-post aura, and — on nuked
+   * ground — the fallout combat penalty.
    */
   private tileMagnitude(ref: TileRef, target: PlayerId): number {
     let mag = terrainCombat(this.grid.map.magnitude(ref)).mag;
     if (target !== NEUTRAL_PLAYER) mag *= this.grid.modifiersOf(target).defense;
     mag *= this.grid.defenseFactorAt(ref);
+    if (this.grid.hasFallout(ref)) mag *= this.falloutModifier();
     // A marked traitor defends at half strength (OpenFront's traitorDefenseDebuff),
     // so its tiles are far cheaper to take for the window after a betrayal.
     if (target !== NEUTRAL_PLAYER && this.isTraitor(target)) mag *= TRAITOR_DEFENSE_DEBUFF;
@@ -843,78 +921,77 @@ export class RasterConflict {
   }
 
   /**
-   * Return leftover committed troops to an attacker's pool. Pulling back from a
-   * *player* costs {@link RETREAT_MALUS_FRACTION} of the survivors (the
-   * OpenFront retreat malus); falling back from neutral land is free. Used
-   * wherever an attack or landing ends without taking its objective.
+   * Finish off a defender an attack has ground below
+   * {@link DEAD_DEFENDER_MAX_TILES} — OpenFront's `handleDeadDefender` /
+   * `conquerPlayer` sweep, ported structurally: up to ten passes over the
+   * dying nation's remaining tiles, each pass handing every tile that borders
+   * the attacker to the **attacker**, and any other tile that borders some
+   * non-allied third player to *that* player. Repeated passes let the sweep
+   * eat inward from the borders; tiles with no player neighbour at all (a
+   * remote island) survive, exactly as in OpenFront.
    */
-  private refundRetreat(attacker: PlayerId, troops: number, target: PlayerId): void {
-    if (troops <= 0) return;
-    const kept = target === NEUTRAL_PLAYER ? troops : troops * (1 - RETREAT_MALUS_FRACTION);
-    this.grid.addTroops(attacker, kept);
+  private finishDeadDefender(attacker: PlayerId, target: PlayerId): void {
+    for (let pass = 0; pass < 10 && this.grid.tileCountOf(target) > 0; pass += 1) {
+      for (const tile of [...this.grid.tilesOf(target)]) {
+        let claimant: PlayerId | null = null;
+        for (const n of this.grid.map.neighbors(tile)) {
+          const owner = this.grid.ownerOf(n);
+          if (owner === attacker) {
+            claimant = attacker;
+            break;
+          }
+          if (claimant === null && owner !== NEUTRAL_PLAYER && owner !== target && !this.allies.areAllied(owner, target)) {
+            claimant = owner;
+          }
+        }
+        if (claimant !== null) this.grid.claim(tile, claimant);
+      }
+    }
   }
 
   /**
    * Capture priority of a single frontier tile (lower = taken sooner), mirroring
-   * OpenFront's structural key: `jitter · (1 − ownedNeighbours·0.5 + magWeight/2)`.
+   * OpenFront's heap key exactly:
+   * `(jitter0..7 + 10) · (1 − ownedNeighbours·0.5 + magWeight/2) + enqueueTick`.
    * Tiles enclosed by more of the attacker's own territory (pockets) score lower —
    * even negative — so the front back-fills concavities and grows as a smooth
    * radial blob rather than a tendril; higher ground scores higher, so easy low
-   * ground is eaten first. The `jitter` is a small deterministic hash of tile and
-   * tick (OpenFront uses a wide RNG range we can't, so replays stay identical)
-   * that scatters otherwise-equal perimeter tiles; see `rasterCombatConfig`.
+   * ground is eaten first; and the enqueue tick (when the tile first joined this
+   * front) makes ordering FIFO across generations, so the front rolls layer by
+   * layer instead of freezing against an elevation contour. The jitter comes
+   * from the attack's own seeded PRNG, rolled once at enqueue exactly like
+   * OpenFront's `nextInt(0, 7)`; see `rasterCombatConfig`.
    */
-  private tilePriority(attacker: PlayerId, ref: TileRef): number {
+  private tilePriority(attacker: PlayerId, ref: TileRef, entry: FrontierEntry): number {
     let ownedNeighbours = 0;
     for (const n of this.grid.map.neighbors(ref)) {
       if (this.grid.ownerOf(n) === attacker) ownedNeighbours += 1;
     }
     const structural =
       1 - ownedNeighbours * FRONTIER_SURROUND_WEIGHT + terrainPriorityWeight(this.grid.map.magnitude(ref)) / 2;
-    // Deterministic [0,1) wobble from a cheap integer hash of (ref, tick).
-    const hash = ((ref * 2654435761 + this.tickCount * 40503) >>> 0) / 0x100000000;
-    return structural * (1 + hash * FRONTIER_JITTER_SPAN);
+    return (FRONTIER_JITTER_BASE + entry.jitter) * structural + entry.tick;
   }
 
   /**
    * The attacker's land frontier against `target`, ordered by capture priority
-   * for this tick. When `toward >= 0` the ordering is biased so the front
-   * advances toward that tile (the click): each tile's priority gains its
-   * distance-to-`toward`, normalised across the frontier to [0,1], times
-   * {@link FRONTIER_TOWARD_WEIGHT}. A fresh array (the grid's frontier is not
-   * mutated).
+   * for this tick. Tiles newly on the frontier are stamped with the current
+   * tick and a fresh jitter roll from the attack's PRNG (OpenFront's enqueue
+   * moment) before scoring; new tiles are visited in ascending ref order, so
+   * the sequential draws stay deterministic. A fresh array (the grid's
+   * frontier is not mutated).
    */
-  private orderedFrontier(attacker: PlayerId, target: PlayerId, toward: TileRef): TileRef[] {
+  private orderedFrontier(attack: RasterAttack): TileRef[] {
     // Score each tile once, then sort — priority is fixed for the tick, so we
     // avoid recomputing it on every comparison.
-    const frontier = this.grid.landFrontierOf(attacker, target);
-    if (toward < 0 || frontier.length === 0) {
-      const scored = frontier.map((ref) => ({ ref, p: this.tilePriority(attacker, ref) }));
-      scored.sort((a, b) => a.p - b.p || a.ref - b.ref);
-      return scored.map((s) => s.ref);
-    }
-
-    // Directed push: normalise each tile's Euclidean distance to the clicked
-    // tile across the frontier, so the side facing the click sorts first. The
-    // bias is bounded (< the per-neighbour surround step), so pocket-filling
-    // still dominates and the front bulges rather than snakes.
-    const tx = this.grid.map.x(toward);
-    const ty = this.grid.map.y(toward);
-    let minD = Infinity;
-    let maxD = -Infinity;
-    const dist = frontier.map((ref) => {
-      const dx = this.grid.map.x(ref) - tx;
-      const dy = this.grid.map.y(ref) - ty;
-      const d = Math.sqrt(dx * dx + dy * dy);
-      if (d < minD) minD = d;
-      if (d > maxD) maxD = d;
-      return d;
+    const frontier = this.grid.landFrontierOf(attack.attacker, attack.target);
+    const scored = frontier.map((ref) => {
+      let entry = attack.seen.get(ref);
+      if (entry === undefined) {
+        entry = { tick: this.tickCount, jitter: attack.rng.nextInt(0, FRONTIER_JITTER_STEPS) };
+        attack.seen.set(ref, entry);
+      }
+      return { ref, p: this.tilePriority(attack.attacker, ref, entry) };
     });
-    const span = maxD - minD || 1;
-    const scored = frontier.map((ref, i) => ({
-      ref,
-      p: this.tilePriority(attacker, ref) + ((dist[i] - minD) / span) * FRONTIER_TOWARD_WEIGHT,
-    }));
     scored.sort((a, b) => a.p - b.p || a.ref - b.ref);
     return scored.map((s) => s.ref);
   }
@@ -928,24 +1005,6 @@ export class RasterConflict {
   private defenderLossFor(target: PlayerId): number {
     const density = defenderLossPerTile(this.grid.troopsOf(target), this.grid.tileCountOf(target));
     return density / this.grid.modifiersOf(target).defense;
-  }
-
-  /**
-   * Troops a transport ship spends to seize its landing tile. Mirrors OpenFront:
-   * a landing pays the **normal** attacker loss for the beachhead tile via the
-   * same `attackLogic` as a land capture — there is **no** flat amphibious
-   * surcharge. The garrison defends a beachhead exactly as it defends an inland
-   * tile (defender strength, density, defense posts, large-empire debuffs all
-   * apply), so an opposed landing is only as dear as the ground itself.
-   */
-  private beachheadCost(ref: TileRef, attacker: PlayerId, target: PlayerId, attackerForce: number): number {
-    const defTroops = target === NEUTRAL_PLAYER ? 0 : this.grid.troopsOf(target);
-    const defDensity = target === NEUTRAL_PLAYER ? 0 : this.defenderDensityOf(target);
-    const largeFactor = target === NEUTRAL_PLAYER
-      ? 1
-      : largeDefenderLossFactor(this.grid.tileCountOf(target)) *
-        largeAttackerLossFactor(this.grid.tileCountOf(attacker));
-    return Math.ceil(this.attackerTileLoss(ref, attacker, target, attackerForce, defTroops, defDensity) * largeFactor);
   }
 
   /**
@@ -1209,14 +1268,17 @@ export class RasterConflict {
 
       const owner = this.grid.ownerOf(dest);
       if (owner === ship.attacker) {
-        // The beachhead is already ours (captured by land while the ship sailed);
-        // the troops simply reinforce the pool.
-        this.grid.addTroops(ship.attacker, ship.troops);
+        // The beachhead already belongs to us (captured by land while the ship
+        // sailed): the assault evaporated mid-voyage and the troops sail home,
+        // taxed by the retreat malus — OpenFront charges `malusForRetreat` on
+        // exactly this arrival.
+        this.grid.addTroops(ship.attacker, ship.troops * (1 - RETREAT_MALUS_FRACTION));
         continue;
       }
       if (owner !== NEUTRAL_PLAYER && this.allies.areAllied(ship.attacker, owner)) {
         // The destination became an ally's shore mid-voyage — the landing is
-        // called off and the troops disembark home rather than storming a friend.
+        // called off and the troops disembark home in full rather than storming
+        // a friend (OpenFront hands the boat's troops straight back).
         this.grid.addTroops(ship.attacker, ship.troops);
         continue;
       }
@@ -1228,28 +1290,23 @@ export class RasterConflict {
         continue;
       }
 
-      const cost = this.beachheadCost(dest, ship.attacker, owner, ship.troops);
-      if (ship.troops < cost) {
-        // Too few troops to force a landing — the assault is repelled. Survivors
-        // fall back into the pool, taxed by the retreat malus if they recoiled off
-        // a defended (player-held) shore; a failed neutral landing is free.
-        this.refundRetreat(ship.attacker, ship.troops, owner);
-        continue;
-      }
-
-      if (owner !== NEUTRAL_PLAYER) this.grid.addTroops(owner, -this.defenderLossFor(owner));
+      // OpenFront's landing: the beachhead tile is conquered outright — the
+      // TransportShipExecution calls `conquer(dst)` with no toll and no repel
+      // roll — and the full boat load then pushes inland as a normal land
+      // attack against the shore's former owner, radiating (undirected) from
+      // the landing tile.
       this.grid.claim(dest, ship.attacker);
-      const remaining = ship.troops - cost;
-      if (remaining >= NEUTRAL_CAPTURE_COST) {
-        // Push the survivors inland: a land attack against the tile's former
-        // owner, expanding from the freshly-taken beachhead.
-        const existing = this.attacks.find((a) => a.attacker === ship.attacker && a.target === owner);
-        if (existing) existing.committed += remaining;
-        // A beachhead's inland push has no clicked target — it radiates outward
-        // from the landing tile (undirected).
-        else this.attacks.push({ attacker: ship.attacker, target: owner, committed: remaining, anchor: dest, toward: -1 });
-      } else {
-        this.grid.addTroops(ship.attacker, remaining);
+      const existing = this.attacks.find((a) => a.attacker === ship.attacker && a.target === owner);
+      if (existing) existing.committed += ship.troops;
+      else {
+        this.attacks.push({
+          attacker: ship.attacker,
+          target: owner,
+          committed: ship.troops,
+          anchor: dest,
+          rng: new Prng(ATTACK_RNG_SEED),
+          seen: new Map(),
+        });
       }
     }
 
@@ -1305,12 +1362,13 @@ export class RasterConflict {
         continue;
       }
 
-      const frontier = this.orderedFrontier(attack.attacker, attack.target, attack.toward);
+      const frontier = this.orderedFrontier(attack);
 
       // No reachable target tiles: the front is blocked or the target is gone.
-      // Pulling back from a player is taxed (retreat malus); neutral is free.
+      // OpenFront's `retreat()` here charges no malus — running out of ground
+      // is not a deliberate pull-back — so the survivors come home in full.
       if (frontier.length === 0) {
-        this.refundRetreat(attack.attacker, attack.committed, attack.target);
+        this.grid.addTroops(attack.attacker, attack.committed);
         continue;
       }
 
@@ -1334,46 +1392,80 @@ export class RasterConflict {
           largeAttackerLossFactor(this.grid.tileCountOf(attack.attacker))
         : 1;
 
-      // Tiles this front may take this tick (OpenFront's `attackTilesPerTick`):
-      // it scales with the attacker's troop advantage and the contested border
-      // width, so an overwhelming assault rolls fast while an under-committed poke
-      // barely creeps. `expansionSpeed` is the attacker's own speed modifier.
+      // Per-tick advance budget (OpenFront's `attackTilesPerTick`): scales with
+      // the attacker's troop advantage and the contested border width. OpenFront
+      // widens the border term by `nextInt(0, 5)` from the attack's own PRNG,
+      // drawn the same way here. `expansionSpeed` is the attacker's own speed
+      // modifier.
       const expansionSpeed = this.grid.modifiersOf(attack.attacker).expansionSpeed;
-      // A marked traitor's own assaults advance slower (OpenFront's traitorSpeedDebuff).
-      const traitorSpeed = this.isTraitor(attack.attacker) ? TRAITOR_SPEED_DEBUFF : 1;
-      const budget = Math.max(
-        1,
-        Math.round(attackTilesPerTick(defenderTroops, attack.committed, frontier.length, vsPlayer) * expansionSpeed * traitorSpeed),
-      );
+      const borderJitter = attack.rng.nextInt(0, BORDER_JITTER_STEPS);
+      let budget =
+        attackTilesPerTick(defenderTroops, attack.committed, frontier.length + borderJitter, vsPlayer) *
+        expansionSpeed;
 
-      let taken = 0;
+      // Defender-side *speed* debuffs, constant for the tick (OpenFront's
+      // `largeDefenderSpeedDebuff`, `largeAttackerSpeedBonus` and
+      // `traitorSpeedDebuff`): they scale how much budget each captured tile
+      // drains, separate from the troop-loss factors above.
+      const speedDebuff = vsPlayer
+        ? largeDefenderLossFactor(this.grid.tileCountOf(attack.target)) *
+          largeAttackerSpeedFactor(this.grid.tileCountOf(attack.attacker)) *
+          (this.isTraitor(attack.target) ? TRAITOR_SPEED_DEBUFF : 1)
+        : 1;
+
+      let captured = false;
+      const falloutMod = this.falloutModifier();
       for (const ref of frontier) {
-        if (taken >= budget) break;
+        // Each capture drains the budget by its speed cost (see below), so a
+        // front takes a handful of tiles per tick, not its whole frontier — the
+        // OpenFront crawl. The check sits before the capture, so a live front
+        // always advances at least one tile per tick (as OpenFront's
+        // `while (numTilesPerTick > 0)` loop does).
+        if (budget <= 0) break;
+        // OpenFront checks the pool at the top of its capture loop: a force
+        // below a single troop is spent — the attack dies where it stands and
+        // nothing comes home. There is no affordability gate before a capture;
+        // the *last* capture may overdraw the pool, exactly as OpenFront's
+        // troop count dips below 1 mid-loop.
+        if (attack.committed < 1) break;
         // A tile may have been captured already if a player relinquished it; skip
         // anything no longer owned by the target.
         if (this.grid.ownerOf(ref) !== attack.target) continue;
         // OpenFront's per-tile attacker loss: the ratio shifts as the assault is
         // spent down, so a front that bleeds out grinds to a halt on the spot.
         const loss = this.attackerTileLoss(ref, attack.attacker, attack.target, attack.committed, defenderTroops, defenderDensity) * largeFactor;
-        if (attack.committed < loss) break;
+
+        // Budget drain (OpenFront's `tilesPerTickUsed`): the tile's terrain
+        // speed (16.5/20/25), tripled inside the defender's fort aura, scaled
+        // up on fallout ground and — vs players — by the clamped troop ratio
+        // and the defender-side speed debuffs.
+        let speed = terrainCombat(this.grid.map.magnitude(ref)).speed;
+        if (vsPlayer && this.grid.defenseFactorAt(ref) > 1) speed *= FORT_SPEED_BONUS;
+        if (this.grid.hasFallout(ref)) speed *= falloutMod;
+        budget -= vsPlayer
+          ? enemySpeedCost(defenderTroops, attack.committed, speed) * speedDebuff
+          : neutralSpeedCost(speed, attack.committed);
 
         if (vsPlayer) this.grid.addTroops(attack.target, -defenderBleed);
         this.grid.claim(ref, attack.attacker);
         attack.committed -= loss;
-        taken += 1;
+        captured = true;
       }
 
-      // Decide the attack's fate. Nothing taken means the leading frontier tile
-      // was unaffordable — the front is blocked (a retreat that taxes player
-      // refunds, and can't stall carrying the same troops forever). Otherwise a
-      // sub-1 remainder is returned whole; anything more survives to push on.
-      if (taken === 0) {
-        this.refundRetreat(attack.attacker, attack.committed, attack.target);
-      } else if (attack.committed < NEUTRAL_CAPTURE_COST) {
-        this.grid.addTroops(attack.attacker, attack.committed);
-      } else {
-        survivors.push(attack);
+      // A defender this attack has just ground below the dead-defender
+      // threshold is finished off outright (OpenFront's `handleDeadDefender`).
+      if (vsPlayer && captured) {
+        const left = this.grid.tileCountOf(attack.target);
+        if (left > 0 && left < DEAD_DEFENDER_MAX_TILES) {
+          this.finishDeadDefender(attack.attacker, attack.target);
+        }
       }
+
+      // Decide the attack's fate: a force spent below a single troop is dead —
+      // it dissolves where it stands with no refund (OpenFront deletes the
+      // attack the moment its troop count drops under 1). Anything else pushes
+      // on next tick.
+      if (attack.committed >= 1) survivors.push(attack);
     }
 
     this.attacks.length = 0;

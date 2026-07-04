@@ -85,31 +85,53 @@ test("launchAttack rejects invalid intents without mutating state", () => {
   assert.equal(grid.troopsOf(1), 5);
 });
 
-test("a directed attack takes the click-side tile first", () => {
-  // A 1-row strip: player 1 seeds the middle (tile 10) with neutral land on both
-  // sides and commits just enough for a single tile. A purely radial front would
-  // pick a side arbitrarily — but a `toward` target makes the lone affordable
-  // capture land on the side facing the click (neutral land costs mag/5 = 16, so
-  // 20 troops afford exactly one tile).
-  const make = (toward: number): TerritoryGrid => {
-    const grid = new TerritoryGrid(flatLand(21, 1));
-    grid.addPlayer(1, 20);
-    grid.claim(10, 1);
-    freezeIncome(grid);
-    const conflict = new RasterConflict(grid);
-    conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 20, toward });
-    conflict.processTick();
-    return grid;
-  };
+test("a manual retreat dissolves the front — 25% malus off a player, free off neutral (OpenFront)", () => {
+  // OpenFront's ordered retreat (the white flag on an outgoing attack): the
+  // committed troops come home immediately, taxed `malusForRetreat` (25%) when
+  // pulling off a *player*, in full when pulling off neutral land.
+  const vsPlayer = new TerritoryGrid(flatLand(2, 1));
+  vsPlayer.addPlayer(1, 1000);
+  vsPlayer.addPlayer(2, 10);
+  vsPlayer.claim(0, 1);
+  vsPlayer.claim(1, 2);
+  freezeIncome(vsPlayer);
+  const conflict = new RasterConflict(vsPlayer);
+  assert.equal(conflict.launchAttack({ attacker: 1, target: 2, troops: 1000 }), null);
+  assert.equal(vsPlayer.troopsOf(1), 0, "committed troops leave the pool");
+  assert.equal(conflict.orderRetreat(1, 2), 750, "the retreat returns 75% of the force");
+  assert.equal(vsPlayer.troopsOf(1), 750);
+  assert.equal(conflict.activeAttackCount, 0, "the front is dissolved");
+  assert.equal(conflict.orderRetreat(1, 2), null, "no front left to retreat");
 
-  const right = make(20);
-  assert.equal(right.ownerOf(11), 1, "the tile toward the click (right) is taken");
-  assert.equal(right.ownerOf(9), NEUTRAL_PLAYER, "the away side (left) is left untouched");
+  const vsNeutral = new TerritoryGrid(flatLand(2, 1));
+  vsNeutral.addPlayer(1, 20);
+  vsNeutral.claim(0, 1);
+  freezeIncome(vsNeutral);
+  const neutralConflict = new RasterConflict(vsNeutral);
+  assert.equal(neutralConflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 20 }), null);
+  assert.equal(neutralConflict.orderRetreat(1, NEUTRAL_PLAYER), 20, "a neutral retreat is free");
+  assert.equal(vsNeutral.troopsOf(1), 20);
+});
 
-  // Pointing the other way mirrors the result.
-  const left = make(0);
-  assert.equal(left.ownerOf(9), 1, "the tile toward the click (left) is taken");
-  assert.equal(left.ownerOf(11), NEUTRAL_PLAYER, "the away side (right) is left untouched");
+test("opposing attacks cancel out at launch (OpenFront incoming-attack netting)", () => {
+  // Player 2 is already pushing 300 troops into player 1; player 1 counters
+  // with 1000. The two forces annihilate man for man at launch: player 2's
+  // front is wiped out and player 1's survives with the 700 difference.
+  const grid = new TerritoryGrid(flatLand(2, 1));
+  grid.addPlayer(1, 1000);
+  grid.addPlayer(2, 300);
+  grid.claim(0, 1);
+  grid.claim(1, 2);
+  freezeIncome(grid);
+  const conflict = new RasterConflict(grid);
+
+  assert.equal(conflict.launchAttack({ attacker: 2, target: 1, troops: 300 }), null);
+  assert.equal(conflict.launchAttack({ attacker: 1, target: 2, troops: 1000 }), null);
+  assert.equal(conflict.activeAttackCount, 1, "the smaller opposing front is annihilated");
+  assert.equal(conflict.orderRetreat(2, 1), null, "player 2's front no longer exists");
+  // The surviving front belongs to player 1 and carries only the 700 surplus
+  // (its retreat refund is 75% of that).
+  assert.equal(conflict.orderRetreat(1, 2), 700 * 0.75, "player 1's front kept the surplus");
 });
 
 test("neutral expansion claims a line of tiles ring by ring until domination ends the match", () => {
@@ -197,25 +219,25 @@ test("a traitor is marked for a fixed window, then clears (OpenFront traitorDura
 test("a traitor defender is cheaper to conquer (OpenFront traitorDefenseDebuff)", () => {
   // Same assault against the same defender captures MORE of its land when the
   // defender is a marked traitor, because its tiles cost half the magnitude.
+  // The defender holds 300 tiles so it stays comfortably above the
+  // dead-defender threshold (100) and below the 80% domination line (320/400).
   const conquer = (betray: boolean): number => {
-    // 15 tiles with a 3-tile neutral tail so the defender's 11 tiles stay
-    // below the 80% domination threshold (11/15) and the match keeps running.
-    const grid = new TerritoryGrid(flatLand(15, 1));
+    const grid = new TerritoryGrid(flatLand(400, 1));
     grid.addPlayer(1, 6000); // attacker
-    grid.addPlayer(2, 60_000); // dense defender holds tiles 1..11 (costly to take)
+    grid.addPlayer(2, 60_000); // dense defender holds tiles 1..300 (costly to take)
     grid.claim(0, 1);
-    for (let ref = 1; ref < 12; ref += 1) grid.claim(ref, 2);
+    for (let ref = 1; ref <= 300; ref += 1) grid.claim(ref, 2);
     freezeIncome(grid);
     const conflict = new RasterConflict(grid);
     if (betray) conflict.markTraitor(2);
     assert.equal(conflict.launchAttack({ attacker: 1, target: 2, troops: 6000 }), null);
-    runTicks(conflict, 60);
+    runTicks(conflict, 120);
     return grid.tileCountOf(1) - 1; // tiles taken from the defender
   };
 
   const normal = conquer(false);
   const vsTraitor = conquer(true);
-  assert.ok(normal > 0 && normal < 11, `the baseline assault should stall partway, took ${normal}`);
+  assert.ok(normal > 0 && normal < 300, `the baseline assault should stall partway, took ${normal}`);
   assert.ok(vsTraitor > normal, `a traitor loses more ground: ${vsTraitor} vs ${normal}`);
 });
 
@@ -343,54 +365,55 @@ test("mountain ground costs an attacker more troops to take than plains", () => 
   assert.ok(run(30) > run(0), "the mountain capture costs more than the plains one");
 });
 
-test("a strong garrison repels the very assault a weak one cannot", () => {
-  // 3x1 line: player 1 (tile 0) attacks player 2 (tiles 1-2) with the same small
-  // force in both runs. The only difference is how heavily player 2 is garrisoned
-  // — which is exactly what should decide whether the attack breaks through.
+test("a strong garrison bleeds out the very assault a weak one cannot", () => {
+  // A long line: player 1 (tile 0) attacks player 2 (tiles 1..300) with the same
+  // small force in both runs. The only difference is how heavily player 2 is
+  // garrisoned — which is exactly what should decide how far the attack gets.
+  // Under OpenFront's rules an attack always takes ground while it has a troop
+  // left, so a dense garrison shows its value by grinding the assault down to
+  // nothing within a handful of tiles, not by blocking the first one.
   const build = (defenderTroops: number) => {
-    const grid = new TerritoryGrid(flatLand(3, 1));
+    const grid = new TerritoryGrid(flatLand(400, 1));
     grid.addPlayer(1, 4000);
     grid.addPlayer(2, defenderTroops);
     grid.claim(0, 1);
-    grid.claim(1, 2);
-    grid.claim(2, 2);
+    for (let ref = 1; ref <= 300; ref += 1) grid.claim(ref, 2);
     freezeIncome(grid);
     return { grid, conflict: new RasterConflict(grid) };
   };
 
-  // Weak garrison: a 4000-troop assault can afford the thinly-held border tile and
-  // bites into player 2's territory.
+  // Weak garrison: a 4000-troop assault rolls cheaply through thinly-held land.
   const weak = build(500);
   assert.equal(weak.conflict.launchAttack({ attacker: 1, target: 2, troops: 4000 }), null);
   runTicks(weak.conflict, 30);
-  assert.ok(weak.grid.tileCountOf(2) < 2, `a thinly-held nation loses ground, holds ${weak.grid.tileCountOf(2)}`);
+  const weakLost = 300 - weak.grid.tileCountOf(2);
+  assert.ok(weakLost >= 25, `a thinly-held nation loses ground fast, lost ${weakLost}`);
 
-  // Strong garrison: the identical 4000-troop assault can't afford a single tile
-  // against a dense pool and is repelled outright — holding troops now provides
-  // real defensive value.
+  // Strong garrison: the identical 4000-troop assault pays ~18x more per tile
+  // against the dense pool and is spent after a handful of captures.
   const strong = build(100_000);
   assert.equal(strong.conflict.launchAttack({ attacker: 1, target: 2, troops: 4000 }), null);
   runTicks(strong.conflict, 30);
-  assert.equal(strong.grid.tileCountOf(2), 2, "a well-garrisoned nation holds its ground");
-  assert.equal(strong.conflict.activeAttackCount, 0, "the repelled assault ends");
+  const strongLost = 300 - strong.grid.tileCountOf(2);
+  assert.ok(strongLost > 0 && strongLost <= 25, `a well-garrisoned nation barely bends, lost ${strongLost}`);
+  assert.ok(strongLost < weakLost, "garrison density decides how deep the same assault bites");
+  assert.equal(strong.conflict.activeAttackCount, 0, "the spent assault dissolves");
 });
 
 test("two fronts dismantle a defender faster than one (each captured tile bleeds the shared pool)", () => {
-  // 5x1 line: player 1 (tile 0) and player 2 (tile 4) flank defender player 3,
-  // who holds tiles 1-3 with a pool both assaults can afford to chip. Mirroring
-  // OpenFront, the dilution is emergent: every tile a front takes bleeds the
-  // defender's shared pool, so two fronts capturing at once drain it faster than
-  // one — the pincer eats more ground in the same number of ticks.
+  // A long line: player 1 (tile 0) and player 2 (tile 301) flank defender
+  // player 3, who holds tiles 1..300 with a pool both assaults can afford to
+  // chip. Mirroring OpenFront, the dilution is emergent: every tile a front
+  // takes bleeds the defender's shared pool, so two fronts capturing at once
+  // drain it faster than one — the pincer eats more ground in the same ticks.
   const build = () => {
-    const grid = new TerritoryGrid(flatLand(5, 1));
+    const grid = new TerritoryGrid(flatLand(400, 1));
     grid.addPlayer(1, 4000);
     grid.addPlayer(2, 4000);
-    grid.addPlayer(3, 3000);
+    grid.addPlayer(3, 30_000);
     grid.claim(0, 1);
-    grid.claim(1, 3);
-    grid.claim(2, 3);
-    grid.claim(3, 3);
-    grid.claim(4, 2);
+    for (let ref = 1; ref <= 300; ref += 1) grid.claim(ref, 3);
+    grid.claim(301, 2);
     freezeIncome(grid);
     return { grid, conflict: new RasterConflict(grid) };
   };
@@ -398,42 +421,52 @@ test("two fronts dismantle a defender faster than one (each captured tile bleeds
   // One front nibbles from a single side.
   const solo = build();
   assert.equal(solo.conflict.launchAttack({ attacker: 1, target: 3, troops: 4000 }), null);
-  solo.conflict.processTick();
+  runTicks(solo.conflict, 5);
   const soloHeld = solo.grid.tileCountOf(3);
 
   // A pincer eats from both sides at once, so the defender holds strictly fewer
-  // tiles after the same single tick.
+  // tiles after the same number of ticks.
   const pincer = build();
   assert.equal(pincer.conflict.launchAttack({ attacker: 1, target: 3, troops: 4000 }), null);
   assert.equal(pincer.conflict.launchAttack({ attacker: 2, target: 3, troops: 4000 }), null);
-  pincer.conflict.processTick();
+  runTicks(pincer.conflict, 5);
   assert.ok(
     pincer.grid.tileCountOf(3) < soloHeld,
     `a two-front pincer dismantles faster: pincer left ${pincer.grid.tileCountOf(3)}, solo left ${soloHeld}`,
   );
 });
 
-test("frontier priority captures easy low ground before high ground", () => {
-  // 3x1 line: tile 0 is high ground (mag 10), the attacker sits on tile 1, tile 2
-  // is flat. By raw tile order the elevated tile 0 comes first; priority ordering
-  // must instead grab the flat tile 2 first. Budget is tuned to one tile per tick.
-  const terrain = new Uint8Array(3);
-  terrain[0] = encodeTile({ land: true, shoreline: false, ocean: false, magnitude: 25 });
-  terrain[1] = encodeTile({ land: true, shoreline: false, ocean: false, magnitude: 0 });
-  terrain[2] = encodeTile({ land: true, shoreline: false, ocean: false, magnitude: 0 });
-  const grid = new TerritoryGrid(new GameMap(3, 1, terrain));
-  // Just enough troops for one plains tile (mag/5 = 16), so the front must choose:
-  // priority ordering takes the easy flat tile, leaving the dear mountain.
-  grid.addPlayer(1, 16);
-  grid.claim(1, 1);
+test("frontier priority prefers easy low ground over mountains (OpenFront tile weights)", () => {
+  // 21x1 strip, attacker in the middle: flat plains to the left, mountains to
+  // the right. OpenFront's priority key weighs mountains 2x on the jitter base
+  // (10..16 for plains vs 15..24 for mountains), so the bands *overlap* — a
+  // single pair can occasionally invert, exactly as in OpenFront — but over a
+  // whole run the front must eat far more low ground than high ground.
+  const W = 21;
+  const terrain = new Uint8Array(W);
+  for (let x = 0; x < W; x += 1) {
+    terrain[x] = encodeTile({ land: true, shoreline: false, ocean: false, magnitude: x < 10 ? 0 : x === 10 ? 0 : 25 });
+  }
+  const grid = new TerritoryGrid(new GameMap(W, 1, terrain));
+  // 300 troops: enough for all ten 16-troop plains tiles with change for a few
+  // 24-troop mountain tiles — if priority ignored terrain, captures would split
+  // roughly evenly instead.
+  grid.addPlayer(1, 300);
+  grid.claim(10, 1);
   freezeIncome(grid);
   const conflict = new RasterConflict(grid);
 
-  assert.equal(conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 16 }), null);
-  conflict.processTick();
+  assert.equal(conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 300 }), null);
+  runTicks(conflict, 40);
 
-  assert.equal(grid.ownerOf(2), 1, "flat low ground is taken first");
-  assert.equal(grid.ownerOf(0), NEUTRAL_PLAYER, "dear mountain ground is left for last");
+  let low = 0;
+  let high = 0;
+  for (const ref of grid.tilesOf(1)) {
+    if (ref < 10) low += 1;
+    if (ref > 10) high += 1;
+  }
+  assert.ok(low > high, `low ground falls first: ${low} plains vs ${high} mountain tiles`);
+  assert.ok(low >= 8, `the plains side is nearly cleared, took ${low}`);
 });
 
 test("terrainPriorityWeight buckets elevation into OpenFront's 1 / 1.5 / 2 bands", () => {
@@ -462,12 +495,15 @@ test("expansion spreads as an even blob, not a contour-hugging tendril", () => {
     }
   }
   const grid = new TerritoryGrid(new GameMap(W, H, terrain));
-  grid.addPlayer(1, 200);
+  grid.addPlayer(1, 2000);
   grid.claim(cy * W + cx, 1);
   const conflict = new RasterConflict(grid);
 
-  assert.equal(conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 200 }), null);
-  runTicks(conflict, 12);
+  // Under the OpenFront advance model a neutral tile drains 5..100 budget units
+  // against a `border·2` budget, so the blob needs real time to grow: commit a
+  // large force (fast per-tile pace, ~100 affordable tiles) and let it run.
+  assert.equal(conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 2000 }), null);
+  runTicks(conflict, 60);
 
   let towardHigh = 0;
   let towardLow = 0;
@@ -494,10 +530,11 @@ test("expansion spreads as an even blob, not a contour-hugging tendril", () => {
   assert.ok(up > 0 && down > 0, "the front also spreads perpendicular to the gradient");
 });
 
-test("a front blocked against a player refunds troops minus the retreat malus", () => {
-  // 2x1: player 1 (tile 0) attacks player 2 (tile 1) with too few troops to
-  // afford the enemy tile (flat enemy cost = 1 + 2 surcharge = 3). The assault
-  // makes no progress and recoils, losing 25% of the committed force.
+test("an attack always takes at least one tile; a spent force dies with no refund (OpenFront)", () => {
+  // 2x1: player 1 (tile 0) attacks player 2 (tile 1) with a token force far
+  // below the tile's price. OpenFront has no affordability gate: any attack
+  // with a troop left captures its next tile, overdraws its pool, and the
+  // moment the pool dips under 1 the attack simply dies — nothing comes home.
   const grid = new TerritoryGrid(flatLand(2, 1));
   grid.addPlayer(1, 2);
   grid.addPlayer(2, 10);
@@ -510,57 +547,72 @@ test("a front blocked against a player refunds troops minus the retreat malus", 
   assert.equal(grid.troopsOf(1), 0, "committed troops leave the pool");
   conflict.processTick();
 
-  assert.equal(grid.tileCountOf(2), 1, "the defended tile is not taken");
-  assert.equal(grid.troopsOf(1), 1.5, "2 committed troops return as 1.5 (25% malus)");
-  assert.equal(conflict.activeAttackCount, 0, "the blocked attack ends");
+  assert.equal(grid.ownerOf(1), 1, "even a token assault takes its first tile");
+  assert.equal(grid.troopsOf(1), 0, "the overdrawn force is spent — no refund");
+  assert.equal(conflict.activeAttackCount, 0, "the dead attack is gone");
 });
 
-test("a front blocked against neutral land refunds troops in full", () => {
-  // tile 1 is heavily fortified neutral land (a strong defense post drives its
-  // capture cost above 3); 3 committed troops can't take it. Retreating from
-  // neutral land (TerraNullius) is free — full refund, no malus.
-  const grid = new TerritoryGrid(flatLand(2, 1));
-  grid.addPlayer(1, 3);
+test("a front whose ground vanishes retreats free — full refund, no malus (OpenFront)", () => {
+  // 3x1: players 1 (tile 0) and 2 (tile 2) race for the single neutral tile 1.
+  // Player 1's attack is processed first and takes it; player 2's attack then
+  // finds an empty frontier. OpenFront's retreat() on a ran-out-of-ground front
+  // charges NO malus — the malus is reserved for deliberate pull-backs — so
+  // player 2's committed troops come home in full.
+  const grid = new TerritoryGrid(flatLand(3, 1));
+  grid.addPlayer(1, 20);
+  grid.addPlayer(2, 20);
   grid.claim(0, 1);
-  grid.addDefensePost(1, 1, 5); // factor 5 at the tile -> cost ceil(1*0.9*0.8*5)=4
+  grid.claim(2, 2);
   freezeIncome(grid);
   const conflict = new RasterConflict(grid);
 
-  assert.equal(conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 3 }), null);
+  assert.equal(conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 20 }), null);
+  assert.equal(conflict.launchAttack({ attacker: 2, target: NEUTRAL_PLAYER, troops: 20 }), null);
   conflict.processTick();
 
-  assert.equal(grid.ownerOf(1), NEUTRAL_PLAYER, "the fortified tile is not taken");
-  assert.equal(grid.troopsOf(1), 3, "all 3 troops return — neutral retreat is free");
+  assert.equal(grid.ownerOf(1), 1, "player 1's attack takes the contested tile");
+  assert.equal(grid.troopsOf(2), 20, "player 2's stranded front refunds in full — no malus");
 });
 
 test("a defense post fortifies the ground around it, slowing a conquest", () => {
-  // 6x1 flat line, player 1 on tile 0 with ample troops (80) to walk the
-  // neutral line on open ground — domination lands at 5 of 6 tiles (80%).
+  // A 200x4 field: player 1 holds column 0, player 2 columns 1..150 (600
+  // tiles) with an empty pool (so per-tile costs stay at the strength-factor
+  // floor). On open ground a plains tile costs ~23.5 troops
+  // (0.6·[0.6·80·0.8] + 0.4·[1.3·1·0.8]); inside a strength-5 post aura it
+  // costs ~117 and drains 3x the advance budget, so the same committed force
+  // is spent after a fraction of the ground.
+  const W = 200;
   const build = () => {
-    const grid = new TerritoryGrid(flatLand(6, 1));
-    grid.addPlayer(1, 80);
-    grid.claim(0, 1);
+    const grid = new TerritoryGrid(flatLand(W, 4));
+    grid.addPlayer(1, 2000);
+    grid.addPlayer(2, 0);
+    for (let y = 0; y < 4; y += 1) {
+      grid.claim(y * W, 1);
+      for (let x = 1; x <= 150; x += 1) grid.claim(y * W + x, 2);
+    }
     freezeIncome(grid);
     return grid;
   };
 
   const open = build();
   const openConflict = new RasterConflict(open);
-  assert.equal(openConflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 80 }), null);
+  assert.equal(openConflict.launchAttack({ attacker: 1, target: 2, troops: 2000 }), null);
   runTicks(openConflict, 30);
-  assert.equal(open.tileCountOf(1), 5, "on open ground the advance reaches the 80% threshold");
-  assert.equal(openConflict.winner, 1);
+  const openTaken = open.tileCountOf(1) - 4;
+  assert.ok(openTaken >= 30, `on open ground the advance rolls, took ${openTaken}`);
 
-  // Same troops, but tile 5 is a defense post (radius 2, strength 3): tiles 4 and
-  // 5 now cost more, so the troops can't reach the far end.
+  // Same troops, but player 2 fortifies the near stretch with a defense post
+  // at (10, 1) (radius 20, strength 5 — OpenFront's defensePostDefenseBonus):
+  // the covered tiles bleed the assault out long before the open run's depth.
   const fortified = build();
-  fortified.addDefensePost(5, 2, 3);
+  fortified.addDefensePost(W + 10, 20, 5);
   const fortConflict = new RasterConflict(fortified);
-  assert.equal(fortConflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 80 }), null);
+  assert.equal(fortConflict.launchAttack({ attacker: 1, target: 2, troops: 2000 }), null);
   runTicks(fortConflict, 30);
-  assert.equal(fortified.ownerOf(5), NEUTRAL_PLAYER, "the fortified tile holds out");
-  assert.ok(fortified.tileCountOf(1) < 6, `the post stalls the conquest, owns ${fortified.tileCountOf(1)}`);
-  assert.equal(fortConflict.winner, null);
+  const fortTaken = fortified.tileCountOf(1) - 4;
+  assert.ok(fortTaken < openTaken, `the post stalls the conquest: ${fortTaken} vs ${openTaken} open`);
+  assert.ok(fortTaken <= 21, `the assault dies inside the aura, took ${fortTaken}`);
+  assert.equal(fortConflict.activeAttackCount, 0, "the assault bleeds out against the post");
 });
 
 test("a freshly-seated nation is immune from attack until its window elapses", () => {

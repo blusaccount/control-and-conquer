@@ -30,12 +30,13 @@
  *
  * The Atom Bomb's radii and the inner-full / outer-50%-chance blast shape
  * match OpenFront's `nukeMagnitudes(AtomBomb) = { inner: 12, outer: 30 }` and
- * its `rand.chance(2)` outer draw. The lasting effect is **fallout** (see
- * {@link FALLOUT_DURATION_TICKS}): OpenFront marks destroyed tiles radioactive
- * — recoloured, un-ownable, decaying over time — rather than always turning
- * them to water (that is a separate `waterNukes` config mode). We replicate the
- * fallout mechanic; land→water conversion is left out (terrain is immutable
- * after generation here).
+ * its `rand.chance(2)` outer draw. The lasting effect is **fallout**, exactly
+ * OpenFront's default (`waterNukes` off): destroyed tiles are cleared to
+ * neutral and marked radioactive **permanently** — no decay — but remain
+ * capturable at the `falloutCombatModifier` penalty (mag & speed ×3..5), and
+ * the mark is scrubbed the moment the ground is conquered. Land→water
+ * conversion is OpenFront's non-default `waterNukes` mode and is left out
+ * (terrain is immutable after generation here).
  */
 
 /** Gold spent per Atom Bomb launch (on top of the Missile Silo's own build cost). */
@@ -49,15 +50,6 @@ export const ATOM_BOMB_OUTER_RADIUS = 30;
 
 /** Per-tile clear chance in the outer ring (deterministic, hashed — see RasterConflict). OpenFront's `rand.chance(2)` = 50%. */
 export const ATOM_BOMB_OUTER_DESTROY_CHANCE = 0.5;
-
-/**
- * Ticks a destroyed tile stays **radioactive fallout** after a blast: it is
- * cleared to neutral, rendered with a sickly irradiated tint, and cannot be
- * (re)captured until the fallout decays — a temporary denial zone, mirroring
- * OpenFront's fallout (which recolours nuked ground and blocks ownership). At
- * 10 ticks/s this is ~15s.
- */
-export const FALLOUT_DURATION_TICKS = 150;
 
 /**
  * Ticks a Missile Silo must wait after a launch before it can fire again,

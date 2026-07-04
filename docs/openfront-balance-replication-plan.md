@@ -41,6 +41,81 @@ eigenständige Folge-PRs vorgesehen, weil sie neue Systeme (Trade/Warship/Nukes)
 bzw. die UI-/Render-Schicht betreffen und nicht ungetestet eingeschoben werden
 sollten.
 
+> **Update (2026-07-04 — Tempo-Fix, „Spiel zu schnell"):** Der P1-Port hatte
+> OpenFronts `attackTilesPerTick`-**Budget** übernommen, aber jedes eroberte Tile
+> nur **1** Budget-Einheit kosten lassen — in OpenFront verbraucht jedes Tile
+> `tilesPerTickUsed` (gegen Spieler `within(def/(5·atk),0.2,1.5)·speed` mit
+> speed 16.5/20/25, ×3 unter Defense-Post; gegen Neutral
+> `within(2000·max(10,speed)/atk, 5, 100)`). Dadurch rückten Fronten hier
+> **3–30× schneller** vor als im Original. Jetzt exakt portiert
+> (`enemySpeedCost`/`neutralSpeedCost` in `rasterCombatConfig.ts`, Verbrauch in
+> `RasterConflict.advanceAttacks`), inklusive der getrennten Speed-Faktoren
+> `largeDefenderSpeedDebuff` (= 0.7+0.3·defenseSig), `largeAttackerSpeedBonus`
+> ((100k/tiles)^0.6) und `traitorSpeedDebuff` (0.8 — sitzt wie im Original auf dem
+> **Verteidiger**, nicht auf dem Angreifer). Außerdem: (1) Tile-Priorität jetzt
+> OpenFronts kompletter Heap-Schlüssel `(jitter0..7+10)·(1−nbrs·0.5+mag/2) +
+> enqueueTick` — der `+tick`-Term (FIFO über Frontier-Generationen) fehlte, wodurch
+> Fronten an Höhenlinien festfrieren konnten; Jitter bleibt deterministisch
+> (Hash statt RNG). (2) Defense-Post-Aura zählt nur noch Posten **des Verteidigers
+> selbst** (OpenFronts `dp.unit.owner() === defender`) — vorher verteuerte auch ein
+> fremder/naher eigener Posten den Angriff; neutrales Land ist nie post-geschützt.
+> (3) Defense-Post bremst zusätzlich mit `speed ×3` (`FORT_SPEED_BONUS`), statt nur
+> über die 5×-Kosten.
+
+> **Update (2026-07-04, zweite Welle — restliche Abweichungen entfernt):**
+> Alle zuvor „bewusst beibehaltenen" Regel-Abweichungen sind jetzt ebenfalls auf
+> OpenFront umgestellt (quellenecht gegen `AttackExecution.ts`,
+> `TransportShipExecution.ts`, `PlayerExecution.ts`, `GameImpl.ts` verifiziert):
+> 1. **Kein Zeitlimit mehr** — `RASTER_MATCH_DURATION_SECONDS` gelöscht;
+>    Standard ist ein offenes Match bis zur 80 %-Domination (OpenFront hat kein
+>    Limit). `maxDurationTicks` bleibt als expliziter Test-/Betreiber-Parameter.
+> 2. **Angriffs-Lebenszyklus exakt**: kein Affordability-Gate mehr — ein Angriff
+>    mit ≥ 1 Truppe erobert immer sein nächstes Tile und darf sich dabei
+>    überziehen; fällt der Pool unter 1, stirbt der Angriff **ohne Refund**
+>    (OpenFronts `troopCount < 1 → delete`). Eine Front ohne erreichbare Tiles
+>    zieht sich **malus-frei** zurück (OpenFronts `retreat()` mit 0) — der
+>    25 %-Malus gilt nur noch dort, wo OpenFront ihn erhebt (z. B. Transport
+>    landet an eigener Küste).
+> 3. **Landungen**: Der Brückenkopf wird immer kostenlos erobert
+>    (`conquer(dst)`), abgewiesene Landungen gibt es nicht mehr; die volle
+>    Bootsladung kämpft danach als normaler Landangriff. Ankunft an eigener
+>    Küste kostet 25 % (OpenFronts `malusForRetreat`-Arrival).
+> 4. **`handleDeadDefender`**: Ein Verteidiger, den ein Angriff unter 100 Tiles
+>    drückt (`DEAD_DEFENDER_MAX_TILES`), wird komplett aufgerollt — 10
+>    Sweep-Pässe, grenzende Tiles an den Angreifer, isolierte Taschen an
+>    grenzende Dritte.
+> 5. **Gegenläufige Angriffe verrechnen sich** beim Start (OpenFronts
+>    Incoming-Cancel): die kleinere Streitmacht wird ausgelöscht, die größere
+>    behält die Differenz.
+> 6. **Fallout wie OpenFront (Default, kein `waterNukes`)**: permanent statt
+>    Decay-Timer, bleibt **eroberbar** mit `falloutDefenseModifier`
+>    (`5 − 2·falloutRatio` auf mag *und* speed) und wird erst durch Eroberung
+>    gesäubert (`conquer → setFallout(false)`). `FALLOUT_DURATION_TICKS`
+>    gelöscht. (Die frühere Annahme „Nukes machen Land zu Wasser" war falsch —
+>    das ist OpenFronts nicht-standardmäßiger `waterNukes`-Modus.)
+> **Update (2026-07-04, dritte Welle — auch die letzten drei Punkte angeglichen):**
+> 1. **Zufallsmechanik = OpenFront**: statt Pro-Aufruf-Hashes zieht die Engine
+>    jetzt sequentiell aus **geseedeten PRNG-Strömen** (`src/Core/prng.ts`,
+>    splitmix32→sfc32 — dieselben Standard-Algorithmen wie OpenFronts
+>    `PseudoRandom`, eigene Implementierung). Seeds wie im Original: jeder
+>    Angriff `123` (Tile-Jitter `nextInt(0,7)` einmal beim Enqueue, Border-Jitter
+>    `nextInt(0,5)` pro Tick), Nuke-Blast `ticks`, MIRV-Spread `ticks+attacker`,
+>    SAM je Werfer sein Tile. OpenFront ist genauso deterministisch — Replays
+>    bleiben exakt, `Math.random` kommt weiterhin nirgends vor.
+> 2. **Klick-Richtungs-Präferenz entfernt** (`FRONTIER_TOWARD_WEIGHT`,
+>    `AttackIntent.toward`): Landangriffe sind jetzt wie in OpenFront
+>    ungerichtet — der Klick wählt nur *wessen* Land angegriffen wird, die Front
+>    drückt die gesamte gemeinsame Grenze rein nach Prioritätsschlüssel.
+> 3. **Manueller Rückzug** (OpenFronts ordered retreat): neuer Befehl
+>    `CLIENT_RASTER_RETREAT` → `RasterConflict.orderRetreat` — die Front löst
+>    sich auf, Überlebende kommen heim, 25 % Malus beim Abziehen von einem
+>    Spieler, gratis von Neutralland. UI: Hotkey **R** (alle eigenen Fronten)
+>    und ein 🏳️-Slice im Radial-Menü, wenn gegen den angeklickten Besitzer eine
+>    eigene Front läuft.
+> Einziger verbleibender struktureller Unterschied zur OpenFront-Zufallsschicht:
+> die konkreten Zahlenströme weichen ab (anderer Konsum-/Seed-Kontext je
+> Architektur) — Verteilungen, Wertebereiche und Seed-Disziplin sind identisch.
+
 > **Update (2026-07-02 — frischer Quellcode-Abgleich):** siehe
 > `openfront-gap-analysis.md` §3c für den Detail-Abgleich gegen den aktuellen
 > `openfrontio/OpenFrontIO`-main-Branch (Tag v0.32.6). Kurzfassung der neuen

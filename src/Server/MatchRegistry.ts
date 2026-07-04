@@ -122,6 +122,10 @@ export class MatchRegistry {
     this.clientToSession.get(clientId)?.donate(clientId, targetId, resource, percent);
   }
 
+  public retreatRaster(clientId: string, targetId: number): void {
+    this.clientToSession.get(clientId)?.retreat(clientId, targetId);
+  }
+
   public setRasterEmbargo(clientId: string, targetId: number, on: boolean): void {
     this.clientToSession.get(clientId)?.setEmbargo(clientId, targetId, on);
   }
