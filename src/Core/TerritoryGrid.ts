@@ -605,22 +605,27 @@ export class TerritoryGrid {
   }
 
   /**
-   * Capture-cost multiplier (>= 1) at `ref` from any overlapping defense posts.
-   * Mirrors OpenFront's defense post exactly: the bonus is **binary in-range** —
+   * Capture-cost multiplier (>= 1) at `ref` from the **tile owner's** overlapping
+   * defense posts. Mirrors OpenFront's defense post exactly: only a post owned by
+   * the defender itself protects the tile (OpenFront checks
+   * `dp.unit.owner() === defender`, so a fort near a border never taxes its own
+   * owner's or a third party's assaults), and the bonus is **binary in-range** —
    * every tile within a post's Chebyshev `radius` costs the full `strength`× (no
-   * linear falloff), and beyond it nothing. The strongest covering post wins
-   * (auras don't stack). Returns 1 where no post reaches. In OpenFront this is
-   * `defensePostDefenseBonus` (5×) inside `defensePostRange` (30); its companion
-   * `defensePostSpeedBonus` (3×, which slows the attack) is folded into this cost
-   * multiplier — our advance is cost-driven, so a 5× dearer tile already grinds a
-   * front to the crawl the speed bonus is meant to impose.
+   * linear falloff), beyond it nothing. The strongest covering post wins (auras
+   * don't stack). Returns 1 where no post of the owner reaches, and always 1 on
+   * neutral ground. In OpenFront this is `defensePostDefenseBonus` (5×) inside
+   * `defensePostRange` (30); the companion `defensePostSpeedBonus` (3×) is
+   * applied by the conflict engine to the tile's advance-budget drain.
    */
   defenseFactorAt(ref: TileRef): number {
     if (this.defensePosts.size === 0) return 1;
+    const owner = this.ownerOf(ref);
+    if (owner === NEUTRAL_PLAYER) return 1;
     const x = this.map.x(ref);
     const y = this.map.y(ref);
     let factor = 1;
     for (const [post, { radius, strength }] of this.defensePosts) {
+      if (this.ownerOf(post) !== owner) continue;
       const dist = Math.max(Math.abs(x - this.map.x(post)), Math.abs(y - this.map.y(post)));
       if (dist > radius) continue;
       if (strength > factor) factor = strength;

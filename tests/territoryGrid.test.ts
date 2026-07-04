@@ -232,10 +232,12 @@ test("frontierOf matches a brute-force scan over a real generated map", () => {
 });
 
 test("defenseFactorAt applies the full strength binary in-range (OpenFront), then nothing beyond", () => {
-  // 11x1 flat land; a post at tile 5 with radius 4, strength 3. OpenFront's
-  // defense post is binary: every tile within the radius pays the full strength,
-  // with no linear falloff, and nothing outside it.
+  // 11x1 flat land held by player 1; a post at tile 5 with radius 4, strength 3.
+  // OpenFront's defense post is binary: every tile within the radius pays the
+  // full strength, with no linear falloff, and nothing outside it.
   const grid = new TerritoryGrid(flatLand(11, 1));
+  grid.addPlayer(1, 10);
+  for (let i = 0; i < 11; i += 1) grid.claim(i, 1);
   grid.addDefensePost(5, 4, 3);
   assert.equal(grid.defensePostCount, 1);
 
@@ -251,8 +253,29 @@ test("defenseFactorAt applies the full strength binary in-range (OpenFront), the
   assert.equal(grid.defensePostCount, 0);
 });
 
+test("a defense post only protects its own owner's tiles (OpenFront's owner check)", () => {
+  // 11x1: player 1 holds tiles 0..5 (with a post on 5), player 2 holds 6..8,
+  // tiles 9..10 stay neutral. OpenFront applies the post bonus only when the
+  // post's owner IS the defender (`dp.unit.owner() === defender`), so the aura
+  // hardens player 1's own ground and nothing else — neither a neighbour's
+  // tiles inside the radius nor neutral land.
+  const grid = new TerritoryGrid(flatLand(11, 1));
+  grid.addPlayer(1, 10);
+  grid.addPlayer(2, 10);
+  for (let i = 0; i <= 5; i += 1) grid.claim(i, 1);
+  for (let i = 6; i <= 8; i += 1) grid.claim(i, 2);
+  grid.addDefensePost(5, 4, 3);
+
+  assert.equal(grid.defenseFactorAt(5), 3, "the owner's own tile is hardened");
+  assert.equal(grid.defenseFactorAt(2), 3, "the owner's tiles across the radius are hardened");
+  assert.equal(grid.defenseFactorAt(7), 1, "another player's tile in range gets nothing");
+  assert.equal(grid.defenseFactorAt(9), 1, "neutral land in range gets nothing");
+});
+
 test("the strongest covering post wins where auras overlap (no stacking)", () => {
   const grid = new TerritoryGrid(flatLand(11, 1));
+  grid.addPlayer(1, 10);
+  for (let i = 0; i < 11; i += 1) grid.claim(i, 1);
   grid.addDefensePost(4, 4, 2);
   grid.addDefensePost(6, 4, 3);
   // Tile 5 sits in both auras (both in range): the stronger post (strength 3)

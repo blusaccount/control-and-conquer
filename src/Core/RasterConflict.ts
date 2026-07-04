@@ -2,6 +2,7 @@ import type { TileRef } from "./GameMap.js";
 import { NEUTRAL_PLAYER, type PlayerId, type TerritoryGrid } from "./TerritoryGrid.js";
 import { NO_ALLIANCES, type AllianceView } from "./alliances.js";
 import {
+  FORT_SPEED_BONUS,
   GOLD_BASE_PER_TICK,
   WARSHIP_ENGAGE_RANGE,
   WARSHIP_MAX_HP,
@@ -31,11 +32,15 @@ import {
   attackTilesPerTick,
   defenderLossPerTile,
   defenderStrengthFactor,
-  FRONTIER_JITTER_SPAN,
+  enemySpeedCost,
+  FRONTIER_JITTER_BASE,
+  FRONTIER_JITTER_STEPS,
   FRONTIER_SURROUND_WEIGHT,
   FRONTIER_TOWARD_WEIGHT,
+  neutralSpeedCost,
   terrainPriorityWeight,
   largeAttackerLossFactor,
+  largeAttackerSpeedFactor,
   largeDefenderLossFactor,
   maxTroops,
   troopGrowth,
@@ -221,6 +226,15 @@ interface RasterAttack {
    * latest reinforcing click wins, so re-clicking elsewhere redirects the push.
    */
   toward: TileRef;
+  /**
+   * Tick each tile first joined this attack's frontier — OpenFront's enqueue
+   * tick, the `+ tick` term of its capture-priority key. Makes the ordering
+   * FIFO across frontier generations (see `rasterCombatConfig`'s frontier
+   * ordering notes) and pins each tile's jitter roll, since the jitter hashes
+   * (tile, enqueue tick). Grows with the ground the front touches and dies
+   * with the attack.
+   */
+  seen: Map<TileRef, number>;
 }
 
 /** A transport ship en route to its landing tile. */
@@ -512,7 +526,7 @@ export class RasterConflict {
       // (no toward) leaves the existing heading untouched.
       if (toward >= 0) existing.toward = toward;
     } else {
-      this.attacks.push({ attacker, target, committed: troops, anchor: -1, toward });
+      this.attacks.push({ attacker, target, committed: troops, anchor: -1, toward, seen: new Map() });
     }
     if (target !== NEUTRAL_PLAYER) this.lastAttackedBy.set(target, attacker);
     return null;
@@ -856,40 +870,54 @@ export class RasterConflict {
 
   /**
    * Capture priority of a single frontier tile (lower = taken sooner), mirroring
-   * OpenFront's structural key: `jitter · (1 − ownedNeighbours·0.5 + magWeight/2)`.
+   * OpenFront's heap key exactly:
+   * `(jitter0..7 + 10) · (1 − ownedNeighbours·0.5 + magWeight/2) + enqueueTick`.
    * Tiles enclosed by more of the attacker's own territory (pockets) score lower —
    * even negative — so the front back-fills concavities and grows as a smooth
    * radial blob rather than a tendril; higher ground scores higher, so easy low
-   * ground is eaten first. The `jitter` is a small deterministic hash of tile and
-   * tick (OpenFront uses a wide RNG range we can't, so replays stay identical)
-   * that scatters otherwise-equal perimeter tiles; see `rasterCombatConfig`.
+   * ground is eaten first; and the enqueue tick (when the tile first joined this
+   * front) makes ordering FIFO across generations, so the front rolls layer by
+   * layer instead of freezing against an elevation contour. The jitter is a
+   * deterministic hash of (tile, enqueue tick) standing in for OpenFront's RNG
+   * roll, so replays stay identical; see `rasterCombatConfig`.
    */
-  private tilePriority(attacker: PlayerId, ref: TileRef): number {
+  private tilePriority(attacker: PlayerId, ref: TileRef, seenTick: number): number {
     let ownedNeighbours = 0;
     for (const n of this.grid.map.neighbors(ref)) {
       if (this.grid.ownerOf(n) === attacker) ownedNeighbours += 1;
     }
     const structural =
       1 - ownedNeighbours * FRONTIER_SURROUND_WEIGHT + terrainPriorityWeight(this.grid.map.magnitude(ref)) / 2;
-    // Deterministic [0,1) wobble from a cheap integer hash of (ref, tick).
-    const hash = ((ref * 2654435761 + this.tickCount * 40503) >>> 0) / 0x100000000;
-    return structural * (1 + hash * FRONTIER_JITTER_SPAN);
+    // Deterministic integer jitter 0..7 from a cheap hash of (ref, enqueue tick) —
+    // rolled "once per enqueue" exactly like OpenFront's `nextInt(0, 7)`.
+    const jitter = Math.floor(pseudoRandom01(ref, seenTick) * FRONTIER_JITTER_STEPS);
+    return (FRONTIER_JITTER_BASE + jitter) * structural + seenTick;
   }
 
   /**
    * The attacker's land frontier against `target`, ordered by capture priority
-   * for this tick. When `toward >= 0` the ordering is biased so the front
-   * advances toward that tile (the click): each tile's priority gains its
-   * distance-to-`toward`, normalised across the frontier to [0,1], times
-   * {@link FRONTIER_TOWARD_WEIGHT}. A fresh array (the grid's frontier is not
-   * mutated).
+   * for this tick. Tiles newly on the frontier are stamped with the current tick
+   * in `attack.seen` (OpenFront's enqueue moment) before scoring. When
+   * `toward >= 0` the ordering is biased so the front advances toward that tile
+   * (the click): each tile's priority gains its distance-to-`toward`, normalised
+   * across the frontier to [0,1], times {@link FRONTIER_TOWARD_WEIGHT}. A fresh
+   * array (the grid's frontier is not mutated).
    */
-  private orderedFrontier(attacker: PlayerId, target: PlayerId, toward: TileRef): TileRef[] {
+  private orderedFrontier(attack: RasterAttack): TileRef[] {
     // Score each tile once, then sort — priority is fixed for the tick, so we
     // avoid recomputing it on every comparison.
-    const frontier = this.grid.landFrontierOf(attacker, target);
+    const frontier = this.grid.landFrontierOf(attack.attacker, attack.target);
+    const seenAt = (ref: TileRef): number => {
+      let seen = attack.seen.get(ref);
+      if (seen === undefined) {
+        seen = this.tickCount;
+        attack.seen.set(ref, seen);
+      }
+      return seen;
+    };
+    const toward = attack.toward;
     if (toward < 0 || frontier.length === 0) {
-      const scored = frontier.map((ref) => ({ ref, p: this.tilePriority(attacker, ref) }));
+      const scored = frontier.map((ref) => ({ ref, p: this.tilePriority(attack.attacker, ref, seenAt(ref)) }));
       scored.sort((a, b) => a.p - b.p || a.ref - b.ref);
       return scored.map((s) => s.ref);
     }
@@ -913,7 +941,7 @@ export class RasterConflict {
     const span = maxD - minD || 1;
     const scored = frontier.map((ref, i) => ({
       ref,
-      p: this.tilePriority(attacker, ref) + ((dist[i] - minD) / span) * FRONTIER_TOWARD_WEIGHT,
+      p: this.tilePriority(attack.attacker, ref, seenAt(ref)) + ((dist[i] - minD) / span) * FRONTIER_TOWARD_WEIGHT,
     }));
     scored.sort((a, b) => a.p - b.p || a.ref - b.ref);
     return scored.map((s) => s.ref);
@@ -1247,7 +1275,7 @@ export class RasterConflict {
         if (existing) existing.committed += remaining;
         // A beachhead's inland push has no clicked target — it radiates outward
         // from the landing tile (undirected).
-        else this.attacks.push({ attacker: ship.attacker, target: owner, committed: remaining, anchor: dest, toward: -1 });
+        else this.attacks.push({ attacker: ship.attacker, target: owner, committed: remaining, anchor: dest, toward: -1, seen: new Map() });
       } else {
         this.grid.addTroops(ship.attacker, remaining);
       }
@@ -1305,7 +1333,7 @@ export class RasterConflict {
         continue;
       }
 
-      const frontier = this.orderedFrontier(attack.attacker, attack.target, attack.toward);
+      const frontier = this.orderedFrontier(attack);
 
       // No reachable target tiles: the front is blocked or the target is gone.
       // Pulling back from a player is taxed (retreat malus); neutral is free.
@@ -1334,21 +1362,35 @@ export class RasterConflict {
           largeAttackerLossFactor(this.grid.tileCountOf(attack.attacker))
         : 1;
 
-      // Tiles this front may take this tick (OpenFront's `attackTilesPerTick`):
-      // it scales with the attacker's troop advantage and the contested border
-      // width, so an overwhelming assault rolls fast while an under-committed poke
-      // barely creeps. `expansionSpeed` is the attacker's own speed modifier.
+      // Per-tick advance budget (OpenFront's `attackTilesPerTick`): scales with
+      // the attacker's troop advantage and the contested border width. OpenFront
+      // widens the border term by a random 0..5; a deterministic per-front hash
+      // stands in here so replays stay exact. `expansionSpeed` is the attacker's
+      // own speed modifier.
       const expansionSpeed = this.grid.modifiersOf(attack.attacker).expansionSpeed;
-      // A marked traitor's own assaults advance slower (OpenFront's traitorSpeedDebuff).
-      const traitorSpeed = this.isTraitor(attack.attacker) ? TRAITOR_SPEED_DEBUFF : 1;
-      const budget = Math.max(
-        1,
-        Math.round(attackTilesPerTick(defenderTroops, attack.committed, frontier.length, vsPlayer) * expansionSpeed * traitorSpeed),
-      );
+      const borderJitter = Math.floor(pseudoRandom01(attack.attacker * 31 + attack.target + 7, this.tickCount) * 6);
+      let budget =
+        attackTilesPerTick(defenderTroops, attack.committed, frontier.length + borderJitter, vsPlayer) *
+        expansionSpeed;
+
+      // Defender-side *speed* debuffs, constant for the tick (OpenFront's
+      // `largeDefenderSpeedDebuff`, `largeAttackerSpeedBonus` and
+      // `traitorSpeedDebuff`): they scale how much budget each captured tile
+      // drains, separate from the troop-loss factors above.
+      const speedDebuff = vsPlayer
+        ? largeDefenderLossFactor(this.grid.tileCountOf(attack.target)) *
+          largeAttackerSpeedFactor(this.grid.tileCountOf(attack.attacker)) *
+          (this.isTraitor(attack.target) ? TRAITOR_SPEED_DEBUFF : 1)
+        : 1;
 
       let taken = 0;
       for (const ref of frontier) {
-        if (taken >= budget) break;
+        // Each capture drains the budget by its speed cost (see below), so a
+        // front takes a handful of tiles per tick, not its whole frontier — the
+        // OpenFront crawl. The check sits before the capture, so an affordable
+        // front always advances at least one tile per tick (as OpenFront's
+        // `while (numTilesPerTick > 0)` loop does).
+        if (budget <= 0) break;
         // A tile may have been captured already if a player relinquished it; skip
         // anything no longer owned by the target.
         if (this.grid.ownerOf(ref) !== attack.target) continue;
@@ -1356,6 +1398,15 @@ export class RasterConflict {
         // spent down, so a front that bleeds out grinds to a halt on the spot.
         const loss = this.attackerTileLoss(ref, attack.attacker, attack.target, attack.committed, defenderTroops, defenderDensity) * largeFactor;
         if (attack.committed < loss) break;
+
+        // Budget drain (OpenFront's `tilesPerTickUsed`): the tile's terrain
+        // speed (16.5/20/25), tripled inside the defender's fort aura, scaled
+        // by the clamped troop ratio and the defender-side speed debuffs.
+        let speed = terrainCombat(this.grid.map.magnitude(ref)).speed;
+        if (vsPlayer && this.grid.defenseFactorAt(ref) > 1) speed *= FORT_SPEED_BONUS;
+        budget -= vsPlayer
+          ? enemySpeedCost(defenderTroops, attack.committed, speed) * speedDebuff
+          : neutralSpeedCost(speed, attack.committed);
 
         if (vsPlayer) this.grid.addTroops(attack.target, -defenderBleed);
         this.grid.claim(ref, attack.attacker);

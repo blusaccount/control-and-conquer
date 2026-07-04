@@ -170,11 +170,19 @@ export const CONQUER_GOLD_FRACTION_HUMAN = 0.5;
 /**
  * A fort's defense-post aura — strength multiplier and radius (in tiles),
  * mirroring OpenFront's defense post (`defensePostDefenseBonus` 5,
- * `defensePostRange` 30). Capture cost peaks at `strength`× on the post and
- * tapers over the radius (a smoothed rendition of OpenFront's in-range bonus).
+ * `defensePostRange` 30): every tile within the radius costs an attacker the
+ * full `strength`× (binary in-range, no falloff).
  */
 export const FORT_DEFENSE_STRENGTH = 5;
 export const FORT_DEFENSE_RADIUS = 30;
+
+/**
+ * How much more advance budget a captured tile drains while covered by the
+ * defender's fort aura — OpenFront's `defensePostSpeedBonus` (3): a defense post
+ * doesn't just make each tile 5× dearer, it slows the front to a third of its
+ * pace through the covered ground.
+ */
+export const FORT_SPEED_BONUS = 3;
 
 /**
  * Minimum Euclidean distance (tiles) required between two of a player's

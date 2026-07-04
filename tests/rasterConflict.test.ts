@@ -462,12 +462,15 @@ test("expansion spreads as an even blob, not a contour-hugging tendril", () => {
     }
   }
   const grid = new TerritoryGrid(new GameMap(W, H, terrain));
-  grid.addPlayer(1, 200);
+  grid.addPlayer(1, 2000);
   grid.claim(cy * W + cx, 1);
   const conflict = new RasterConflict(grid);
 
-  assert.equal(conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 200 }), null);
-  runTicks(conflict, 12);
+  // Under the OpenFront advance model a neutral tile drains 5..100 budget units
+  // against a `border·2` budget, so the blob needs real time to grow: commit a
+  // large force (fast per-tile pace, ~100 affordable tiles) and let it run.
+  assert.equal(conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 2000 }), null);
+  runTicks(conflict, 60);
 
   let towardHigh = 0;
   let towardLow = 0;
@@ -516,13 +519,12 @@ test("a front blocked against a player refunds troops minus the retreat malus", 
 });
 
 test("a front blocked against neutral land refunds troops in full", () => {
-  // tile 1 is heavily fortified neutral land (a strong defense post drives its
-  // capture cost above 3); 3 committed troops can't take it. Retreating from
-  // neutral land (TerraNullius) is free — full refund, no malus.
+  // A flat neutral tile costs mag/5 = 16 troops to claim; 3 committed troops
+  // can't take it. Retreating from neutral land (TerraNullius) is free — full
+  // refund, no malus.
   const grid = new TerritoryGrid(flatLand(2, 1));
   grid.addPlayer(1, 3);
   grid.claim(0, 1);
-  grid.addDefensePost(1, 1, 5); // factor 5 at the tile -> cost ceil(1*0.9*0.8*5)=4
   freezeIncome(grid);
   const conflict = new RasterConflict(grid);
 
@@ -534,32 +536,36 @@ test("a front blocked against neutral land refunds troops in full", () => {
 });
 
 test("a defense post fortifies the ground around it, slowing a conquest", () => {
-  // 6x1 flat line, player 1 on tile 0 with ample troops (80) to walk the
-  // neutral line on open ground — domination lands at 5 of 6 tiles (80%).
+  // 6x1 flat line: player 1 on tile 0, player 2 holding tiles 1..5 with an
+  // empty pool (so per-tile costs stay at the strength-factor floor). On open
+  // ground a plains tile costs ~23.5 troops (0.6·[0.6·80·0.8] + 0.4·[1.3·1·0.8]),
+  // so 130 committed troops walk all five tiles and take the map.
   const build = () => {
     const grid = new TerritoryGrid(flatLand(6, 1));
-    grid.addPlayer(1, 80);
+    grid.addPlayer(1, 130);
+    grid.addPlayer(2, 0);
     grid.claim(0, 1);
+    for (let i = 1; i <= 5; i += 1) grid.claim(i, 2);
     freezeIncome(grid);
     return grid;
   };
 
   const open = build();
   const openConflict = new RasterConflict(open);
-  assert.equal(openConflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 80 }), null);
-  runTicks(openConflict, 30);
-  assert.equal(open.tileCountOf(1), 5, "on open ground the advance reaches the 80% threshold");
-  assert.equal(openConflict.winner, 1);
+  assert.equal(openConflict.launchAttack({ attacker: 1, target: 2, troops: 130 }), null);
+  runTicks(openConflict, 40);
+  assert.equal(openConflict.winner, 1, "on open ground the advance reaches the 80% threshold");
 
-  // Same troops, but tile 5 is a defense post (radius 2, strength 3): tiles 4 and
-  // 5 now cost more, so the troops can't reach the far end.
+  // Same troops, but player 2 fortifies tile 5 with a defense post (radius 2,
+  // strength 3): tiles 3..5 now cost ~70 each, so the assault takes the open
+  // ground and then stalls in front of the fortified stretch.
   const fortified = build();
   fortified.addDefensePost(5, 2, 3);
   const fortConflict = new RasterConflict(fortified);
-  assert.equal(fortConflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 80 }), null);
-  runTicks(fortConflict, 30);
-  assert.equal(fortified.ownerOf(5), NEUTRAL_PLAYER, "the fortified tile holds out");
-  assert.ok(fortified.tileCountOf(1) < 6, `the post stalls the conquest, owns ${fortified.tileCountOf(1)}`);
+  assert.equal(fortConflict.launchAttack({ attacker: 1, target: 2, troops: 130 }), null);
+  runTicks(fortConflict, 40);
+  assert.equal(fortified.ownerOf(5), 2, "the fortified tile holds out");
+  assert.ok(fortified.tileCountOf(1) < 5, `the post stalls the conquest, owns ${fortified.tileCountOf(1)}`);
   assert.equal(fortConflict.winner, null);
 });
 

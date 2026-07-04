@@ -138,10 +138,12 @@ export const TRAITOR_DURATION_TICKS = 300;
 export const TRAITOR_DEFENSE_DEBUFF = 0.5;
 
 /**
- * Combat penalty on a **traitor attacker**, mirroring OpenFront's
- * `traitorSpeedDebuff` (0.8): while marked, the traitor's own assaults advance at
- * 0.8× — its aggression is blunted for the duration. Applied to the traitor's
- * per-tick tile budget.
+ * The second penalty on a **traitor defender**, mirroring OpenFront's
+ * `traitorSpeedDebuff` (0.8): while marked, capturing one of the traitor's tiles
+ * consumes only 0.8× the usual advance budget (see {@link enemySpeedCost}), so
+ * fronts *roll over a traitor faster* on top of costing less. In OpenFront both
+ * traitor debuffs sit on the defender side (`attackLogic` checks
+ * `defender.isTraitor()` for each); the traitor's own assaults are unaffected.
  */
 export const TRAITOR_SPEED_DEBUFF = 0.8;
 
@@ -277,6 +279,11 @@ export const neutralLossPerTile = (mag: number): number => mag / NEUTRAL_LOSS_DI
  * lever: a runaway empire becomes cheaper to chip away at, so it can't harden
  * into an unbeatable turtle. Returns 1 for a small empire (no effect), easing to
  * the floor for a huge one.
+ *
+ * OpenFront applies the *same* `0.7 + 0.3·defenseSig` curve twice — as
+ * `largeDefenderAttackDebuff` on the attacker's troop loss and as
+ * `largeDefenderSpeedDebuff` on the tile-budget drain ({@link enemySpeedCost}) —
+ * so this one function serves both call sites.
  */
 export const LARGE_DEFENDER_MIDPOINT = 150_000;
 export const LARGE_DEFENDER_DECAY = Math.LN2 / 50_000;
@@ -295,9 +302,6 @@ export const largeDefenderLossFactor = (defenderTiles: number): number => {
  * as the empire grows. This is the attacker-side counterpart to the large-empire
  * *defence* debuff: a sprawling power projects force cheaply. Returns 1 for any
  * empire at or below the threshold (no effect on normal-sized games/maps).
- * OpenFront's companion `largeAttackerSpeedBonus` ((tiles/att)^0.6, which speeds
- * the front up) is folded in here too — our advance is cost-driven, so cheaper
- * tiles already roll the front faster, exactly what the speed bonus intends.
  */
 export const LARGE_ATTACKER_TILES = 100_000;
 export const LARGE_ATTACKER_EXPONENT = 0.7;
@@ -307,12 +311,33 @@ export const largeAttackerLossFactor = (attackerTiles: number): number => {
 };
 
 /**
- * Tiles a front may capture in a single tick, mirroring OpenFront's
+ * Large-attacker *speed* bonus, mirroring OpenFront's `largeAttackerSpeedBonus`
+ * (`(100 000 / attackerTiles)^0.6`): a sprawling attacker's captures consume less
+ * of the per-tick advance budget (see {@link enemySpeedCost}), so its fronts roll
+ * measurably faster. Separate from {@link largeAttackerLossFactor} — OpenFront
+ * applies one to the troop loss and the other to the tile-budget drain. Returns 1
+ * at or below the threshold.
+ */
+export const LARGE_ATTACKER_SPEED_EXPONENT = 0.6;
+export const largeAttackerSpeedFactor = (attackerTiles: number): number => {
+  if (attackerTiles <= LARGE_ATTACKER_TILES) return 1;
+  return Math.pow(LARGE_ATTACKER_TILES / attackerTiles, LARGE_ATTACKER_SPEED_EXPONENT);
+};
+
+/**
+ * The per-tick **advance budget** of a front, mirroring OpenFront's
  * `attackTilesPerTick`. Against a player the budget scales with the attacker's
  * troop advantage (clamped into a band) and the contested border width; against
  * neutral land it is simply a multiple of the border. `border` is the number of
- * frontier tiles pressed this tick. So an overwhelming assault rolls fast while
- * an under-committed poke barely creeps.
+ * frontier tiles pressed this tick.
+ *
+ * Crucially this budget is **not** a tile count: each captured tile drains it by
+ * that tile's *speed cost* ({@link enemySpeedCost} / {@link neutralSpeedCost},
+ * OpenFront's `tilesPerTickUsed`) — typically 3.3–37+ budget units per tile —
+ * which is what makes OpenFront fronts creep rather than flood. The engine
+ * captures frontier tiles in priority order while the budget stays above zero,
+ * so at least one tile falls per tick on an affordable front (OpenFront's
+ * `while (numTilesPerTick > 0)` loop behaves identically).
  */
 export const ENEMY_TILES_PER_TICK_MIN = 0.01;
 export const ENEMY_TILES_PER_TICK_MAX = 0.5;
@@ -328,6 +353,42 @@ export const attackTilesPerTick = (
   const advantage = ((5 * attackForce) / Math.max(1, defenderTroops)) * 2;
   const clamped = Math.min(ENEMY_TILES_PER_TICK_MAX, Math.max(ENEMY_TILES_PER_TICK_MIN, advantage));
   return clamped * border * ENEMY_TILES_BORDER_MULT;
+};
+
+/**
+ * Advance-budget units one captured *enemy* tile drains, mirroring OpenFront's
+ * `tilesPerTickUsed` against a player: the defender/attacker troop ratio (over a
+ * 5× attacker handicap) clamped to [0.2, 1.5], times the tile's terrain `speed`
+ * (16.5/20/25, ×{@link FORT_SPEED_BONUS via buildings} under a defense post).
+ * Callers multiply in the defender-side debuffs exactly as OpenFront does:
+ * {@link largeDefenderLossFactor} (its `largeDefenderSpeedDebuff`),
+ * {@link largeAttackerSpeedFactor} and {@link TRAITOR_SPEED_DEBUFF}. At parity a
+ * plains tile drains ~3.3 budget units — against a border·3·0.5 budget that is
+ * roughly one tile per 4–5 border tiles per tick, the OpenFront crawl.
+ */
+export const ENEMY_SPEED_RATIO_MIN = 0.2;
+export const ENEMY_SPEED_RATIO_MAX = 1.5;
+export const ENEMY_SPEED_RATIO_DIVISOR = 5;
+export const enemySpeedCost = (defenderTroops: number, attackForce: number, speed: number): number => {
+  const ratio = Math.max(0, defenderTroops) / (ENEMY_SPEED_RATIO_DIVISOR * Math.max(1, attackForce));
+  return Math.min(ENEMY_SPEED_RATIO_MAX, Math.max(ENEMY_SPEED_RATIO_MIN, ratio)) * speed;
+};
+
+/**
+ * Advance-budget units one claimed *neutral* tile drains, mirroring OpenFront's
+ * `tilesPerTickUsed` against TerraNullius: `2000·max(10, speed) / attackForce`,
+ * clamped to [5, 100]. A big committed force expands markedly faster into empty
+ * land than a token grab (cost 5 vs 100 per tile against the flat `border·2`
+ * budget), and higher ground is slower to swallow — OpenFront's early-game
+ * pacing, where blanketing wilderness takes real time.
+ */
+export const NEUTRAL_SPEED_NUMERATOR = 2000;
+export const NEUTRAL_SPEED_FLOOR = 10;
+export const NEUTRAL_SPEED_COST_MIN = 5;
+export const NEUTRAL_SPEED_COST_MAX = 100;
+export const neutralSpeedCost = (speed: number, attackForce: number): number => {
+  const raw = (NEUTRAL_SPEED_NUMERATOR * Math.max(NEUTRAL_SPEED_FLOOR, speed)) / Math.max(1, attackForce);
+  return Math.min(NEUTRAL_SPEED_COST_MAX, Math.max(NEUTRAL_SPEED_COST_MIN, raw));
 };
 
 /**
@@ -356,29 +417,34 @@ export const defenderLossPerTile = (troops: number, tiles: number): number => {
 /**
  * Frontier ordering, mirroring OpenFront's tile-capture priority. A land attack
  * captures its frontier in *priority* order (lower = captured sooner), matching
- * OpenFront's `addNeighbors` heap key:
+ * OpenFront's `addNeighbors` heap key **exactly**:
  *
- *   priority = jitter · (1 − ownedNeighbours · 0.5 + terrainPriorityWeight/2)
+ *   priority = (jitter0..7 + 10) · (1 − ownedNeighbours · 0.5 + terrainPriorityWeight/2)
+ *            + enqueueTick
  *
- * — the exact structural terms of OpenFront's formula: the **surround** term
- * (`ownedNeighbours · 0.5`) pulls a tile hugged by more of the attacker's own
- * land (a pocket/bay) in first, so the front back-fills concavities and grows as
- * a smooth radial blob rather than a thin tendril; the **terrain** term biases
- * higher ground *later* (plains weight 1, highland 1.5, mountain 2 → +0.5/+0.75/+1),
- * so easy low ground is eaten before dear peaks. A fully-surrounded pocket goes
- * negative and is always taken before any perimeter tile.
+ * Three terms, each load-bearing:
  *
- * `jitter` scatters captures among otherwise-equal perimeter tiles so the ring
- * doesn't advance lopsidedly. OpenFront draws it from an RNG in the range 10–17;
- * we cannot — a deterministic engine must keep replays identical — so we use a
- * **small** deterministic per-tile/-tick wobble instead. Kept tight on purpose:
- * OpenFront's wide random jitter can occasionally reorder a low-ground tile after
- * a high-ground one, but a deterministic port needs the structural terms to stay
- * dominant, so the surround/terrain ordering is a firm guarantee here rather than
- * a probabilistic tendency. This is the one place a faithful port must diverge.
+ *  - the **surround** term (`ownedNeighbours · 0.5`) pulls a tile hugged by more
+ *    of the attacker's own land (a pocket/bay) in first, so the front back-fills
+ *    concavities and grows as a smooth radial blob rather than a thin tendril;
+ *  - the **terrain** term biases higher ground *later* (plains weight 1,
+ *    highland 1.5, mountain 2 → ×1.5/×1.75/×2 on the jitter base), so easy low
+ *    ground is eaten before dear peaks;
+ *  - the **enqueue-tick** term (`+ tick` when the tile first joined the
+ *    frontier) makes the ordering FIFO across frontier generations: a highland
+ *    tile that joined the front at tick T outranks any plains tile that joins
+ *    ~12+ ticks later, so the front advances layer by layer and never freezes
+ *    dead against an elevation contour while low ground remains elsewhere.
+ *
+ * `jitter` (OpenFront: RNG integer 0..7 on a base of 10, rolled once when the
+ * tile is enqueued) scatters captures among otherwise-equal perimeter tiles. We
+ * reproduce the identical range from a deterministic hash of (tile, enqueue
+ * tick) instead of an RNG, so replays stay identical — the only divergence a
+ * deterministic port needs.
  */
 export const FRONTIER_SURROUND_WEIGHT = 0.5;
-export const FRONTIER_JITTER_SPAN = 0.15;
+export const FRONTIER_JITTER_BASE = 10;
+export const FRONTIER_JITTER_STEPS = 8;
 
 /**
  * OpenFront's per-band tile-priority weight (plains 1, highland 1.5, mountain 2),
@@ -397,27 +463,15 @@ export const terrainPriorityWeight = (elevation: number): number => {
  * normalised distance (0 at the frontier tile nearest the click, 1 at the
  * farthest) times this weight, so the limited per-tick budget is spent on the
  * side of the front facing the click — the blob *bulges* toward where you
- * pointed instead of advancing evenly on all sides (OpenFront's directed
- * attack). Deliberately kept **below** {@link FRONTIER_SURROUND_WEIGHT}: one
- * extra owned neighbour (a pocket) lowers priority by 0.6, more than this term
- * can ever add, so back-filling concavities still dominates and the front stays
- * a smooth bulge rather than snaking a tendril straight at the target. `0`
- * disables the bias entirely (pure radial growth, the old behaviour).
+ * pointed instead of advancing evenly on all sides (a C&C convenience;
+ * OpenFront's attacks are undirected). Sized to the OpenFront priority key's
+ * units (jitter base 10 × structural terms): deliberately kept **below** the
+ * ~5-point step one extra owned neighbour subtracts, so back-filling concavities
+ * still dominates and the front stays a smooth bulge rather than snaking a
+ * tendril straight at the target. `0` disables the bias entirely (pure radial
+ * growth).
  */
-export const FRONTIER_TOWARD_WEIGHT = 0.5;
-
-/**
- * Fraction of an attack's remaining committed troops that may be spent in a
- * single tick. Spreading the spend over multiple ticks is what makes the front
- * advance gradually (ring by ring) instead of teleporting across the map.
- *
- * Kept deliberately low so even a huge committed army advances as a thin,
- * smoothly-creeping front (the OpenFront feel) rather than swallowing a big
- * chunk of land in one tick. The {@link NEUTRAL_CAPTURE_COST} budget floor in
- * the engine still guarantees at least one tile of progress per tick, so a
- * small assault never stalls despite the low fraction.
- */
-export const EXPANSION_SPEND_FRACTION = 0.12;
+export const FRONTIER_TOWARD_WEIGHT = 4;
 
 /**
  * Radius (in tiles, Chebyshev) within which a click that lands on un-ownable

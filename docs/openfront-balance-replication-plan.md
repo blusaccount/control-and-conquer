@@ -41,6 +41,30 @@ eigenständige Folge-PRs vorgesehen, weil sie neue Systeme (Trade/Warship/Nukes)
 bzw. die UI-/Render-Schicht betreffen und nicht ungetestet eingeschoben werden
 sollten.
 
+> **Update (2026-07-04 — Tempo-Fix, „Spiel zu schnell"):** Der P1-Port hatte
+> OpenFronts `attackTilesPerTick`-**Budget** übernommen, aber jedes eroberte Tile
+> nur **1** Budget-Einheit kosten lassen — in OpenFront verbraucht jedes Tile
+> `tilesPerTickUsed` (gegen Spieler `within(def/(5·atk),0.2,1.5)·speed` mit
+> speed 16.5/20/25, ×3 unter Defense-Post; gegen Neutral
+> `within(2000·max(10,speed)/atk, 5, 100)`). Dadurch rückten Fronten hier
+> **3–30× schneller** vor als im Original. Jetzt exakt portiert
+> (`enemySpeedCost`/`neutralSpeedCost` in `rasterCombatConfig.ts`, Verbrauch in
+> `RasterConflict.advanceAttacks`), inklusive der getrennten Speed-Faktoren
+> `largeDefenderSpeedDebuff` (= 0.7+0.3·defenseSig), `largeAttackerSpeedBonus`
+> ((100k/tiles)^0.6) und `traitorSpeedDebuff` (0.8 — sitzt wie im Original auf dem
+> **Verteidiger**, nicht auf dem Angreifer). Außerdem: (1) Tile-Priorität jetzt
+> OpenFronts kompletter Heap-Schlüssel `(jitter0..7+10)·(1−nbrs·0.5+mag/2) +
+> enqueueTick` — der `+tick`-Term (FIFO über Frontier-Generationen) fehlte, wodurch
+> Fronten an Höhenlinien festfrieren konnten; Jitter bleibt deterministisch
+> (Hash statt RNG). (2) Defense-Post-Aura zählt nur noch Posten **des Verteidigers
+> selbst** (OpenFronts `dp.unit.owner() === defender`) — vorher verteuerte auch ein
+> fremder/naher eigener Posten den Angriff; neutrales Land ist nie post-geschützt.
+> (3) Defense-Post bremst zusätzlich mit `speed ×3` (`FORT_SPEED_BONUS`), statt nur
+> über die 5×-Kosten. Bekannte Mikro-Abweichung: OpenFront erobert bei einem
+> Angriff mit `troops ≥ 1` immer mindestens 1 Tile (Pool kann intern negativ
+> werden, Angriff stirbt dann); C&C bricht ab, wenn das nächste Tile unbezahlbar
+> ist, und refundiert mit Malus — bewusst beibehalten (kein negativer Pool).
+
 > **Update (2026-07-02 — frischer Quellcode-Abgleich):** siehe
 > `openfront-gap-analysis.md` §3c für den Detail-Abgleich gegen den aktuellen
 > `openfrontio/OpenFrontIO`-main-Branch (Tag v0.32.6). Kurzfassung der neuen
