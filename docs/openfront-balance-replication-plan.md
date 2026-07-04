@@ -93,12 +93,28 @@ sollten.
 >    gesäubert (`conquer → setFallout(false)`). `FALLOUT_DURATION_TICKS`
 >    gelöscht. (Die frühere Annahme „Nukes machen Land zu Wasser" war falsch —
 >    das ist OpenFronts nicht-standardmäßiger `waterNukes`-Modus.)
-> Verbleibende bewusste Nicht-Ports: deterministischer Jitter statt RNG
-> (identische Verteilung, Replay-Pflicht), `FRONTIER_TOWARD_WEIGHT` als reine
-> UI-Komfort-Ordnung innerhalb einer Frontier-Generation (OpenFront kennt keine
-> gerichteten Angriffe; Wert bewusst unter dem Surround-Schritt), und ein
-> manueller Rückzugs-Befehl fehlt weiterhin (OpenFront-UI-Feature, kein
-> Balancing-Wert).
+> **Update (2026-07-04, dritte Welle — auch die letzten drei Punkte angeglichen):**
+> 1. **Zufallsmechanik = OpenFront**: statt Pro-Aufruf-Hashes zieht die Engine
+>    jetzt sequentiell aus **geseedeten PRNG-Strömen** (`src/Core/prng.ts`,
+>    splitmix32→sfc32 — dieselben Standard-Algorithmen wie OpenFronts
+>    `PseudoRandom`, eigene Implementierung). Seeds wie im Original: jeder
+>    Angriff `123` (Tile-Jitter `nextInt(0,7)` einmal beim Enqueue, Border-Jitter
+>    `nextInt(0,5)` pro Tick), Nuke-Blast `ticks`, MIRV-Spread `ticks+attacker`,
+>    SAM je Werfer sein Tile. OpenFront ist genauso deterministisch — Replays
+>    bleiben exakt, `Math.random` kommt weiterhin nirgends vor.
+> 2. **Klick-Richtungs-Präferenz entfernt** (`FRONTIER_TOWARD_WEIGHT`,
+>    `AttackIntent.toward`): Landangriffe sind jetzt wie in OpenFront
+>    ungerichtet — der Klick wählt nur *wessen* Land angegriffen wird, die Front
+>    drückt die gesamte gemeinsame Grenze rein nach Prioritätsschlüssel.
+> 3. **Manueller Rückzug** (OpenFronts ordered retreat): neuer Befehl
+>    `CLIENT_RASTER_RETREAT` → `RasterConflict.orderRetreat` — die Front löst
+>    sich auf, Überlebende kommen heim, 25 % Malus beim Abziehen von einem
+>    Spieler, gratis von Neutralland. UI: Hotkey **R** (alle eigenen Fronten)
+>    und ein 🏳️-Slice im Radial-Menü, wenn gegen den angeklickten Besitzer eine
+>    eigene Front läuft.
+> Einziger verbleibender struktureller Unterschied zur OpenFront-Zufallsschicht:
+> die konkreten Zahlenströme weichen ab (anderer Konsum-/Seed-Kontext je
+> Architektur) — Verteilungen, Wertebereiche und Seed-Disziplin sind identisch.
 
 > **Update (2026-07-02 — frischer Quellcode-Abgleich):** siehe
 > `openfront-gap-analysis.md` §3c für den Detail-Abgleich gegen den aktuellen

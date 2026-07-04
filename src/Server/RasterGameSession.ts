@@ -795,6 +795,25 @@ export class RasterGameSession {
     }
   }
 
+  /**
+   * Manually retreat `clientId`'s active attack against `targetId` (0 =
+   * neutral land) — OpenFront's ordered retreat. The engine refunds the
+   * committed troops, taxed 25% when pulling off a player; an event line makes
+   * the pull-back public, like every other combat action.
+   */
+  public retreat(clientId: string, targetId: PlayerId): void {
+    if (this.matchEndedBroadcast) return;
+    const subscriber = this.subscribers.get(clientId);
+    if (!subscriber) return;
+    const me = subscriber.playerId;
+    if (targetId === me) return;
+    if (!this.grid.hasPlayer(me) || this.eliminated.has(me)) return;
+    const refunded = this.conflict.orderRetreat(me, targetId);
+    if (refunded === null) return;
+    const targetName = targetId === NEUTRAL_PLAYER ? "neutral land" : this.nameOf(targetId);
+    this.pushEvent(`${this.nameOf(me)} pulled its forces back from ${targetName}.`);
+  }
+
   /** Set (`on: true`) or lift a trade embargo against `targetId`. */
   public setEmbargo(clientId: string, targetId: PlayerId, on: boolean): void {
     const me = this.resolveDiplomacy(clientId, targetId);
@@ -1351,7 +1370,7 @@ export class RasterGameSession {
         ? this.grid.canReachByLand(attacker, ref, LAND_ATTACK_REACH)
         : this.grid.hasLandBorderWith(attacker, target);
     if (canMarch) {
-      return { kind: "land", intent: { attacker, target, troops, toward: ref } };
+      return { kind: "land", intent: { attacker, target, troops } };
     }
     if (mode === "land") {
       return {

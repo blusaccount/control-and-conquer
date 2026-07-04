@@ -241,6 +241,8 @@ wss.on("connection", (socket) => {
         registry.breakRasterAlliance(clientId, message.payload.targetId);
       } else if (message.type === "CLIENT_RASTER_ALLY_RENEW") {
         registry.renewRasterAlliance(clientId, message.payload.targetId);
+      } else if (message.type === "CLIENT_RASTER_RETREAT") {
+        registry.retreatRaster(clientId, message.payload.targetId);
       } else if (message.type === "CLIENT_RASTER_DONATE") {
         registry.donateRaster(clientId, message.payload.targetId, message.payload.resource, message.payload.percent);
       } else if (message.type === "CLIENT_RASTER_EMBARGO") {

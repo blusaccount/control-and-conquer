@@ -123,6 +123,9 @@ ctx.onmessage = (event): void => {
     case "CLIENT_RASTER_ALLY_RENEW":
       session.renewAlliance(LOCAL_CLIENT_ID, message.payload.targetId);
       break;
+    case "CLIENT_RASTER_RETREAT":
+      session.retreat(LOCAL_CLIENT_ID, message.payload.targetId);
+      break;
     case "CLIENT_RASTER_DONATE":
       session.donate(LOCAL_CLIENT_ID, message.payload.targetId, message.payload.resource, message.payload.percent);
       break;

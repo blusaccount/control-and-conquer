@@ -55,3 +55,20 @@ test("validateCommand rejects a build with a negative tile", () => {
 test("validateCommand rejects unknown message types", () => {
   assert.throws(() => validateCommand({ type: "GIBBERISH", payload: {} }), /Unknown message type/);
 });
+
+test("validateCommand accepts CLIENT_RASTER_RETREAT, including the neutral target 0", () => {
+  const vsPlayer = validateCommand({ type: "CLIENT_RASTER_RETREAT", payload: { targetId: 3 } });
+  assert.equal(vsPlayer.type, "CLIENT_RASTER_RETREAT");
+  if (vsPlayer.type === "CLIENT_RASTER_RETREAT") assert.deepEqual(vsPlayer.payload, { targetId: 3 });
+
+  // 0 = neutral land is a legal retreat target (a pulled-back land grab).
+  const vsNeutral = validateCommand({ type: "CLIENT_RASTER_RETREAT", payload: { targetId: 0 } });
+  assert.equal(vsNeutral.type, "CLIENT_RASTER_RETREAT");
+  if (vsNeutral.type === "CLIENT_RASTER_RETREAT") assert.deepEqual(vsNeutral.payload, { targetId: 0 });
+});
+
+test("validateCommand rejects a retreat with a negative or non-integer target", () => {
+  assert.throws(() => validateCommand({ type: "CLIENT_RASTER_RETREAT", payload: { targetId: -1 } }));
+  assert.throws(() => validateCommand({ type: "CLIENT_RASTER_RETREAT", payload: { targetId: 1.5 } }));
+  assert.throws(() => validateCommand({ type: "CLIENT_RASTER_RETREAT", payload: {} }));
+});

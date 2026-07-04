@@ -24,11 +24,14 @@ import {
   SAM_RELOAD_TICKS,
   type NukeKind,
 } from "./nukes.js";
+import { Prng } from "./prng.js";
 import { RailSystem, type RailView, type TrainView } from "./railSystem.js";
 import { TradeSystem, type TradeShipTarget, type TradeView } from "./tradeSystem.js";
 import {
+  ATTACK_RNG_SEED,
   attackerLossPerTile,
   attackTilesPerTick,
+  BORDER_JITTER_STEPS,
   DEAD_DEFENDER_MAX_TILES,
   defenderLossPerTile,
   defenderStrengthFactor,
@@ -37,7 +40,6 @@ import {
   FRONTIER_JITTER_BASE,
   FRONTIER_JITTER_STEPS,
   FRONTIER_SURROUND_WEIGHT,
-  FRONTIER_TOWARD_WEIGHT,
   neutralSpeedCost,
   terrainPriorityWeight,
   largeAttackerLossFactor,
@@ -56,20 +58,18 @@ import {
   WIN_TILE_FRACTION,
 } from "./rasterCombatConfig.js";
 
-/** A request to expand from `attacker`'s territory into `target`'s tiles. */
+/**
+ * A request to expand from `attacker`'s territory into `target`'s tiles.
+ * Like OpenFront, an attack is undirected: it presses the *whole* shared
+ * frontier with the target, ordered purely by the capture-priority key — the
+ * click only picks whose land is attacked, never which flank advances first.
+ */
 export interface AttackIntent {
   attacker: PlayerId;
   /** Player whose tiles are targeted, or {@link NEUTRAL_PLAYER} for free land. */
   target: PlayerId;
   /** Troops to commit from the attacker's pool. Positive integer. */
   troops: number;
-  /**
-   * The tile the player actually clicked, used to bias which part of the front
-   * advances first so the push heads *toward* the click (see
-   * {@link FRONTIER_TOWARD_WEIGHT}). Optional: omitted (e.g. a beachhead's inland
-   * push) means undirected, radial growth.
-   */
-  toward?: TileRef;
 }
 
 /**
@@ -209,6 +209,16 @@ export interface RasterTickResult {
   nukeInterceptions: NukeInterception[];
 }
 
+/**
+ * One tile's enqueue record on an attack's frontier: the tick it first joined
+ * (OpenFront's `+ tick` priority term) and the jitter rolled for it at that
+ * moment (OpenFront's `nextInt(0, 7)` — one roll per enqueue, never re-rolled).
+ */
+interface FrontierEntry {
+  tick: number;
+  jitter: number;
+}
+
 /** An in-flight expansion. `committed` troops are drained as tiles are taken. */
 interface RasterAttack {
   attacker: PlayerId;
@@ -221,20 +231,18 @@ interface RasterAttack {
    */
   anchor: TileRef;
   /**
-   * The tile the attacker pointed at, biasing the front to advance toward it
-   * (see {@link FRONTIER_TOWARD_WEIGHT}). `-1` means undirected (radial). The
-   * latest reinforcing click wins, so re-clicking elsewhere redirects the push.
+   * This attack's own random stream, exactly OpenFront's model: every
+   * `AttackExecution` owns a `PseudoRandom` seeded with the same fixed
+   * constant ({@link ATTACK_RNG_SEED}), drawn sequentially for the frontier
+   * tile jitter and the per-tick border jitter. Seeded deterministically, so
+   * replays stay identical.
    */
-  toward: TileRef;
+  rng: Prng;
   /**
-   * Tick each tile first joined this attack's frontier — OpenFront's enqueue
-   * tick, the `+ tick` term of its capture-priority key. Makes the ordering
-   * FIFO across frontier generations (see `rasterCombatConfig`'s frontier
-   * ordering notes) and pins each tile's jitter roll, since the jitter hashes
-   * (tile, enqueue tick). Grows with the ground the front touches and dies
-   * with the attack.
+   * Per-tile enqueue records ({@link FrontierEntry}) for ground this front has
+   * touched. Grows with the frontier and dies with the attack.
    */
-  seen: Map<TileRef, number>;
+  seen: Map<TileRef, FrontierEntry>;
 }
 
 /** A transport ship en route to its landing tile. */
@@ -283,14 +291,6 @@ interface Nuke {
 }
 
 /**
- * Deterministic [0,1) draw from a cheap integer hash of two seeds — the same
- * technique the nuke-blast outer-ring roll and the frontier jitter use, so
- * replays stay exact (no `Math.random`).
- */
-const pseudoRandom01 = (a: number, b: number): number =>
-  ((a * 2654435761 + b * 40503) >>> 0) / 0x100000000;
-
-/**
  * Autonomous border-expansion conflict engine over a {@link TerritoryGrid}.
  *
  * Each tick: players earn income proportional to territory size, then every
@@ -325,6 +325,12 @@ export class RasterConflict {
   private nukeInterceptions: NukeInterception[] = [];
   /** Tick (exclusive) each SAM Launcher, keyed by tile, is ready to fire again. */
   private readonly samCooldownUntil = new Map<TileRef, number>();
+  /**
+   * Each SAM Launcher's own random stream for its intercept rolls, seeded with
+   * its tile — OpenFront's SAMLauncherExecution seeds a per-launcher
+   * `PseudoRandom(sam.id())` the same way. Lazily created on first shot.
+   */
+  private readonly samRng = new Map<TileRef, Prng>();
   /**
    * Most recent attacker of each player (land or sea), for the client's
    * "retaliate" hotkey. Public information — combat is already visible on the
@@ -543,18 +549,40 @@ export class RasterConflict {
       }
     }
 
-    const toward = intent.toward ?? -1;
     const existing = this.attacks.find((a) => a.attacker === attacker && a.target === target);
     if (existing) {
       existing.committed += committed;
-      // The freshest click redirects the combined push; an undirected reinforce
-      // (no toward) leaves the existing heading untouched.
-      if (toward >= 0) existing.toward = toward;
     } else {
-      this.attacks.push({ attacker, target, committed, anchor: -1, toward, seen: new Map() });
+      this.attacks.push({
+        attacker,
+        target,
+        committed,
+        anchor: -1,
+        rng: new Prng(ATTACK_RNG_SEED),
+        seen: new Map(),
+      });
     }
     if (target !== NEUTRAL_PLAYER) this.lastAttackedBy.set(target, attacker);
     return null;
+  }
+
+  /**
+   * Manually pull an active attack back — OpenFront's ordered retreat (the
+   * white-flag button on an outgoing attack). The front is dissolved and its
+   * committed troops return home, taxed {@link RETREAT_MALUS_FRACTION} when
+   * pulling off a *player* (OpenFront's `malusForRetreat`); retreating from
+   * neutral land is free. Returns the troops refunded, or `null` if `attacker`
+   * has no active attack against `target`.
+   */
+  orderRetreat(attacker: PlayerId, target: PlayerId): number | null {
+    const idx = this.attacks.findIndex((a) => a.attacker === attacker && a.target === target);
+    if (idx === -1) return null;
+    const [attack] = this.attacks.splice(idx, 1);
+    const kept = target === NEUTRAL_PLAYER
+      ? attack.committed
+      : attack.committed * (1 - RETREAT_MALUS_FRACTION);
+    this.grid.addTroops(attacker, kept);
+    return kept;
   }
 
   /**
@@ -612,10 +640,15 @@ export class RasterConflict {
     kind: NukeKind = "atom",
   ): void {
     if (kind === "mirv") {
+      // The warhead spread draws from a PRNG seeded with the launch tick plus
+      // the launching player — OpenFront's MIRVExecution seeds its spread
+      // stream `ticks + hash(player)` — so each salvo scatters differently but
+      // replays identically.
+      const rng = new Prng(this.tickCount + attacker);
       for (let i = 0; i < MIRV_WARHEAD_COUNT; i += 1) {
         const id = this.nextNukeId++;
-        const angle = pseudoRandom01(id, 17) * Math.PI * 2;
-        const dist = pseudoRandom01(id, 31) * MIRV_SCATTER_RADIUS;
+        const angle = rng.next() * Math.PI * 2;
+        const dist = rng.next() * MIRV_SCATTER_RADIUS;
         const wx = targetX + Math.cos(angle) * dist;
         const wy = targetY + Math.sin(angle) * dist;
         this.enqueueNuke(id, attacker, fromX, fromY, wx, wy, "mirv");
@@ -657,6 +690,10 @@ export class RasterConflict {
     const tilesBefore = new Map<PlayerId, number>();
     const tilesCleared = new Map<PlayerId, number>();
 
+    // The outer-ring destruction rolls come from a PRNG seeded with the
+    // detonation tick — OpenFront's NukeExecution does exactly this
+    // (`new PseudoRandom(mg.ticks())` + `chance(2)` per outer tile).
+    const rand = new Prng(this.tickCount);
     const { inner, outer, outerChance } = nukeBlast(nuke.kind);
     const minX = Math.max(0, cx - outer);
     const maxX = Math.min(map.width - 1, cx + outer);
@@ -674,12 +711,7 @@ export class RasterConflict {
         const ref = map.ref(x, y);
         if (!this.grid.isCapturable(ref)) continue;
 
-        let destroy = distSq <= innerSq;
-        if (!destroy) {
-          // Deterministic [0,1) draw from a cheap integer hash of (ref, nuke id) —
-          // same wobble technique as the frontier jitter, so replays stay exact.
-          destroy = pseudoRandom01(ref, nuke.id) < outerChance;
-        }
+        const destroy = distSq <= innerSq || rand.roll(outerChance);
         if (!destroy) continue;
 
         const owner = this.grid.ownerOf(ref);
@@ -742,7 +774,12 @@ export class RasterConflict {
 
         engagedThisTick.add(sam);
         this.samCooldownUntil.set(sam, this.tickCount + SAM_RELOAD_TICKS);
-        if (pseudoRandom01(sam, nuke.id) < SAM_INTERCEPT_CHANCE) {
+        let rng = this.samRng.get(sam);
+        if (!rng) {
+          rng = new Prng(sam);
+          this.samRng.set(sam, rng);
+        }
+        if (rng.roll(SAM_INTERCEPT_CHANCE)) {
           intercepted = true;
           this.nukeInterceptions.push({ attacker: nuke.attacker, defender: owner, x: cx, y: cy });
         }
@@ -921,72 +958,40 @@ export class RasterConflict {
    * radial blob rather than a tendril; higher ground scores higher, so easy low
    * ground is eaten first; and the enqueue tick (when the tile first joined this
    * front) makes ordering FIFO across generations, so the front rolls layer by
-   * layer instead of freezing against an elevation contour. The jitter is a
-   * deterministic hash of (tile, enqueue tick) standing in for OpenFront's RNG
-   * roll, so replays stay identical; see `rasterCombatConfig`.
+   * layer instead of freezing against an elevation contour. The jitter comes
+   * from the attack's own seeded PRNG, rolled once at enqueue exactly like
+   * OpenFront's `nextInt(0, 7)`; see `rasterCombatConfig`.
    */
-  private tilePriority(attacker: PlayerId, ref: TileRef, seenTick: number): number {
+  private tilePriority(attacker: PlayerId, ref: TileRef, entry: FrontierEntry): number {
     let ownedNeighbours = 0;
     for (const n of this.grid.map.neighbors(ref)) {
       if (this.grid.ownerOf(n) === attacker) ownedNeighbours += 1;
     }
     const structural =
       1 - ownedNeighbours * FRONTIER_SURROUND_WEIGHT + terrainPriorityWeight(this.grid.map.magnitude(ref)) / 2;
-    // Deterministic integer jitter 0..7 from a cheap hash of (ref, enqueue tick) —
-    // rolled "once per enqueue" exactly like OpenFront's `nextInt(0, 7)`.
-    const jitter = Math.floor(pseudoRandom01(ref, seenTick) * FRONTIER_JITTER_STEPS);
-    return (FRONTIER_JITTER_BASE + jitter) * structural + seenTick;
+    return (FRONTIER_JITTER_BASE + entry.jitter) * structural + entry.tick;
   }
 
   /**
    * The attacker's land frontier against `target`, ordered by capture priority
-   * for this tick. Tiles newly on the frontier are stamped with the current tick
-   * in `attack.seen` (OpenFront's enqueue moment) before scoring. When
-   * `toward >= 0` the ordering is biased so the front advances toward that tile
-   * (the click): each tile's priority gains its distance-to-`toward`, normalised
-   * across the frontier to [0,1], times {@link FRONTIER_TOWARD_WEIGHT}. A fresh
-   * array (the grid's frontier is not mutated).
+   * for this tick. Tiles newly on the frontier are stamped with the current
+   * tick and a fresh jitter roll from the attack's PRNG (OpenFront's enqueue
+   * moment) before scoring; new tiles are visited in ascending ref order, so
+   * the sequential draws stay deterministic. A fresh array (the grid's
+   * frontier is not mutated).
    */
   private orderedFrontier(attack: RasterAttack): TileRef[] {
     // Score each tile once, then sort — priority is fixed for the tick, so we
     // avoid recomputing it on every comparison.
     const frontier = this.grid.landFrontierOf(attack.attacker, attack.target);
-    const seenAt = (ref: TileRef): number => {
-      let seen = attack.seen.get(ref);
-      if (seen === undefined) {
-        seen = this.tickCount;
-        attack.seen.set(ref, seen);
+    const scored = frontier.map((ref) => {
+      let entry = attack.seen.get(ref);
+      if (entry === undefined) {
+        entry = { tick: this.tickCount, jitter: attack.rng.nextInt(0, FRONTIER_JITTER_STEPS) };
+        attack.seen.set(ref, entry);
       }
-      return seen;
-    };
-    const toward = attack.toward;
-    if (toward < 0 || frontier.length === 0) {
-      const scored = frontier.map((ref) => ({ ref, p: this.tilePriority(attack.attacker, ref, seenAt(ref)) }));
-      scored.sort((a, b) => a.p - b.p || a.ref - b.ref);
-      return scored.map((s) => s.ref);
-    }
-
-    // Directed push: normalise each tile's Euclidean distance to the clicked
-    // tile across the frontier, so the side facing the click sorts first. The
-    // bias is bounded (< the per-neighbour surround step), so pocket-filling
-    // still dominates and the front bulges rather than snakes.
-    const tx = this.grid.map.x(toward);
-    const ty = this.grid.map.y(toward);
-    let minD = Infinity;
-    let maxD = -Infinity;
-    const dist = frontier.map((ref) => {
-      const dx = this.grid.map.x(ref) - tx;
-      const dy = this.grid.map.y(ref) - ty;
-      const d = Math.sqrt(dx * dx + dy * dy);
-      if (d < minD) minD = d;
-      if (d > maxD) maxD = d;
-      return d;
+      return { ref, p: this.tilePriority(attack.attacker, ref, entry) };
     });
-    const span = maxD - minD || 1;
-    const scored = frontier.map((ref, i) => ({
-      ref,
-      p: this.tilePriority(attack.attacker, ref, seenAt(ref)) + ((dist[i] - minD) / span) * FRONTIER_TOWARD_WEIGHT,
-    }));
     scored.sort((a, b) => a.p - b.p || a.ref - b.ref);
     return scored.map((s) => s.ref);
   }
@@ -1293,7 +1298,16 @@ export class RasterConflict {
       this.grid.claim(dest, ship.attacker);
       const existing = this.attacks.find((a) => a.attacker === ship.attacker && a.target === owner);
       if (existing) existing.committed += ship.troops;
-      else this.attacks.push({ attacker: ship.attacker, target: owner, committed: ship.troops, anchor: dest, toward: -1, seen: new Map() });
+      else {
+        this.attacks.push({
+          attacker: ship.attacker,
+          target: owner,
+          committed: ship.troops,
+          anchor: dest,
+          rng: new Prng(ATTACK_RNG_SEED),
+          seen: new Map(),
+        });
+      }
     }
 
     this.ships.length = 0;
@@ -1380,14 +1394,11 @@ export class RasterConflict {
 
       // Per-tick advance budget (OpenFront's `attackTilesPerTick`): scales with
       // the attacker's troop advantage and the contested border width. OpenFront
-      // widens the border term by a random 0..5; a deterministic per-front hash
-      // stands in here so replays stay exact. `expansionSpeed` is the attacker's
-      // own speed modifier.
+      // widens the border term by `nextInt(0, 5)` from the attack's own PRNG,
+      // drawn the same way here. `expansionSpeed` is the attacker's own speed
+      // modifier.
       const expansionSpeed = this.grid.modifiersOf(attack.attacker).expansionSpeed;
-      // Tick goes into the hash's *first* seed (the one with the large odd
-      // multiplier) so consecutive ticks scatter across the whole range; the
-      // per-front term keeps two simultaneous fronts from sharing a roll.
-      const borderJitter = Math.floor(pseudoRandom01(this.tickCount, attack.attacker * 7919 + attack.target) * 6);
+      const borderJitter = attack.rng.nextInt(0, BORDER_JITTER_STEPS);
       let budget =
         attackTilesPerTick(defenderTroops, attack.committed, frontier.length + borderJitter, vsPlayer) *
         expansionSpeed;

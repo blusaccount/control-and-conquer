@@ -85,31 +85,53 @@ test("launchAttack rejects invalid intents without mutating state", () => {
   assert.equal(grid.troopsOf(1), 5);
 });
 
-test("a directed attack takes the click-side tile first", () => {
-  // A 1-row strip: player 1 seeds the middle (tile 10) with neutral land on both
-  // sides and commits just enough for a single tile. A purely radial front would
-  // pick a side arbitrarily — but a `toward` target makes the lone affordable
-  // capture land on the side facing the click (neutral land costs mag/5 = 16, so
-  // 20 troops afford exactly one tile).
-  const make = (toward: number): TerritoryGrid => {
-    const grid = new TerritoryGrid(flatLand(21, 1));
-    grid.addPlayer(1, 20);
-    grid.claim(10, 1);
-    freezeIncome(grid);
-    const conflict = new RasterConflict(grid);
-    conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 20, toward });
-    conflict.processTick();
-    return grid;
-  };
+test("a manual retreat dissolves the front — 25% malus off a player, free off neutral (OpenFront)", () => {
+  // OpenFront's ordered retreat (the white flag on an outgoing attack): the
+  // committed troops come home immediately, taxed `malusForRetreat` (25%) when
+  // pulling off a *player*, in full when pulling off neutral land.
+  const vsPlayer = new TerritoryGrid(flatLand(2, 1));
+  vsPlayer.addPlayer(1, 1000);
+  vsPlayer.addPlayer(2, 10);
+  vsPlayer.claim(0, 1);
+  vsPlayer.claim(1, 2);
+  freezeIncome(vsPlayer);
+  const conflict = new RasterConflict(vsPlayer);
+  assert.equal(conflict.launchAttack({ attacker: 1, target: 2, troops: 1000 }), null);
+  assert.equal(vsPlayer.troopsOf(1), 0, "committed troops leave the pool");
+  assert.equal(conflict.orderRetreat(1, 2), 750, "the retreat returns 75% of the force");
+  assert.equal(vsPlayer.troopsOf(1), 750);
+  assert.equal(conflict.activeAttackCount, 0, "the front is dissolved");
+  assert.equal(conflict.orderRetreat(1, 2), null, "no front left to retreat");
 
-  const right = make(20);
-  assert.equal(right.ownerOf(11), 1, "the tile toward the click (right) is taken");
-  assert.equal(right.ownerOf(9), NEUTRAL_PLAYER, "the away side (left) is left untouched");
+  const vsNeutral = new TerritoryGrid(flatLand(2, 1));
+  vsNeutral.addPlayer(1, 20);
+  vsNeutral.claim(0, 1);
+  freezeIncome(vsNeutral);
+  const neutralConflict = new RasterConflict(vsNeutral);
+  assert.equal(neutralConflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 20 }), null);
+  assert.equal(neutralConflict.orderRetreat(1, NEUTRAL_PLAYER), 20, "a neutral retreat is free");
+  assert.equal(vsNeutral.troopsOf(1), 20);
+});
 
-  // Pointing the other way mirrors the result.
-  const left = make(0);
-  assert.equal(left.ownerOf(9), 1, "the tile toward the click (left) is taken");
-  assert.equal(left.ownerOf(11), NEUTRAL_PLAYER, "the away side (right) is left untouched");
+test("opposing attacks cancel out at launch (OpenFront incoming-attack netting)", () => {
+  // Player 2 is already pushing 300 troops into player 1; player 1 counters
+  // with 1000. The two forces annihilate man for man at launch: player 2's
+  // front is wiped out and player 1's survives with the 700 difference.
+  const grid = new TerritoryGrid(flatLand(2, 1));
+  grid.addPlayer(1, 1000);
+  grid.addPlayer(2, 300);
+  grid.claim(0, 1);
+  grid.claim(1, 2);
+  freezeIncome(grid);
+  const conflict = new RasterConflict(grid);
+
+  assert.equal(conflict.launchAttack({ attacker: 2, target: 1, troops: 300 }), null);
+  assert.equal(conflict.launchAttack({ attacker: 1, target: 2, troops: 1000 }), null);
+  assert.equal(conflict.activeAttackCount, 1, "the smaller opposing front is annihilated");
+  assert.equal(conflict.orderRetreat(2, 1), null, "player 2's front no longer exists");
+  // The surviving front belongs to player 1 and carries only the 700 surplus
+  // (its retreat refund is 75% of that).
+  assert.equal(conflict.orderRetreat(1, 2), 700 * 0.75, "player 1's front kept the surplus");
 });
 
 test("neutral expansion claims a line of tiles ring by ring until domination ends the match", () => {
@@ -414,27 +436,37 @@ test("two fronts dismantle a defender faster than one (each captured tile bleeds
   );
 });
 
-test("frontier priority captures easy low ground before high ground", () => {
-  // 3x1 line: tile 0 is high ground (mag 10), the attacker sits on tile 1, tile 2
-  // is flat. By raw tile order the elevated tile 0 comes first; priority ordering
-  // must instead grab the flat tile 2 first. Budget is tuned to one tile per tick.
-  const terrain = new Uint8Array(3);
-  terrain[0] = encodeTile({ land: true, shoreline: false, ocean: false, magnitude: 25 });
-  terrain[1] = encodeTile({ land: true, shoreline: false, ocean: false, magnitude: 0 });
-  terrain[2] = encodeTile({ land: true, shoreline: false, ocean: false, magnitude: 0 });
-  const grid = new TerritoryGrid(new GameMap(3, 1, terrain));
-  // Just enough troops for one plains tile (mag/5 = 16), so the front must choose:
-  // priority ordering takes the easy flat tile, leaving the dear mountain.
-  grid.addPlayer(1, 16);
-  grid.claim(1, 1);
+test("frontier priority prefers easy low ground over mountains (OpenFront tile weights)", () => {
+  // 21x1 strip, attacker in the middle: flat plains to the left, mountains to
+  // the right. OpenFront's priority key weighs mountains 2x on the jitter base
+  // (10..16 for plains vs 15..24 for mountains), so the bands *overlap* — a
+  // single pair can occasionally invert, exactly as in OpenFront — but over a
+  // whole run the front must eat far more low ground than high ground.
+  const W = 21;
+  const terrain = new Uint8Array(W);
+  for (let x = 0; x < W; x += 1) {
+    terrain[x] = encodeTile({ land: true, shoreline: false, ocean: false, magnitude: x < 10 ? 0 : x === 10 ? 0 : 25 });
+  }
+  const grid = new TerritoryGrid(new GameMap(W, 1, terrain));
+  // 300 troops: enough for all ten 16-troop plains tiles with change for a few
+  // 24-troop mountain tiles — if priority ignored terrain, captures would split
+  // roughly evenly instead.
+  grid.addPlayer(1, 300);
+  grid.claim(10, 1);
   freezeIncome(grid);
   const conflict = new RasterConflict(grid);
 
-  assert.equal(conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 16 }), null);
-  conflict.processTick();
+  assert.equal(conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 300 }), null);
+  runTicks(conflict, 40);
 
-  assert.equal(grid.ownerOf(2), 1, "flat low ground is taken first");
-  assert.equal(grid.ownerOf(0), NEUTRAL_PLAYER, "dear mountain ground is left for last");
+  let low = 0;
+  let high = 0;
+  for (const ref of grid.tilesOf(1)) {
+    if (ref < 10) low += 1;
+    if (ref > 10) high += 1;
+  }
+  assert.ok(low > high, `low ground falls first: ${low} plains vs ${high} mountain tiles`);
+  assert.ok(low >= 8, `the plains side is nearly cleared, took ${low}`);
 });
 
 test("terrainPriorityWeight buckets elevation into OpenFront's 1 / 1.5 / 2 bands", () => {

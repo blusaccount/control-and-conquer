@@ -112,6 +112,21 @@ export type RasterAllyRenewClientMessage = {
 };
 
 /**
+ * Client → server: manually retreat the active attack against `targetId`
+ * (0 = neutral land) — OpenFront's ordered retreat (the white flag on an
+ * outgoing attack): the front dissolves and its committed troops come home,
+ * taxed 25% when pulling off a player, free off neutral land.
+ */
+export interface RasterRetreatPayload {
+  targetId: number;
+}
+
+export type RasterRetreatClientMessage = {
+  type: "CLIENT_RASTER_RETREAT";
+  payload: RasterRetreatPayload;
+};
+
+/**
  * Client → server: donate a slice of your own resource to an ally — troops or
  * gold, `percent` (1..100) of your current pool. OpenFront's ally donation;
  * only ever between standing allies.

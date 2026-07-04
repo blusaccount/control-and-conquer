@@ -22,6 +22,7 @@ import type {
   RasterEmbargoClientMessage,
   RasterEmojiClientMessage,
   RasterJoinClientMessage,
+  RasterRetreatClientMessage,
   RasterSpawnClientMessage,
   RasterTargetRequestClientMessage,
 } from "./messages.js";
@@ -544,6 +545,7 @@ export type RasterClientMessage =
   | RasterAllyRespondClientMessage
   | RasterAllyBreakClientMessage
   | RasterAllyRenewClientMessage
+  | RasterRetreatClientMessage
   | RasterDonateClientMessage
   | RasterEmbargoClientMessage
   | RasterTargetRequestClientMessage

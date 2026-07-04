@@ -10,6 +10,7 @@ import {
   RasterEmbargoPayload,
   RasterEmojiPayload,
   RasterJoinPayload,
+  RasterRetreatPayload,
   RasterSpawnPayload,
   RasterTargetRequestPayload,
 } from "../Core/messages.js";
@@ -40,6 +41,19 @@ const parseAllyBreak = (payload: unknown): RasterAllyBreakPayload => ({
 const parseAllyRenew = (payload: unknown): RasterAllyRenewPayload => ({
   targetId: parseTargetId(payload, "CLIENT_RASTER_ALLY_RENEW"),
 });
+
+const parseRetreat = (payload: unknown): RasterRetreatPayload => {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("CLIENT_RASTER_RETREAT.payload must be an object.");
+  }
+  const { targetId } = payload as Record<string, unknown>;
+  // Unlike the diplomacy commands, 0 (neutral land) is a legal retreat target —
+  // pulling a land-grab back is exactly the free-retreat case.
+  if (typeof targetId !== "number" || !Number.isInteger(targetId) || targetId < 0) {
+    throw new Error("targetId must be a non-negative integer player id (0 = neutral).");
+  }
+  return { targetId };
+};
 
 const parseDonate = (payload: unknown): RasterDonatePayload => {
   const targetId = parseTargetId(payload, "CLIENT_RASTER_DONATE");
@@ -217,6 +231,9 @@ export const validateCommand = (raw: unknown): RasterClientMessage => {
   }
   if (message.type === "CLIENT_RASTER_ALLY_RENEW") {
     return { type: "CLIENT_RASTER_ALLY_RENEW", payload: parseAllyRenew(message.payload) };
+  }
+  if (message.type === "CLIENT_RASTER_RETREAT") {
+    return { type: "CLIENT_RASTER_RETREAT", payload: parseRetreat(message.payload) };
   }
   if (message.type === "CLIENT_RASTER_DONATE") {
     return { type: "CLIENT_RASTER_DONATE", payload: parseDonate(message.payload) };

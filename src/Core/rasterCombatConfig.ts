@@ -444,15 +444,31 @@ export const defenderLossPerTile = (troops: number, tiles: number): number => {
  *    ~12+ ticks later, so the front advances layer by layer and never freezes
  *    dead against an elevation contour while low ground remains elsewhere.
  *
- * `jitter` (OpenFront: RNG integer 0..7 on a base of 10, rolled once when the
- * tile is enqueued) scatters captures among otherwise-equal perimeter tiles. We
- * reproduce the identical range from a deterministic hash of (tile, enqueue
- * tick) instead of an RNG, so replays stay identical — the only divergence a
- * deterministic port needs.
+ * `jitter` (OpenFront: `nextInt(0, 7)` — an integer 0..6 on a base of 10,
+ * rolled once from the attack's own seeded PRNG when the tile is enqueued)
+ * scatters captures among otherwise-equal perimeter tiles. Drawn here from the
+ * same mechanism: each attack owns a PRNG seeded {@link ATTACK_RNG_SEED}
+ * (OpenFront seeds every `AttackExecution` with the same fixed 123), so
+ * replays stay identical without any `Math.random`.
  */
 export const FRONTIER_SURROUND_WEIGHT = 0.5;
 export const FRONTIER_JITTER_BASE = 10;
-export const FRONTIER_JITTER_STEPS = 8;
+export const FRONTIER_JITTER_STEPS = 7;
+
+/**
+ * Seed of the per-attack PRNG that rolls the frontier tile jitter and the
+ * per-tick border jitter — OpenFront seeds every `AttackExecution`'s
+ * `PseudoRandom` with this same fixed constant, so each attack replays its
+ * jitter stream identically.
+ */
+export const ATTACK_RNG_SEED = 123;
+
+/**
+ * Deterministic border-size jitter added to the frontier width inside the
+ * advance-budget formula, OpenFront's `borderSize() + nextInt(0, 5)`: an
+ * integer 0..4 rolled per tick from the attack's PRNG.
+ */
+export const BORDER_JITTER_STEPS = 5;
 
 /**
  * OpenFront's per-band tile-priority weight (plains 1, highland 1.5, mountain 2),
@@ -464,22 +480,6 @@ export const terrainPriorityWeight = (elevation: number): number => {
   if (elevation <= TERRAIN_HIGHLAND_MAX_ELEVATION) return 1.5;
   return 2;
 };
-
-/**
- * Directional pull toward the tile a player actually clicked. When an attack
- * carries a `toward` target, each frontier tile's priority is nudged up by its
- * normalised distance (0 at the frontier tile nearest the click, 1 at the
- * farthest) times this weight, so the limited per-tick budget is spent on the
- * side of the front facing the click — the blob *bulges* toward where you
- * pointed instead of advancing evenly on all sides (a C&C convenience;
- * OpenFront's attacks are undirected). Sized to the OpenFront priority key's
- * units (jitter base 10 × structural terms): deliberately kept **below** the
- * ~5-point step one extra owned neighbour subtracts, so back-filling concavities
- * still dominates and the front stays a smooth bulge rather than snaking a
- * tendril straight at the target. `0` disables the bias entirely (pure radial
- * growth).
- */
-export const FRONTIER_TOWARD_WEIGHT = 4;
 
 /**
  * Radius (in tiles, Chebyshev) within which a click that lands on un-ownable
