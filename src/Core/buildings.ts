@@ -262,18 +262,22 @@ export const RAIL_PAYOUT_TYPES: readonly BuildingType[] = ["city", "port"];
 export const RAIL_STATION_MIN_RANGE = 15;
 
 /**
- * Greatest straight-line distance (tiles) between two linked stations, OpenFront's
- * `trainStationMaxRange` (110). A city/port only becomes a rail station at all
- * when a factory sits within this range of it (the factory is the catalyst).
+ * Greatest straight-line distance (tiles) between two linked stations — the
+ * public wiki's documented connection range ("between 15 and 100 units";
+ * openfront.miraheze.org "Factory"/"Railroad", retrieved 2026-07). A city/port
+ * only becomes a rail station at all when a factory sits within this range of
+ * it (the factory is the catalyst) — anyone's factory: rail networks span
+ * players, which is what makes foreign/allied train stops possible.
  */
-export const RAIL_STATION_MAX_RANGE = 110;
+export const RAIL_STATION_MAX_RANGE = 100;
 
 /**
- * Longest a single railroad's routed track may run, OpenFront's `railroadMaxSize`
- * = `trainStationMaxRange · √2 ≈ 155.56`. A route whose A* path exceeds this
- * (e.g. a long detour around water) is dropped, so no link is laid.
+ * Longest a single railroad's routed track may run — the wiki's documented
+ * per-connection cap ("each individual railroad connection having a maximum
+ * distance of 120 units"). A route whose A* path exceeds this (e.g. a long
+ * detour around water) is dropped, so no link is laid.
  */
-export const RAIL_MAX_TRACK_LENGTH = RAIL_STATION_MAX_RANGE * Math.SQRT2;
+export const RAIL_MAX_TRACK_LENGTH = 120;
 
 /**
  * Extra A* cost for laying track onto a water or shoreline tile, OpenFront's
@@ -293,13 +297,16 @@ export const RAIL_DIRECTION_CHANGE_PENALTY = 3;
 export const RAIL_HEURISTIC_WEIGHT = 2;
 
 /**
- * Base gold a train pays when it reaches a city/port on its **own** owner's
- * network — OpenFront's `trainGold` "self" tier (10 000). (OpenFront also pays a
- * higher tier when a train stops at another player's or an ally's station —
- * 25 000 / 35 000 — but our rail network only ever links one owner's own
- * stations, so the self tier is the only reachable one.)
+ * Train payout tiers, per the public wiki ("Train", retrieved 2026-07): a stop
+ * at your **own** city/port pays 10 000, at another player's 25 000, and at an
+ * **ally's** 35 000 — long international lines through friendly territory are
+ * the big rail money, which is exactly why the network spans players. On a
+ * paying stop **both** the train's owner and the station's owner receive the
+ * amount (once, if they're the same player).
  */
 export const TRAIN_GOLD_SELF_BASE = 10_000;
+export const TRAIN_GOLD_OTHER_BASE = 25_000;
+export const TRAIN_GOLD_ALLY_BASE = 35_000;
 /** Stops a train makes at full pay before the distance penalty starts (OpenFront's `-9`). */
 export const TRAIN_GOLD_FREE_STOPS = 9;
 /** Gold the payout drops per city/port stop beyond {@link TRAIN_GOLD_FREE_STOPS}. */
@@ -308,14 +315,14 @@ export const TRAIN_GOLD_STOP_DECAY = 5_000;
 export const TRAIN_GOLD_FLOOR = 5_000;
 
 /**
- * Gold a train pays its owner at a city/port stop, mirroring OpenFront's
- * `trainGold`: the self-tier base, minus 5 000 for every stop this train has made
- * beyond the first ~10, floored at 5 000. `stopsVisited` is how many paying stops
- * the train has already banked, so its payout decays the longer it runs.
+ * Gold one paying stop is worth, mirroring OpenFront's `trainGold`: the
+ * relationship tier's `base`, minus 5 000 for every stop this train has made
+ * beyond the first ~10, floored at 5 000. `stopsVisited` is how many paying
+ * stops the train has already banked, so its payout decays the longer it runs.
  */
-export const trainGold = (stopsVisited: number): number => {
+export const trainGold = (stopsVisited: number, base: number = TRAIN_GOLD_SELF_BASE): number => {
   const beyondFree = Math.max(0, Math.max(0, stopsVisited) - TRAIN_GOLD_FREE_STOPS);
-  return Math.max(TRAIN_GOLD_FLOOR, TRAIN_GOLD_SELF_BASE - beyondFree * TRAIN_GOLD_STOP_DECAY);
+  return Math.max(TRAIN_GOLD_FLOOR, base - beyondFree * TRAIN_GOLD_STOP_DECAY);
 };
 
 /** Tiles of track a train advances per tick (OpenFront's train `speed: 2`). */

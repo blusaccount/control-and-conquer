@@ -9,10 +9,12 @@
  * (`railSystem.ts`) layers movement and gold payouts on top.
  *
  * Rules replicated 1:1 from OpenFront (values in `buildings.ts`):
- *   - Only a player's own stations connect, and only owners holding a **factory**
- *     lay track (the factory is the catalyst). A **city/port becomes a station**
- *     only when a factory sits within {@link RAIL_STATION_MAX_RANGE} of it; a
- *     factory is always a station.
+ *   - The network spans **all players** (the public wiki: railroads connect
+ *     "with other non-military buildings", including other players' — that is
+ *     what foreign/ally train stops are). A **factory** is the catalyst: a
+ *     city/port becomes a station only when *some* factory — anyone's — sits
+ *     within {@link RAIL_STATION_MAX_RANGE} of it; a factory is always a
+ *     station. No factory on the map, no track.
  *   - Two stations link when their straight-line distance is within
  *     [{@link RAIL_STATION_MIN_RANGE}, {@link RAIL_STATION_MAX_RANGE}].
  *   - Track is routed by **A\*** over the tile grid, **cardinal only** (4-neighbour),
@@ -47,10 +49,12 @@ export interface RailStation {
 }
 
 /**
- * One railroad link of a single owner. Its endpoints `a`/`b` are network
- * **nodes** — usually stations, but either may be a **junction**: a tile where a
- * later station tapped into the middle of this track, splitting the original edge
- * in two. Trains pay out only at station nodes; junctions are pass-through.
+ * One railroad link. Its endpoints `a`/`b` are network **nodes** — usually
+ * stations, but either may be a **junction**: a tile where a later station
+ * tapped into the middle of this track, splitting the original edge in two.
+ * Trains pay out only at station nodes; junctions are pass-through. `owner` is
+ * the owner of the station whose joining laid this track (edges may span two
+ * players' stations — the network is cross-player); it only drives rendering.
  */
 export interface RailEdge {
   owner: PlayerId;
@@ -289,8 +293,9 @@ interface BuildEdge {
 
 /**
  * Compute the rail network for the current set of stations. Pure and
- * deterministic: per owner (only owners holding a factory lay track), a city/port
- * becomes a station only if a factory is within {@link RAIL_STATION_MAX_RANGE}.
+ * deterministic. The network is **global across owners** (the wiki's
+ * cross-player connections): every factory is a station, and a city/port is a
+ * station once *any* factory sits within {@link RAIL_STATION_MAX_RANGE}.
  *
  * The network is grown **incrementally**, exactly like OpenFront's `connectStation`
  * rather than as a full mesh: stations join in ref order and each new station
@@ -308,13 +313,6 @@ export const computeRailNetwork = (
   const edges: RailEdge[] = [];
   const adjacency = new Map<TileRef, TileRef[]>();
 
-  const byOwner = new Map<PlayerId, RailStation[]>();
-  for (const station of stations) {
-    const list = byOwner.get(station.owner);
-    if (list) list.push(station);
-    else byOwner.set(station.owner, [station]);
-  }
-
   const minSq = RAIL_STATION_MIN_RANGE * RAIL_STATION_MIN_RANGE;
   const maxSq = RAIL_STATION_MAX_RANGE * RAIL_STATION_MAX_RANGE;
   const distSq = (p: TileRef, q: TileRef): number => {
@@ -323,89 +321,96 @@ export const computeRailNetwork = (
     return dx * dx + dy * dy;
   };
 
-  for (const owner of [...byOwner.keys()].sort((p, q) => p - q)) {
-    const own = byOwner.get(owner)!;
-    const factories = own.filter((s) => s.type === "factory");
-    // The factory is the catalyst: without one, a player's cities/ports lay no
-    // track even when they sit side by side.
-    if (factories.length === 0) continue;
+  const factories = stations.filter((s) => s.type === "factory");
+  // The factory is the catalyst: with none on the map, nobody's cities/ports
+  // lay any track even when they sit side by side.
+  if (factories.length === 0) return { edges, adjacency };
 
-    // A factory is always a station; a city/port is a station only if some factory
-    // sits within the max range of it.
-    const eligible = own
-      .filter((s) => s.type === "factory" || factories.some((f) => distSq(f.ref, s.ref) <= maxSq))
-      .sort((p, q) => p.ref - q.ref);
+  // A factory is always a station; a city/port is a station only if some
+  // factory — anyone's — sits within the max range of it.
+  const eligible = stations
+    .filter((s) => s.type === "factory" || factories.some((f) => distSq(f.ref, s.ref) <= maxSq))
+    .sort((p, q) => p.ref - q.ref);
+  const ownerOf = new Map<TileRef, PlayerId>(eligible.map((s) => [s.ref, s.owner]));
 
-    const eList: BuildEdge[] = [];
-    const nodes = new Set<TileRef>(); // stations + grafted junctions
-    const forest = new DisjointSet();
+  const eList: BuildEdge[] = [];
+  const edgeOwner: PlayerId[] = []; // laid-by owner per eList entry, for rendering
+  const nodes = new Set<TileRef>(); // stations + grafted junctions
+  const forest = new DisjointSet();
 
-    // Split edge `idx` at interior tile `j`, turning it into a→j and j→b and
-    // making `j` a junction node. `j` must lie strictly inside the edge's path.
-    const splitEdge = (idx: number, j: TileRef): void => {
-      const e = eList[idx];
-      const m = e.path.indexOf(j);
-      eList[idx] = { a: e.a, b: j, path: e.path.slice(0, m + 1) };
-      eList.push({ a: j, b: e.b, path: e.path.slice(m) });
-      nodes.add(j);
-      forest.union(e.a, j); // same component; just record the new node
-    };
+  // Split edge `idx` at interior tile `j`, turning it into a→j and j→b and
+  // making `j` a junction node. `j` must lie strictly inside the edge's path.
+  const splitEdge = (idx: number, j: TileRef): void => {
+    const e = eList[idx];
+    const m = e.path.indexOf(j);
+    eList[idx] = { a: e.a, b: j, path: e.path.slice(0, m + 1) };
+    eList.push({ a: j, b: e.b, path: e.path.slice(m) });
+    edgeOwner.push(edgeOwner[idx]);
+    nodes.add(j);
+    forest.union(e.a, j); // same component; just record the new node
+  };
 
-    for (const station of eligible) {
-      const s = station.ref;
-      nodes.add(s);
-      forest.find(s); // register in the disjoint set
+  for (const station of eligible) {
+    const s = station.ref;
+    nodes.add(s);
+    forest.find(s); // register in the disjoint set
 
-      // Index interior track tiles → their edge, rebuilt each connection so it
-      // reflects freshly grafted junctions. Node tiles are excluded (connecting
-      // to a node is handled by the node scan, not as a mid-track snap).
-      const failed = new Set<TileRef>(); // targets whose route couldn't be laid
-      for (;;) {
-        const tileToEdge = new Map<TileRef, number>();
-        eList.forEach((e, idx) => {
-          for (let i = 1; i < e.path.length - 1; i += 1) {
-            if (!nodes.has(e.path[i])) tileToEdge.set(e.path[i], idx);
-          }
-        });
-
-        // Nearest unconnected target within range: a node (respecting the min
-        // station spacing) or a mid-track tile (a T-junction, no min spacing).
-        let best: { ref: TileRef; d: number; edgeIdx: number | null } | null = null;
-        const consider = (ref: TileRef, d: number, edgeIdx: number | null): void => {
-          if (best === null || d < best.d || (d === best.d && ref < best.ref)) best = { ref, d, edgeIdx };
-        };
-        for (const n of nodes) {
-          if (n === s || failed.has(n) || forest.connected(s, n)) continue;
-          const d = distSq(s, n);
-          if (d < minSq || d > maxSq) continue;
-          consider(n, d, null);
+    // Index interior track tiles → their edge, rebuilt each connection so it
+    // reflects freshly grafted junctions. Node tiles are excluded (connecting
+    // to a node is handled by the node scan, not as a mid-track snap).
+    const failed = new Set<TileRef>(); // targets whose route couldn't be laid
+    for (;;) {
+      const tileToEdge = new Map<TileRef, number>();
+      eList.forEach((e, idx) => {
+        for (let i = 1; i < e.path.length - 1; i += 1) {
+          if (!nodes.has(e.path[i])) tileToEdge.set(e.path[i], idx);
         }
-        for (const [tile, idx] of tileToEdge) {
-          if (failed.has(tile) || forest.connected(s, eList[idx].a)) continue;
-          const d = distSq(s, tile);
-          if (d > maxSq) continue;
-          consider(tile, d, idx);
-        }
-        if (best === null) break;
+      });
 
-        const target: { ref: TileRef; d: number; edgeIdx: number | null } = best;
-        const path = routeRail(map, s, target.ref);
-        if (!path) {
-          failed.add(target.ref); // unroutable (blocked/over the cap) — try the next
-          continue;
-        }
-        if (target.edgeIdx !== null) splitEdge(target.edgeIdx, target.ref);
-        forest.union(s, target.ref);
-        eList.push({ a: s, b: target.ref, path });
+      // Nearest unconnected target within range: a node (respecting the min
+      // station spacing) or a mid-track tile (a T-junction, no min spacing).
+      let best: { ref: TileRef; d: number; edgeIdx: number | null } | null = null;
+      const consider = (ref: TileRef, d: number, edgeIdx: number | null): void => {
+        if (best === null || d < best.d || (d === best.d && ref < best.ref)) best = { ref, d, edgeIdx };
+      };
+      for (const n of nodes) {
+        if (n === s || failed.has(n) || forest.connected(s, n)) continue;
+        const d = distSq(s, n);
+        if (d < minSq || d > maxSq) continue;
+        consider(n, d, null);
       }
-    }
+      for (const [tile, idx] of tileToEdge) {
+        if (failed.has(tile) || forest.connected(s, eList[idx].a)) continue;
+        const d = distSq(s, tile);
+        if (d > maxSq) continue;
+        consider(tile, d, idx);
+      }
+      if (best === null) break;
 
-    for (const e of eList) {
-      edges.push({ owner, a: e.a, b: e.b, corners: reduceToCorners(map, e.path), length: e.path.length - 1 });
-      addAdjacency(adjacency, e.a, e.b);
-      addAdjacency(adjacency, e.b, e.a);
+      const target: { ref: TileRef; d: number; edgeIdx: number | null } = best;
+      const path = routeRail(map, s, target.ref);
+      if (!path) {
+        failed.add(target.ref); // unroutable (blocked/over the cap) — try the next
+        continue;
+      }
+      if (target.edgeIdx !== null) splitEdge(target.edgeIdx, target.ref);
+      forest.union(s, target.ref);
+      eList.push({ a: s, b: target.ref, path });
+      edgeOwner.push(station.owner);
     }
   }
+
+  eList.forEach((e, idx) => {
+    edges.push({
+      owner: edgeOwner[idx] ?? ownerOf.get(e.a) ?? ownerOf.get(e.b)!,
+      a: e.a,
+      b: e.b,
+      corners: reduceToCorners(map, e.path),
+      length: e.path.length - 1,
+    });
+    addAdjacency(adjacency, e.a, e.b);
+    addAdjacency(adjacency, e.b, e.a);
+  });
 
   return { edges, adjacency };
 };

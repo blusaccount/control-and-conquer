@@ -373,7 +373,13 @@ export class RasterConflict {
   constructor(grid: TerritoryGrid, allies: AllianceView = NO_ALLIANCES) {
     this.grid = grid;
     this.allies = allies;
-    this.rails = new RailSystem(grid);
+    // The rail economy consults diplomacy for the payout tiers (ally 35k vs
+    // other 25k) and to mute payouts at an embargoed player's stations.
+    this.rails = new RailSystem(
+      grid,
+      (a, b) => this.allies.areAllied(a, b),
+      (a, b) => this.allies.isEmbargoed?.(a, b) ?? false,
+    );
     // The trade system consults the (deferred) diplomacy view so an embargoed
     // pair never dispatches trade ships to each other.
     this.trade = new TradeSystem(grid, (a, b) => this.allies.isEmbargoed?.(a, b) ?? false);

@@ -16,6 +16,9 @@ import {
   type BuildingType,
   RAIL_PAYOUT_TYPES,
   RAIL_STATION_TYPES,
+  TRAIN_GOLD_ALLY_BASE,
+  TRAIN_GOLD_OTHER_BASE,
+  TRAIN_GOLD_SELF_BASE,
   trainGold,
   trainSpawnRate,
   TRAIN_MAX_PER_PLAYER,
@@ -60,6 +63,15 @@ export interface TrainView {
 
 export class RailSystem {
   private readonly grid: TerritoryGrid;
+  /**
+   * Diplomacy predicates, injected by the engine: `isAllied` picks the ally
+   * payout tier at a foreign stop; `isEmbargoed` mutes payouts at an embargoed
+   * player's station (a train still rolls through — only the money stops,
+   * consistent with the trade-ship embargo). Both default to "no relationship"
+   * for callers/tests that don't wire diplomacy.
+   */
+  private readonly isAllied: (a: PlayerId, b: PlayerId) => boolean;
+  private readonly isEmbargoed: (a: PlayerId, b: PlayerId) => boolean;
   private network: RailNetwork = { edges: [], adjacency: new Map() };
   /** Edge lookup by unordered station pair, rebuilt whenever the network is. */
   private edgeByPair = new Map<string, RailEdge>();
@@ -74,8 +86,14 @@ export class RailSystem {
   /** Tick a factory last launched a train, for the spawn cooldown. */
   private lastTrainSpawn = new Map<TileRef, number>();
 
-  constructor(grid: TerritoryGrid) {
+  constructor(
+    grid: TerritoryGrid,
+    isAllied: (a: PlayerId, b: PlayerId) => boolean = () => false,
+    isEmbargoed: (a: PlayerId, b: PlayerId) => boolean = () => false,
+  ) {
     this.grid = grid;
+    this.isAllied = isAllied;
+    this.isEmbargoed = isEmbargoed;
   }
 
   /**
@@ -169,10 +187,23 @@ export class RailSystem {
       // the train just rolls on through it toward the next station.
       const arrivedType = this.stationType.get(train.to);
       if (arrivedType) {
-        // A city/port still owned by the train's owner pays out, with OpenFront's
-        // per-stop decay: the payout eases the longer the train runs.
-        if (RAIL_PAYOUT_TYPES.includes(arrivedType) && this.grid.ownerOf(train.to) === train.owner) {
-          this.grid.addGold(train.owner, trainGold(train.visits));
+        // A paying stop (city/port), per the public wiki: the relationship tier
+        // — own 10k, another player's 25k, an ally's 35k — decayed by how long
+        // the train has run, paid to BOTH the train's owner and the station's
+        // owner (once when they're the same player). An embargo between the two
+        // mutes the money; the train still rolls through.
+        if (RAIL_PAYOUT_TYPES.includes(arrivedType)) {
+          const stationOwner = this.grid.ownerOf(train.to);
+          if (stationOwner === train.owner) {
+            this.grid.addGold(train.owner, trainGold(train.visits, TRAIN_GOLD_SELF_BASE));
+          } else if (!this.isEmbargoed(train.owner, stationOwner)) {
+            const base = this.isAllied(train.owner, stationOwner)
+              ? TRAIN_GOLD_ALLY_BASE
+              : TRAIN_GOLD_OTHER_BASE;
+            const gold = trainGold(train.visits, base);
+            this.grid.addGold(train.owner, gold);
+            this.grid.addGold(stationOwner, gold);
+          }
         }
         train.visits += 1;
         if (train.visits >= TRAIN_MAX_VISITS) continue;
