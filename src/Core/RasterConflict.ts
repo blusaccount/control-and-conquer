@@ -2,6 +2,9 @@ import type { TileRef } from "./GameMap.js";
 import { NEUTRAL_PLAYER, type PlayerId, type TerritoryGrid } from "./TerritoryGrid.js";
 import { NO_ALLIANCES, type AllianceView } from "./alliances.js";
 import {
+  FORT_SHELL_DAMAGE,
+  FORT_SHELL_RANGE,
+  FORT_SHELL_RATE_TICKS,
   FORT_SPEED_BONUS,
   GOLD_BASE_PER_TICK,
   WARSHIP_ENGAGE_RANGE,
@@ -325,6 +328,8 @@ export class RasterConflict {
   private nukeInterceptions: NukeInterception[] = [];
   /** Tick (exclusive) each SAM Launcher, keyed by tile, is ready to fire again. */
   private readonly samCooldownUntil = new Map<TileRef, number>();
+  /** Tick (exclusive) each fort's gun, keyed by tile, is ready to fire again. */
+  private readonly fortShellReadyAt = new Map<TileRef, number>();
   /**
    * Each SAM Launcher's own random stream for its intercept rolls, seeded with
    * its tile — OpenFront's SAMLauncherExecution seeds a per-launcher
@@ -844,6 +849,9 @@ export class RasterConflict {
     // Mobile warships hunt down enemy transports/warships/trade ships before
     // transports advance/land this tick.
     this.advanceWarships();
+    // Fort guns shell hostile ships in range (OpenFront's defense-post gun),
+    // likewise before transports advance/land.
+    this.advanceFortGuns();
     this.advanceShips();
     // SAM Launchers shoot down in-flight warheads before they can detonate.
     this.interceptNukes();
@@ -1147,12 +1155,13 @@ export class RasterConflict {
   /**
    * Step `w` one tick's distance toward `(tx, ty)`, snapping exactly onto it
    * once close enough (arriving is always allowed, even at a home tile that
-   * itself sits on land — "docking"). An intermediate step that would land on
-   * land instead holds position for the tick rather than crossing it: a
-   * straight-line course with a basic no-land guard, not full water routing
-   * (like transport ships get via {@link TerritoryGrid.findWaterRoute}) — a
-   * documented simplification, since a warship's target moves tick to tick
-   * and re-pathing a BFS route every tick would be far more expensive.
+   * itself sits on land — "docking"). When the straight step would run onto
+   * land, the ship **sidesteps**: it takes the unit step (of the eight compass
+   * directions) that stays on water and closes the most distance, so it slides
+   * along a coastline instead of freezing against it. Only distance-*reducing*
+   * sidesteps are taken (no oscillation); a deeply concave shore can still pin
+   * a ship for a while — a documented simplification versus full per-tick BFS
+   * water routing, which a moving target would make far more expensive.
    */
   private moveWarshipToward(w: Warship, tx: number, ty: number): void {
     const dx = tx - w.x;
@@ -1168,11 +1177,38 @@ export class RasterConflict {
       return;
     }
     const map = this.grid.map;
-    const rx = Math.round(nx);
-    const ry = Math.round(ny);
-    if (!map.inBounds(rx, ry) || map.isLand(map.ref(rx, ry))) return;
-    w.x = nx;
-    w.y = ny;
+    const open = (x: number, y: number): boolean => {
+      const rx = Math.round(x);
+      const ry = Math.round(y);
+      return map.inBounds(rx, ry) && !map.isLand(map.ref(rx, ry));
+    };
+    if (open(nx, ny)) {
+      w.x = nx;
+      w.y = ny;
+      return;
+    }
+    // Coast in the way: slide along it via the best open compass step that
+    // still gets closer to the target. Fixed direction order keeps ties (and
+    // therefore replays) deterministic.
+    const DIRS: ReadonlyArray<readonly [number, number]> = [
+      [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1],
+    ];
+    let bestX = w.x;
+    let bestY = w.y;
+    let bestD = dist;
+    for (const [ux, uy] of DIRS) {
+      const cx = w.x + ux * step;
+      const cy = w.y + uy * step;
+      if (!open(cx, cy)) continue;
+      const d = Math.max(Math.abs(tx - cx), Math.abs(ty - cy));
+      if (d < bestD) {
+        bestD = d;
+        bestX = cx;
+        bestY = cy;
+      }
+    }
+    w.x = bestX;
+    w.y = bestY;
   }
 
   /**
@@ -1196,11 +1232,73 @@ export class RasterConflict {
     }
     const enemy = this.warships.find((x) => x.id === target.id);
     if (!enemy) return;
-    enemy.hp -= WARSHIP_SHELL_DAMAGE;
+    this.damageWarship(enemy, WARSHIP_SHELL_DAMAGE);
+  }
+
+  /** Apply `damage` to a warship; a kill demolishes its home structure with it. */
+  private damageWarship(enemy: Warship, damage: number): void {
+    enemy.hp -= damage;
     if (enemy.hp <= 0) {
       this.warshipByHome.delete(enemy.homeRef);
       this.grid.demolishBuilding(enemy.homeRef);
       this.removeWarship(enemy.id);
+    }
+  }
+
+  /**
+   * OpenFront's defense-post **gun**: every active fort shells the nearest
+   * hostile ship within {@link FORT_SHELL_RANGE} once per
+   * {@link FORT_SHELL_RATE_TICKS}. A transport (the landing the post exists to
+   * stop) outranks a warship; trade ships are commerce and are never fired on
+   * — piracy is the warship's business. A transport is sunk outright (its
+   * troops are lost, no refund); a warship takes {@link FORT_SHELL_DAMAGE}.
+   * The cooldown is spent only when a shot is actually taken, so an idle gun
+   * is always ready the moment an intruder sails into range.
+   */
+  private advanceFortGuns(): void {
+    if (this.ships.length === 0 && this.warships.length === 0) return;
+    const map = this.grid.map;
+    for (const [ref, type] of this.grid.activeBuildingEntries()) {
+      if (type !== "fort") continue;
+      if ((this.fortShellReadyAt.get(ref) ?? 0) > this.tickCount) continue;
+      const owner = this.grid.ownerOf(ref);
+      if (owner === NEUTRAL_PLAYER) continue;
+      const fx = map.x(ref);
+      const fy = map.y(ref);
+      const isHostile = (o: PlayerId): boolean =>
+        o !== owner && o !== NEUTRAL_PLAYER && !this.allies.areAllied(owner, o);
+
+      let bestShip: TransportShip | null = null;
+      let bestD = Infinity;
+      for (const s of this.ships) {
+        if (!isHostile(s.attacker)) continue;
+        const tile = s.path[s.progress];
+        const d = Math.max(Math.abs(map.x(tile) - fx), Math.abs(map.y(tile) - fy));
+        if (d <= FORT_SHELL_RANGE && d < bestD) {
+          bestD = d;
+          bestShip = s;
+        }
+      }
+      if (bestShip) {
+        this.ships.splice(this.ships.indexOf(bestShip), 1);
+        this.fortShellReadyAt.set(ref, this.tickCount + FORT_SHELL_RATE_TICKS);
+        continue;
+      }
+
+      let bestWarship: Warship | null = null;
+      bestD = Infinity;
+      for (const w of this.warships) {
+        if (!isHostile(w.owner)) continue;
+        const d = Math.max(Math.abs(w.x - fx), Math.abs(w.y - fy));
+        if (d <= FORT_SHELL_RANGE && d < bestD) {
+          bestD = d;
+          bestWarship = w;
+        }
+      }
+      if (bestWarship) {
+        this.damageWarship(bestWarship, FORT_SHELL_DAMAGE);
+        this.fortShellReadyAt.set(ref, this.tickCount + FORT_SHELL_RATE_TICKS);
+      }
     }
   }
 

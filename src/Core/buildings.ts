@@ -65,10 +65,13 @@ export const WARSHIP_RETREAT_RECOVER_HP = 900;
 /**
  * Tiles (Chebyshev) a warship must close to before it opens fire. Not a
  * sourced figure — `targetRange`(130) reads as a search/pursuit radius, not a
- * weapon range, so this project uses its own closer approximation (matching
- * the coast-defence radius this replaces).
+ * weapon range. Sized like naval artillery (the same order as the defense
+ * post's 75-tile gun) so a patrolling warship shells intruders across most of
+ * its patrol area instead of having to steam right up to them — with the old
+ * point-blank 12 a transport skirting the patrol edge routinely outran its
+ * hunter, which OpenFront's warships never allow.
  */
-export const WARSHIP_ENGAGE_RANGE = 12;
+export const WARSHIP_ENGAGE_RANGE = 70;
 
 /** Tiles a warship advances per tick while moving — not a sourced figure; matches every other ship's cruising speed. */
 export const WARSHIP_TILES_PER_TICK = 1;
@@ -183,6 +186,23 @@ export const FORT_DEFENSE_RADIUS = 30;
  * pace through the covered ground.
  */
 export const FORT_SPEED_BONUS = 3;
+
+/**
+ * The fort's **gun**: OpenFront's defense post doesn't just tax captures, it
+ * shells hostile ships that sail near it (`shellAttackRate` 100,
+ * `targettingRange` 75, shell damage 250). Ticks between shots; a shot is
+ * taken only when a target is in range, so an idle gun is always ready.
+ */
+export const FORT_SHELL_RATE_TICKS = 100;
+
+/** Tiles (Chebyshev) the fort's gun reaches (OpenFront's `targettingRange`). */
+export const FORT_SHELL_RANGE = 75;
+
+/**
+ * Damage one fort shell deals — sinks a transport outright (no HP pool) and
+ * takes a quarter off a warship, matching the warship's own shell.
+ */
+export const FORT_SHELL_DAMAGE = 250;
 
 /**
  * Minimum Euclidean distance (tiles) required between two of a player's

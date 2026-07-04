@@ -5,7 +5,13 @@ import { NEUTRAL_PLAYER, TerritoryGrid } from "../src/Core/TerritoryGrid.js";
 import { RasterConflict } from "../src/Core/RasterConflict.js";
 import { AllianceRegistry } from "../src/Core/alliances.js";
 import { IDENTITY_MODIFIERS } from "../src/Core/playerModifiers.js";
-import { BUILDING_CONSTRUCTION_TICKS, WARSHIP_MAX_HP, WARSHIP_RETREAT_HP } from "../src/Core/buildings.js";
+import {
+  BUILDING_CONSTRUCTION_TICKS,
+  FORT_SHELL_DAMAGE,
+  FORT_SHELL_RANGE,
+  WARSHIP_MAX_HP,
+  WARSHIP_RETREAT_HP,
+} from "../src/Core/buildings.js";
 
 /** Freeze every seated player's troop income so a combat test measures only the fleet, not the economy. */
 const freezeIncome = (grid: TerritoryGrid): void => {
@@ -151,6 +157,65 @@ test("a warship below the retreat threshold stops firing back", () => {
     p1Later >= p1HpAtRetreat,
     `player 1 should take no further damage once the loser retreats (was ${p1HpAtRetreat}, now ${p1Later})`,
   );
+});
+
+test("a fort's gun sinks a hostile transport sailing within range", () => {
+  // Player 1's fort guards the strait; player 2's transport crosses toward the
+  // far neutral shore, passing well inside FORT_SHELL_RANGE — it must be shot
+  // down before it lands.
+  const width = 30;
+  const mask = "##" + " ".repeat(width - 3) + "#"; // land 0-1, water, neutral land at the end
+  const grid = new TerritoryGrid(rowMap(mask));
+  grid.addPlayer(1, 50);
+  grid.addPlayer(2, 300);
+  grid.claim(0, 1);
+  grid.claim(1, 2); // player 2's launch shore next door
+  grid.placeBuilding(0, "fort");
+  freezeIncome(grid);
+  const conflict = new RasterConflict(grid);
+
+  assert.equal(conflict.launchShip({ attacker: 2, dest: width - 1, troops: 100 }), null);
+  let sunk = false;
+  for (let i = 0; i < width + 5 && !sunk; i += 1) {
+    conflict.processTick();
+    sunk = conflict.shipCountOf(2) === 0;
+  }
+  assert.ok(sunk, "the fort's gun sank the transport");
+  assert.equal(grid.ownerOf(width - 1), NEUTRAL_PLAYER, "the landing never happened");
+});
+
+test("a fort's gun damages a hostile warship in range but never an allied one", () => {
+  const grid = new TerritoryGrid(rowMap("#".repeat(20)));
+  grid.addPlayer(1, 50);
+  grid.addPlayer(2, 50);
+  grid.addPlayer(3, 50);
+  grid.claim(0, 1);
+  grid.claim(5, 2); // hostile warship inside range
+  grid.claim(10, 3); // allied warship inside range
+  grid.placeBuilding(0, "fort");
+  grid.placeBuilding(5, "warship");
+  grid.placeBuilding(10, "warship");
+  freezeIncome(grid);
+  assert.ok(FORT_SHELL_RANGE >= 10, "both ships sit inside the documented gun range");
+
+  const alliances = new AllianceRegistry();
+  alliances.propose(1, 3);
+  alliances.accept(3, 1);
+  // Ally the two warships with each other too, so the only gunfire in this
+  // scenario is the fort's — the test isolates the defense-post gun.
+  alliances.propose(2, 3);
+  alliances.accept(3, 2);
+  const conflict = new RasterConflict(grid, alliances);
+
+  conflict.processTick(); // instant-active fort fires on its first ready tick
+  const hostile = conflict.activeWarships().find((w) => w.owner === 2);
+  const allied = conflict.activeWarships().find((w) => w.owner === 3);
+  assert.ok(hostile && allied, "both warships are afloat");
+  assert.ok(
+    hostile.hp <= WARSHIP_MAX_HP - FORT_SHELL_DAMAGE + 1,
+    `the hostile warship took a shell (hp ${hostile.hp})`,
+  );
+  assert.ok(allied.hp >= WARSHIP_MAX_HP - 1, "the allied warship was never fired on");
 });
 
 test("a warship never targets an allied ship", () => {
