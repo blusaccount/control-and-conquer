@@ -60,6 +60,7 @@
         -webkit-backdrop-filter: blur(10px) saturate(1.1);
       }
       #startBanner.hidden { display: none; }
+      #buildSections.hidden { display: none; }
       #startBanner .start-banner-title {
         font-size: 14px;
         font-weight: 700;
@@ -879,13 +880,17 @@
       <div class="panel hud-info">
         <div id="selectionInfo" class="info-body">Connecting…</div>
         <div id="statusMessage" class="status" aria-live="polite"></div>
-        <div class="panel-divider"></div>
-        <div class="panel-head">Build</div>
-        <div id="buildMenu" class="build-menu"></div>
-        <div id="buildHint" class="hint"></div>
-        <div class="panel-divider"></div>
-        <div class="panel-head">Weapons</div>
-        <div id="weaponsMenu" class="build-menu"></div>
+        <!-- Hidden during the spawn phase (OpenFront shows a clean
+             choose-your-spawn screen, no build UI before the game is live). -->
+        <div id="buildSections">
+          <div class="panel-divider"></div>
+          <div class="panel-head">Build</div>
+          <div id="buildMenu" class="build-menu"></div>
+          <div id="buildHint" class="hint"></div>
+          <div class="panel-divider"></div>
+          <div class="panel-head">Weapons</div>
+          <div id="weaponsMenu" class="build-menu"></div>
+        </div>
       </div>
 
       <div class="panel hud-attack">

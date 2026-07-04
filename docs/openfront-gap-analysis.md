@@ -1,6 +1,52 @@
 # OpenFront-ähnliche Roadmap: Repository Audit + Gap-Analyse
 
-> **Letztes Update:** 2026-07-02 (Nachmittag) — §3c-Punkte #1 (Rechtsklick-
+> **Letztes Update:** 2026-07-04 — **Spielbeginn (erste 5 Minuten) quellengenau
+> an OpenFront angeglichen** (Recherche: `openfrontio/OpenFrontIO` main,
+> 2026-07-03, `SpawnExecution.ts`/`Util.ts getSpawnTiles`/`TribeExecution.ts`/
+> `NationExecution.ts`/`AiAttackBehavior.ts`/`client/Utils.ts renderTroops`/
+> `SpawnTimer.ts`/`world/manifest.json`):
+> 1. **Spawn-Blob:** Ein Spawn claimt jetzt OpenFronts Gründungs-Blob — alle
+>    zusammenhängenden freien Landtiles im **Euklid-Radius 4** (~49 Tiles,
+>    `getSpawnTiles`/`euclDistFN(tile, 4)`) statt eines einzelnen Pixels
+>    (`SPAWN_BLOB_RADIUS`, `RasterGameSession.spawnBlobTiles`). Dadurch sind
+>    alle KI-Spawns während der Spawn-Phase als **farbige Punkte auf der
+>    Weltkarte sichtbar** (OpenFront rendert gesetzte Spawns als echtes
+>    Territorium) und die eigene Nation startet als lesbarer Fleck.
+> 2. **Solo-Klick-Start:** OpenFront-SP-Verhalten — `SpawnExecution` ruft im
+>    Singleplayer `endSpawnPhase()` beim Pick („spawn ends when player selects
+>    a spawn location"). Ein menschlicher Spawn-Pick startet das Match sofort;
+>    der 10-s-Countdown bleibt nur als Auto-Seat-Fallback. Banner/Copy auf
+>    OpenFronts Heads-up **„Choose a starting location"** umgestellt, ohne
+>    Countdown-Anzeige (OpenFronts `SpawnTimer` versteckt den Balken im SP);
+>    Build-/Waffen-Panel ist während der Spawn-Phase ausgeblendet.
+> 3. **Truppen-Anzeige ÷10:** OpenFronts Client rendert alle Truppenzahlen als
+>    `renderNumber(troops / 10)` (`renderTroops`). `formatTroops`/
+>    `formatTroopRate` übernehmen das für HUD, Leaderboard (Max), Karten-Labels,
+>    Front-Labels und den Ratio-Readout — ein frischer Start liest sich jetzt
+>    wie auf openfront.io als **„2.5K"**, nicht „25K". (Sim-interne Skala
+>    unverändert = OpenFronts Roh-Manpower.) Der Attack-Ratio-Readout zeigt
+>    zusätzlich die committeten Truppen: **„20% (2.37K)"** (OF ControlPanel).
+> 4. **Felddichte = OpenFront World:** 651.609 Land-Tiles / ~475 KI-Sitze ≈
+>    **1.370 Land-Tiles pro Sitz** (`world/manifest.json`). `scaleFieldCount`
+>    ist jetzt **linear** in den capturable Tiles (pro Difficulty 1600/1370/
+>    1150/1000) statt sqrt — die alte Kurve übersetzte kleine Karten ~2× zu
+>    dicht (earth-standard ~600 Tiles/Sitz), wodurch der Land-Rush in <40 s
+>    vorbei war und die halbe Welt nach 2,5 min tot.
+> 5. **KI-Angriffsbemessung = aktuelles Upstream-Modell:** Tribes *und*
+>    Nationen ziehen pro Sitz OpenFronts drei Ratios vom Truppen-Cap
+>    (`trigger 50–60 %`, `reserve 30–40 %`, `expand 10–20 %`); Angriffsgröße =
+>    `pool − cap·ratio` (Wildnis mit Expand-, Krieg mit Reserve-Ratio), Kriege
+>    erst ab Trigger-Füllstand, Tribes schlagen bei ~1/3-Odds zu und
+>    **retalieren** gegen den letzten Angreifer. Nationen **farmen Tribes
+>    proportional** (`calculateBotAttackTroops`: `4× Tribe-Pool`, Skip unter
+>    `2×`) statt die ganze Armee zu entleeren — Tribes leben dadurch OF-typisch
+>    lang als „farmbare" Nachbarn (gemessen: Median-Tribe überlebt >3 min statt
+>    <2,5 min auf earth-standard). Die alten Personality-Felder
+>    `reserveFraction`/`expandCommit`/`attackCommit` sind ersetzt; die
+>    Spieler-Klasse (`kind`: human/nation/bot) steht jetzt als öffentliches
+>    Snapshot-Feld im Wire-Format (wie OpenFronts PlayerType-Overlay).
+>
+> Davor: 2026-07-02 (Nachmittag) — §3c-Punkte #1 (Rechtsklick-
 > Radialmenü), #2 (Hotkey-Parität), #3 (SAM/Hydrogen/MIRV) und #5 (Bot/Nation-
 > Zweiklassen-KI) sind jetzt **erledigt**; Details in den jeweiligen
 > §3c-Zeilen. Davor am selben Tag: frischer, quellcode-basierter Abgleich gegen

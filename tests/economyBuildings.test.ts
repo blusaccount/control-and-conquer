@@ -259,12 +259,16 @@ const stageBuilder = (
   let originRef = -1;
   for (let ref = 0; ref < grid.owner.length; ref += 1) if (grid.ownerOf(ref) === 1) { originRef = ref; break; }
   assert.ok(originRef >= 0, "the human must be seated");
-  // Find a neutral, capturable neighbour of the founding tile and give it to player 1.
+  // Find a neutral, capturable neighbour of the founding blob's border and give
+  // it to player 1 (the spawn now claims a whole blob, so scan every owned tile
+  // for one that still touches open land).
   let buildRef = -1;
-  for (const n of map.neighbors(originRef)) {
-    if (grid.isCapturable(n) && grid.ownerOf(n) === 0) { buildRef = n; break; }
+  outer: for (const owned of grid.tilesOf(1)) {
+    for (const n of map.neighbors(owned)) {
+      if (grid.isCapturable(n) && grid.ownerOf(n) === 0) { buildRef = n; break outer; }
+    }
   }
-  assert.ok(buildRef >= 0, "the founding tile must have an open neighbour to claim");
+  assert.ok(buildRef >= 0, "the founding blob must have an open neighbour to claim");
   grid.claim(buildRef, 1);
   return {
     session,

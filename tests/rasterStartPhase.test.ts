@@ -41,22 +41,19 @@ test("with no start phase the match is live from the first snapshot", () => {
   assert.equal(snap.spawnRemainingSeconds, 0);
 });
 
-test("territory cannot be taken during the start phase, only afterwards", () => {
+test("the world stays frozen while the start phase runs, and opens once it ends", () => {
   const session = new RasterGameSession({ width: 32, height: 24, seed: 9, spawnPhaseTicks: 4 });
   const messages: RasterServerMessage[] = [];
   session.subscribe("human", (m) => messages.push(m), false);
   const grid = session.peekGrid();
   const map = session.peekMap();
 
-  // Found our nation during the start phase.
+  // An expand queued during the start phase is dropped — no territory is taken
+  // (the human hasn't even founded yet; picking would start the game at once).
   const spawn = firstNeutralLand(session);
-  session.selectSpawn("human", map.x(spawn), map.y(spawn));
-  assert.equal(grid.tileCountOf(1), 1, "founding seats us on a single tile");
-
-  // An expand queued during the start phase is dropped — no territory is taken.
-  session.queueExpand("human", { targetX: map.x(spawn) + 1, targetY: map.y(spawn), percent: 100 });
+  session.queueExpand("human", { targetX: map.x(spawn), targetY: map.y(spawn), percent: 100 });
   session.tick(); // tick 1 of the start phase
-  assert.equal(session.peekGrid().tileCountOf(1), 1, "no expansion happens during the start phase");
+  assert.equal(grid.hasPlayer(1), false, "no expansion or seating happens during the start phase");
   assert.equal(lastSnapshot(messages).phase, "spawn");
 
   // Run the rest of the start-phase countdown out.
@@ -69,10 +66,32 @@ test("territory cannot be taken during the start phase, only afterwards", () => 
   assert.equal(snap.phase, "playing", "the game phase begins once the countdown elapses");
   assert.equal(snap.spawnRemainingSeconds, 0);
 
-  // Now expansion works.
+  // Now expansion works (the no-show was auto-seated on its founding blob).
+  const seated = session.peekGrid().tileCountOf(1);
+  assert.ok(seated >= 1, "auto-seated once the game phase begins");
   session.queueExpand("human", { targetX: map.x(spawn) + 1, targetY: map.y(spawn), percent: 100 });
   session.tick();
-  assert.ok(session.peekGrid().tileCountOf(1) >= 1, "expansion resolves once the game is live");
+  assert.ok(session.peekGrid().tileCountOf(1) >= seated, "expansion resolves once the game is live");
+});
+
+test("a human pick during the start phase begins the battle immediately (solo)", () => {
+  // OpenFront singleplayer ends the spawn phase the moment the human picks a
+  // start position (`SpawnExecution` → `endSpawnPhase()`); the countdown is
+  // only a fallback for a player who never clicks.
+  const session = new RasterGameSession({ width: 32, height: 24, seed: 9, spawnPhaseTicks: 50 });
+  const messages: RasterServerMessage[] = [];
+  session.subscribe("human", (m) => messages.push(m), false);
+  const map = session.peekMap();
+
+  const spawn = firstNeutralLand(session);
+  session.selectSpawn("human", map.x(spawn), map.y(spawn));
+  const snap = lastSnapshot(messages);
+  assert.equal(snap.phase, "playing", "the pick starts the game — no dead countdown wait");
+
+  // The very next tick resolves live orders.
+  session.queueExpand("human", { targetX: map.x(spawn) + 1, targetY: map.y(spawn), percent: 100 });
+  session.tick();
+  assert.ok(session.peekGrid().tileCountOf(1) >= 1, "the world is live right after the pick");
 });
 
 test("a player who never picks a spawn is auto-seated when the game phase begins", () => {
@@ -84,7 +103,7 @@ test("a player who never picks a spawn is auto-seated when the game phase begins
   session.tick(); // 1
   session.tick(); // 2 — start phase elapses
   assert.equal(grid.hasPlayer(1), true, "auto-seated when the game phase begins");
-  assert.equal(grid.tileCountOf(1), 1, "auto-seated on a single founding tile");
+  assert.ok(grid.tileCountOf(1) > 1, "auto-seated on a founding blob (OpenFront spawn radius)");
 });
 
 test("the match clock only starts once the game phase begins", () => {

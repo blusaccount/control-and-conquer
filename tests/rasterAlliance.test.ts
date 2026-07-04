@@ -194,9 +194,6 @@ const DEFENSIVE: RasterBotPersonality = {
   id: "test-defensive",
   decisionCooldownTicks: 0,
   minPool: 1,
-  reserveFraction: 0.2,
-  expandCommit: 0.7,
-  attackCommit: 0.6,
   attackPoolRatio: 1.6,
   aggression: 0.2,
 };
@@ -205,9 +202,6 @@ const AGGRESSIVE: RasterBotPersonality = {
   id: "test-aggressive",
   decisionCooldownTicks: 0,
   minPool: 1,
-  reserveFraction: 0.1,
-  expandCommit: 0.8,
-  attackCommit: 0.9,
   attackPoolRatio: 1.0,
   aggression: 0.9,
 };

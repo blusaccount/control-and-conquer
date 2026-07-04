@@ -3,7 +3,7 @@ import type { TerritoryGrid } from "../Core/TerritoryGrid.js";
 import { maxTroops, troopsPerSecond } from "../Core/rasterCombatConfig.js";
 import { goldPerSecond } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
-import type { RasterAllianceInfo, RasterAllianceRequest, RasterAttackFront, RasterBuilding, RasterCrossing, RasterEmbargoPair, RasterEmojiReaction, RasterMatchPhase, RasterNuke, RasterNukeDetonation, RasterNukeInterception, RasterPlayerInfo, RasterRail, RasterShip, RasterSnapshot, RasterTargetRequestInfo, RasterTrade, RasterTrain, RasterWarship } from "../Core/types.js";
+import type { RasterAllianceInfo, RasterAllianceRequest, RasterAttackFront, RasterBuilding, RasterCrossing, RasterEmbargoPair, RasterEmojiReaction, RasterMatchPhase, RasterNuke, RasterNukeDetonation, RasterNukeInterception, RasterPlayerInfo, RasterPlayerKind, RasterRail, RasterShip, RasterSnapshot, RasterTargetRequestInfo, RasterTrade, RasterTrain, RasterWarship } from "../Core/types.js";
 
 /**
  * Stable 12-hex-char fingerprint of the terrain bytes, used purely as a
@@ -112,6 +112,8 @@ export const encodeTileList = (refs: readonly number[]): string => {
 export interface PlayerMeta {
   name: string;
   color: string;
+  /** Player class (human / nation / tribe) — public wire data, as in OpenFront. */
+  kind: RasterPlayerKind;
 }
 
 /**
@@ -204,7 +206,7 @@ export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
 
   const players: RasterPlayerInfo[] = [];
   for (const id of grid.players()) {
-    const meta = playerMeta.get(id) ?? { name: `Player ${id}`, color: "#888" };
+    const meta = playerMeta.get(id) ?? { name: `Player ${id}`, color: "#888", kind: "human" as RasterPlayerKind };
     const tiles = grid.tileCountOf(id);
     // The wire per-type figures are **cost counters** (sum of levels): every
     // build or upgrade advances them, so the client's build-menu price labels
@@ -219,6 +221,7 @@ export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
       playerId: id,
       name: meta.name,
       color: meta.color,
+      kind: meta.kind,
       troops: Math.floor(grid.troopsOf(id)),
       gold: Math.floor(grid.goldOf(id)),
       goldPerSecond: goldPerSecond(SIMULATION_TICK_RATE),

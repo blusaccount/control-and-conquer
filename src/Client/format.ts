@@ -39,6 +39,20 @@ export const formatCount = (n: number): string => {
 };
 
 /**
+ * Format a **troop** quantity the way OpenFront renders it: the raw manpower
+ * divided by 10 (`renderTroops` in the OpenFront client is
+ * `renderNumber(troops / 10)`), then compacted. The simulation keeps the raw
+ * scale (start 25,000 manpower, exactly OpenFront's `startManpower`), but every
+ * figure a player sees reads at the original's scale — a fresh nation shows
+ * "2.5K" troops, not "25K", and the numbers on screen match what a player of
+ * the real openfront.io expects. Applies to troops ONLY; gold renders raw.
+ */
+export const formatTroops = (n: number): string => formatCount(n / 10);
+
+/** Per-second **troop** rate at OpenFront's display scale (÷10, see {@link formatTroops}). */
+export const formatTroopRate = (rate: number): string => formatRate(rate / 10);
+
+/**
  * Format a per-second rate compactly: large rates use the compact notation
  * (K/M/B); small early-game rates keep one decimal so they don't read as
  * "+0/s".
