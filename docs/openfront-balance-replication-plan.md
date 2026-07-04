@@ -60,10 +60,45 @@ sollten.
 > selbst** (OpenFronts `dp.unit.owner() === defender`) — vorher verteuerte auch ein
 > fremder/naher eigener Posten den Angriff; neutrales Land ist nie post-geschützt.
 > (3) Defense-Post bremst zusätzlich mit `speed ×3` (`FORT_SPEED_BONUS`), statt nur
-> über die 5×-Kosten. Bekannte Mikro-Abweichung: OpenFront erobert bei einem
-> Angriff mit `troops ≥ 1` immer mindestens 1 Tile (Pool kann intern negativ
-> werden, Angriff stirbt dann); C&C bricht ab, wenn das nächste Tile unbezahlbar
-> ist, und refundiert mit Malus — bewusst beibehalten (kein negativer Pool).
+> über die 5×-Kosten.
+
+> **Update (2026-07-04, zweite Welle — restliche Abweichungen entfernt):**
+> Alle zuvor „bewusst beibehaltenen" Regel-Abweichungen sind jetzt ebenfalls auf
+> OpenFront umgestellt (quellenecht gegen `AttackExecution.ts`,
+> `TransportShipExecution.ts`, `PlayerExecution.ts`, `GameImpl.ts` verifiziert):
+> 1. **Kein Zeitlimit mehr** — `RASTER_MATCH_DURATION_SECONDS` gelöscht;
+>    Standard ist ein offenes Match bis zur 80 %-Domination (OpenFront hat kein
+>    Limit). `maxDurationTicks` bleibt als expliziter Test-/Betreiber-Parameter.
+> 2. **Angriffs-Lebenszyklus exakt**: kein Affordability-Gate mehr — ein Angriff
+>    mit ≥ 1 Truppe erobert immer sein nächstes Tile und darf sich dabei
+>    überziehen; fällt der Pool unter 1, stirbt der Angriff **ohne Refund**
+>    (OpenFronts `troopCount < 1 → delete`). Eine Front ohne erreichbare Tiles
+>    zieht sich **malus-frei** zurück (OpenFronts `retreat()` mit 0) — der
+>    25 %-Malus gilt nur noch dort, wo OpenFront ihn erhebt (z. B. Transport
+>    landet an eigener Küste).
+> 3. **Landungen**: Der Brückenkopf wird immer kostenlos erobert
+>    (`conquer(dst)`), abgewiesene Landungen gibt es nicht mehr; die volle
+>    Bootsladung kämpft danach als normaler Landangriff. Ankunft an eigener
+>    Küste kostet 25 % (OpenFronts `malusForRetreat`-Arrival).
+> 4. **`handleDeadDefender`**: Ein Verteidiger, den ein Angriff unter 100 Tiles
+>    drückt (`DEAD_DEFENDER_MAX_TILES`), wird komplett aufgerollt — 10
+>    Sweep-Pässe, grenzende Tiles an den Angreifer, isolierte Taschen an
+>    grenzende Dritte.
+> 5. **Gegenläufige Angriffe verrechnen sich** beim Start (OpenFronts
+>    Incoming-Cancel): die kleinere Streitmacht wird ausgelöscht, die größere
+>    behält die Differenz.
+> 6. **Fallout wie OpenFront (Default, kein `waterNukes`)**: permanent statt
+>    Decay-Timer, bleibt **eroberbar** mit `falloutDefenseModifier`
+>    (`5 − 2·falloutRatio` auf mag *und* speed) und wird erst durch Eroberung
+>    gesäubert (`conquer → setFallout(false)`). `FALLOUT_DURATION_TICKS`
+>    gelöscht. (Die frühere Annahme „Nukes machen Land zu Wasser" war falsch —
+>    das ist OpenFronts nicht-standardmäßiger `waterNukes`-Modus.)
+> Verbleibende bewusste Nicht-Ports: deterministischer Jitter statt RNG
+> (identische Verteilung, Replay-Pflicht), `FRONTIER_TOWARD_WEIGHT` als reine
+> UI-Komfort-Ordnung innerhalb einer Frontier-Generation (OpenFront kennt keine
+> gerichteten Angriffe; Wert bewusst unter dem Surround-Schritt), und ein
+> manueller Rückzugs-Befehl fehlt weiterhin (OpenFront-UI-Feature, kein
+> Balancing-Wert).
 
 > **Update (2026-07-02 — frischer Quellcode-Abgleich):** siehe
 > `openfront-gap-analysis.md` §3c für den Detail-Abgleich gegen den aktuellen

@@ -24,7 +24,7 @@ import type {
   RasterTrain,
   RasterWarship,
 } from "../Core/types.js";
-import { LAND_ATTACK_REACH, RASTER_MATCH_DURATION_SECONDS, SPAWN_IMMUNITY_SECONDS, WIN_TILE_FRACTION } from "../Core/rasterCombatConfig.js";
+import { LAND_ATTACK_REACH, SPAWN_IMMUNITY_SECONDS, WIN_TILE_FRACTION } from "../Core/rasterCombatConfig.js";
 import { NUKE_DEFS, nukeCost, SILO_RELOAD_TICKS, type NukeKind } from "../Core/nukes.js";
 import { BUILDING_CONSTRUCTION_TICKS, BUILDING_DEFS, buildingCost, COASTAL_BUILDING_TYPES, COASTAL_SNAP_RADIUS, CONQUER_GOLD_FRACTION_AI, CONQUER_GOLD_FRACTION_HUMAN, costCounterTypes, STRUCTURE_MIN_DIST, UPGRADABLE_BUILDING_TYPES } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
@@ -228,9 +228,9 @@ export interface RasterGameSessionOptions {
   mapSize?: number;
   /**
    * Hard match length in ticks. When reached, the match ends on the time limit
-   * and the territory leader wins. Defaults to
-   * {@link RASTER_MATCH_DURATION_SECONDS} converted at the server tick rate.
-   * Exposed mainly so tests can run short matches.
+   * and the territory leader wins. Defaults to `Infinity` — **no time limit**,
+   * exactly like OpenFront, whose FFA runs until someone wins by domination.
+   * Exposed so tests can run short matches.
    */
   maxDurationTicks?: number;
   /**
@@ -257,7 +257,7 @@ const DEFAULT_OPTIONS: Required<Omit<RasterGameSessionOptions, "prebuiltMap">> =
   startingTroops: 25_000,
   realMapId: "",
   mapSize: 0,
-  maxDurationTicks: RASTER_MATCH_DURATION_SECONDS * SIMULATION_TICK_RATE,
+  maxDurationTicks: Infinity,
   spawnPhaseTicks: 0,
   difficulty: "medium",
 };
@@ -374,7 +374,10 @@ export class RasterGameSession {
     this.mapName = options.mapName ?? (realMap ? realMap.name : opts.mapName);
     this.startingTroops = opts.startingTroops;
     this.difficulty = opts.difficulty;
-    this.maxDurationTicks = Math.max(1, Math.floor(opts.maxDurationTicks));
+    // `Infinity` (the default) means no time limit at all, as in OpenFront.
+    this.maxDurationTicks = Number.isFinite(opts.maxDurationTicks)
+      ? Math.max(1, Math.floor(opts.maxDurationTicks))
+      : Infinity;
     this.spawnPhaseTicks = Math.max(0, Math.floor(opts.spawnPhaseTicks));
     this.phase = this.spawnPhaseTicks > 0 ? "spawn" : "playing";
 

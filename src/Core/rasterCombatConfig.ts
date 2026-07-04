@@ -87,18 +87,14 @@ export const troopsPerSecond = (
 export const WIN_TILE_FRACTION = 0.8;
 
 /**
- * Maximum wall-clock length of a single roguelite run, in seconds. When the
- * clock runs out the territory leader is declared the winner. Kept in seconds
- * (a pure gameplay rule) so it stays independent of the server tick rate, which
- * the session multiplies in to derive a tick budget.
- *
- * OpenFront's FFA has **no** time limit at all — a match runs until someone
- * dominates — and its signature late game (the nuclear arms race) only begins
- * once the AI economies mature, around the 8–10-minute mark. The old 600 s cap
- * ended the match right there, so nations barely got a warhead off; 30 minutes
- * keeps a bounded run while leaving the whole nuclear era on the table.
+ * A defender is finished off outright once an attack has pushed it below this
+ * many tiles: the attacker sweeps up its remaining territory (bordering tiles
+ * to the attacker, isolated pockets to any bordering non-friendly player) —
+ * OpenFront's `handleDeadDefender` (`numTilesOwned() < 100` → `conquerPlayer`).
+ * Kills feel decisive and matches never drag through a foregone mop-up of a
+ * nation's last scraps.
  */
-export const RASTER_MATCH_DURATION_SECONDS = 1800;
+export const DEAD_DEFENDER_MAX_TILES = 100;
 
 /**
  * Seconds of **spawn immunity** a freshly-seated nation gets, mirroring
@@ -111,14 +107,29 @@ export const RASTER_MATCH_DURATION_SECONDS = 1800;
 export const SPAWN_IMMUNITY_SECONDS = 5;
 
 /**
- * Fraction of leftover committed troops lost when an attack against a *player*
- * ends without overrunning them — the front gets blocked, the target slips out
- * of reach, or an amphibious landing is repelled. Mirrors OpenFront's
- * `malusForRetreat`: pulling back from an enemy costs you, so a committed
- * assault is a real gamble. Retreating from neutral land (TerraNullius) is free,
- * so this never applies to neutral targets.
+ * Fraction of troops lost on a **retreat**, mirroring OpenFront's
+ * `malusForRetreat` (25). In OpenFront this malus is charged only where a
+ * retreat is "your call": a player-ordered pull-back from an enemy, and a
+ * transport ship arriving at a shore that already belongs to you (its assault
+ * evaporated mid-voyage). An attack that simply runs out of reachable tiles
+ * retreats **free** (`retreat()` with malus 0), and one that bleeds out below a
+ * single troop just dies — nothing comes home at all.
  */
 export const RETREAT_MALUS_FRACTION = 0.25;
+
+/**
+ * Combat penalty on **fallout** ground, OpenFront's `falloutDefenseModifier`:
+ * both the attacker's per-tile loss magnitude and the tile's advance-budget
+ * drain are multiplied by `5 − 2·falloutRatio`, where `falloutRatio` is the
+ * fraction of the map's land currently irradiated. Nuked wasteland is
+ * reclaimable but dear and slow (×5 on a pristine map, easing toward ×3 as the
+ * whole world glows) — the OpenFront denial zone, without ever being
+ * permanently un-capturable.
+ */
+export const FALLOUT_MODIFIER_BASE = 5;
+export const FALLOUT_MODIFIER_RATIO_SCALE = 2;
+export const falloutCombatModifier = (falloutRatio: number): number =>
+  FALLOUT_MODIFIER_BASE - FALLOUT_MODIFIER_RATIO_SCALE * Math.min(1, Math.max(0, falloutRatio));
 
 /**
  * How long (ticks) a player stays a **traitor** after betraying an alliance,
@@ -166,9 +177,6 @@ export const TRAITOR_SPEED_DEBUFF = 0.8;
 //
 // and the front's advance rate scales with the attacker's troop advantage.
 // ---------------------------------------------------------------------------
-
-/** Base troop cost to claim a flat neutral (wilderness) tile, before factors. */
-export const NEUTRAL_CAPTURE_COST = 1;
 
 /**
  * Flat attacker efficiency (OpenFront's ~20% attacker bonus): the attacker loses
