@@ -12,12 +12,18 @@
  * {@link tradeViews} for the snapshot.
  *
  * Routing matches OpenFront's naval model: two ports may trade only if they
- * border the *same* connected body of water, and a dispatched ship sails the
- * actual water route between them ({@link TerritoryGrid.findWaterRoute}) — the
- * shortest shore-to-shore path through the sea — rather than cutting a straight
- * line across intervening land. Trip *gold* is still priced on the ports'
- * Manhattan separation (OpenFront's `tradeShipGold(dist)`), independent of how
- * far the ship actually has to sail to hug the coastline.
+ * border the *same* connected body of water and belong to *different* owners
+ * (trade is inter-player — your own second port is never a partner), and a
+ * dispatched ship sails the actual water route between them
+ * ({@link TerritoryGrid.findWaterRoute}) — the shortest shore-to-shore path
+ * through the sea — rather than cutting a straight line across intervening
+ * land. Trip *gold* is priced on the tiles the ship actually sails
+ * (OpenFront's `tradeShipGold(dist)` over the travelled distance), so a long
+ * coast-hugging detour pays like the long haul it is.
+ *
+ * A warship doesn't sink an enemy trade ship — it **captures** it (OpenFront's
+ * piracy): the ship changes owner mid-sea and sails on to the captor's nearest
+ * reachable port, which alone is paid on arrival ({@link captureShip}).
  */
 import type { TileRef } from "./GameMap.js";
 import { type PlayerId, type TerritoryGrid } from "./TerritoryGrid.js";
@@ -39,7 +45,7 @@ interface TradePort {
 /** A trade ship sailing from port `from` to port `to`. */
 interface TradeShip {
   id: number;
-  /** The dispatching (source) port's owner — used only to cap the fleet size. */
+  /** The ship's current owner: the dispatching port's owner, or its captor. */
   owner: PlayerId;
   from: TileRef;
   to: TileRef;
@@ -47,8 +53,14 @@ interface TradeShip {
   path: TileRef[];
   /** Tiles sailed so far along {@link path}. */
   progress: number;
-  /** Manhattan separation of the two ports — the basis for the trade payout. */
-  dist: number;
+  /**
+   * Tiles sailed on earlier, abandoned paths (before a capture redirect).
+   * The payout is priced on the *total* travelled distance: this plus the
+   * current path's hops.
+   */
+  sailedBefore: number;
+  /** True once a warship captured it — only the destination port is paid then. */
+  captured: boolean;
 }
 
 /** Wire-ready view of one trade ship: its owner and fractional tile position. */
@@ -62,6 +74,12 @@ export interface TradeView {
 export interface TradeShipTarget {
   id: number;
   owner: PlayerId;
+  /**
+   * Owner of the destination port (read live). The wiki's warships only chase
+   * trade ships that are NOT heading to their own owner's ports — an inbound
+   * trader is about to pay that port in full, so it is left alone.
+   */
+  toOwner: PlayerId;
   x: number;
   y: number;
 }
@@ -116,19 +134,62 @@ export class TradeSystem {
     return this.ships.length;
   }
 
-  /** Every live trade ship's id, owner and current position — a warship's target scan reads this. */
+  /** Every live trade ship's id, owner, destination owner and position — a warship's target scan reads this. */
   targetableShips(): TradeShipTarget[] {
     return this.ships.map((ship) => {
       const { x, y } = this.shipPosition(ship);
-      return { id: ship.id, owner: ship.owner, x, y };
+      return { id: ship.id, owner: ship.owner, toOwner: this.grid.ownerOf(ship.to), x, y };
     });
   }
 
-  /** Sink a trade ship by id (e.g. a warship's kill) — no payout, it just vanishes. Returns whether one was removed. */
+  /** Sink a trade ship by id — no payout, it just vanishes. Returns whether one was removed. */
   destroyShip(id: number): boolean {
     const before = this.ships.length;
     this.ships = this.ships.filter((s) => s.id !== id);
     return this.ships.length < before;
+  }
+
+  /**
+   * **Capture** a trade ship for `captor` — OpenFront's piracy: the ship
+   * changes owner where it sails and is redirected to the captor's nearest
+   * reachable port, which alone is paid `tradeShipGold` of the ship's *total*
+   * travelled distance on arrival (the original ports get nothing). When the
+   * captor has no port the ship can reach, it is sunk instead — a pirate with
+   * no harbour takes no prizes. Returns true if the ship was captured (false:
+   * unknown id or sunk-for-lack-of-port).
+   */
+  captureShip(id: number, captor: PlayerId): boolean {
+    const ship = this.ships.find((s) => s.id === id);
+    if (!ship) return false;
+    const last = ship.path.length - 1;
+    const at = Math.max(0, Math.min(last, Math.floor(ship.progress)));
+    const cur = ship.path[at];
+
+    // The captor's ports, nearest first (Manhattan) — try each until a water
+    // route from the ship's current tile works, so an unreachable port on
+    // another sea never strands the prize.
+    const map = this.grid.map;
+    const candidates = this.ports
+      .filter((p) => p.owner === captor && p.ref !== cur)
+      .map((p) => ({
+        ref: p.ref,
+        d: Math.abs(map.x(p.ref) - map.x(cur)) + Math.abs(map.y(p.ref) - map.y(cur)),
+      }))
+      .sort((a, b) => a.d - b.d || a.ref - b.ref);
+    for (const c of candidates) {
+      const route = this.grid.findWaterRoute(cur, c.ref);
+      if (!route || route.length < 2) continue;
+      ship.sailedBefore += at;
+      ship.owner = captor;
+      ship.from = cur;
+      ship.to = c.ref;
+      ship.path = route;
+      ship.progress = 0;
+      ship.captured = true;
+      return true;
+    }
+    this.destroyShip(id);
+    return false;
   }
 
   /** Rebuild the port roster only when the port set actually changed. */
@@ -138,9 +199,10 @@ export class TradeSystem {
     if (signature === this.signature) return;
     this.signature = signature;
     this.ports = ports;
-    // Drop ships whose endpoints are no longer ports.
+    // Drop ships whose endpoints are no longer ports. A captured ship's `from`
+    // is open water (the capture point), so only its destination must stand.
     const live = new Set(ports.map((p) => p.ref));
-    this.ships = this.ships.filter((s) => live.has(s.from) && live.has(s.to));
+    this.ships = this.ships.filter((s) => live.has(s.to) && (s.captured || live.has(s.from)));
     // Forget rejection counters for ports that no longer exist.
     for (const ref of [...this.rejections.keys()]) if (!live.has(ref)) this.rejections.delete(ref);
   }
@@ -163,8 +225,10 @@ export class TradeSystem {
   }
 
   /**
-   * Move every trade ship along its straight lane. On arrival it pays both port
-   * owners (if both ports still stand) `tradeShipGold(dist)` and retires.
+   * Move every trade ship along its water route. On arrival it pays out
+   * `tradeShipGold` of the tiles actually sailed (OpenFront prices the trip on
+   * the travelled distance) and retires: a normal trip pays **both** port
+   * owners in full; a captured ship pays only its captor's destination port.
    */
   private moveShips(): void {
     const survivors: TradeShip[] = [];
@@ -177,11 +241,13 @@ export class TradeSystem {
         survivors.push(ship);
         continue;
       }
-      // Arrived: pay both ports their gold, provided each still exists. The
-      // owners are read live so a port captured mid-voyage pays its new owner.
-      // Priced by the distance actually travelled, exactly as OpenFront.
-      const gold = tradeShipGold(ship.dist);
-      if (this.grid.buildingAt(ship.from) === "port") this.grid.addGold(this.grid.ownerOf(ship.from), gold);
+      // Arrived: the payout is priced on the total distance the ship really
+      // sailed (earlier abandoned legs plus this route). Owners are read live
+      // so a port captured mid-voyage pays its new owner.
+      const gold = tradeShipGold(ship.sailedBefore + ship.path.length - 1);
+      if (!ship.captured && this.grid.buildingAt(ship.from) === "port") {
+        this.grid.addGold(this.grid.ownerOf(ship.from), gold);
+      }
       if (this.grid.buildingAt(ship.to) === "port") this.grid.addGold(this.grid.ownerOf(ship.to), gold);
     }
     this.ships = survivors;
@@ -203,11 +269,17 @@ export class TradeSystem {
     const sorted = [...this.ports].sort((a, b) => a.ref - b.ref);
     for (const src of sorted) {
       if (src.sea < 0) continue;
-      // Partners: any other port on the same sea body (any owner — trade flows
-      // even between rivals, as in OpenFront, enriching both ends) — except
-      // owners this port has (or is under) an embargo with, who are skipped.
+      // Partners: another *player's* port on the same sea body — trade is
+      // inter-player, as in OpenFront (your own second port is never a
+      // partner, so there is no risk-free self-trade double payout), and it
+      // flows even between rivals, enriching both ends — except owners this
+      // port has (or is under) an embargo with, who are skipped.
       const partners = sorted.filter(
-        (p) => p.ref !== src.ref && p.sea === src.sea && !this.isEmbargoed(src.owner, p.owner),
+        (p) =>
+          p.ref !== src.ref &&
+          p.owner !== src.owner &&
+          p.sea === src.sea &&
+          !this.isEmbargoed(src.owner, p.owner),
       );
       if (partners.length === 0) continue; // no reachable partner — not a rejection, just skip
 
@@ -223,15 +295,22 @@ export class TradeSystem {
       }
 
       const dst = partners[epoch % partners.length];
-      const dist = Math.abs(this.grid.map.x(src.ref) - this.grid.map.x(dst.ref)) +
-        Math.abs(this.grid.map.y(src.ref) - this.grid.map.y(dst.ref));
-      if (dist <= 0) continue;
-      // Sail the real water route between the ports (main's shore-hugging path);
+      // Sail the real water route between the ports (the shore-hugging path);
       // skip the pairing if — despite sharing a sea component — no shore-to-shore
-      // path can be traced (defensive).
+      // path can be traced (defensive). The payout is priced on this route's
+      // length when the ship arrives.
       const path = this.grid.findWaterRoute(src.ref, dst.ref);
       if (!path || path.length < 2) continue;
-      this.ships.push({ id: this.nextShipId++, owner: src.owner, from: src.ref, to: dst.ref, path, progress: 0, dist });
+      this.ships.push({
+        id: this.nextShipId++,
+        owner: src.owner,
+        from: src.ref,
+        to: dst.ref,
+        path,
+        progress: 0,
+        sailedBefore: 0,
+        captured: false,
+      });
       // Successful dispatch resets the port's rejection counter (OpenFront spawn rate).
       this.rejections.set(src.ref, 0);
     }

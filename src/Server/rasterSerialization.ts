@@ -204,6 +204,11 @@ export interface BuildSnapshotInput {
 export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot => {
   const { tick, mapName, phase, spawnRemainingSeconds, map, grid, playerMeta, terrainHash, winnerPlayerId, recentEvents, crossings, ships, warships = [], nukes, nukeDetonations, nukeInterceptions = [], falloutTiles = [], fronts, rails = [], trains = [], tradeShips = [], eliminated, alliances = [], allianceRequests = [], embargoes = [], targetRequests = [], emojis = [], lastAttackerOf, betrayalsOf } = input;
 
+  // Warships are mobile units, not structures — count the live fleet per
+  // owner off the unit list (it drives the client's cost-ramp price label).
+  const warshipCounts = new Map<number, number>();
+  for (const w of warships) warshipCounts.set(w.playerId, (warshipCounts.get(w.playerId) ?? 0) + 1);
+
   const players: RasterPlayerInfo[] = [];
   for (const id of grid.players()) {
     const meta = playerMeta.get(id) ?? { name: `Player ${id}`, color: "#888", kind: "human" as RasterPlayerKind };
@@ -230,7 +235,7 @@ export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
       forts: grid.totalLevelsOf(id, "fort"),
       factories: grid.totalLevelsOf(id, "factory"),
       silos: grid.totalLevelsOf(id, "silo"),
-      warships: grid.totalLevelsOf(id, "warship"),
+      warships: warshipCounts.get(id) ?? 0,
       sams: grid.totalLevelsOf(id, "sam"),
       tiles,
       troopsPerSecond: troopsPerSecond(tiles, grid.troopsOf(id), SIMULATION_TICK_RATE, grid.incomeMultiplierOf(id), activeCities, grid.modifiersOf(id).troopCapMultiplier),

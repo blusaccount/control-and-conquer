@@ -4,10 +4,10 @@
 > evaluierter PR-Plan, der das exakte Spielgefühl von OpenFront nachbaut und
 > das Projekt **kommerziell nutzbar** hält.
 >
-> Ergänzt `openfront-gap-analysis.md` (Ist-Zustand, §3c) und
-> `openfront-balance-replication-plan.md` (wertgenaue Zielwerte). Dieses
-> Dokument ist die **Umsetzungsreihenfolge**: konkrete, einzeln mergebare PRs
-> mit Scope, Dateien, Akzeptanzkriterien und Lizenz-Leitplanken.
+> Dieses Dokument ist die **Umsetzungsreihenfolge**: konkrete, einzeln
+> mergebare PRs mit Scope, Dateien, Akzeptanzkriterien und Lizenz-Leitplanken.
+> (Die früheren Begleit-Dokumente Gap-Analyse, Balance-Replication-Plan und
+> Playthrough-Notizen wurden als veraltet entfernt.)
 
 ## 1) Lizenz-Evaluierung (Grundlage für alles Weitere)
 
@@ -65,8 +65,7 @@ copyleft-Hebel auf dieses Repo.
 
 ## 2) Review-Ergebnis: Wo steht die Codebase?
 
-Kurzfassung (Details in `openfront-gap-analysis.md` §3c; heute gegen Code
-verifiziert, 309 Tests grün):
+Kurzfassung (heute gegen Code verifiziert, 309 Tests grün):
 
 **Bereits wertgenau bzw. funktional gleichauf:** 10 TPS, Start 25k,
 `maxTroops`-/Wachstums-Glockenkurve, komplettes Land-Kampf-Modell
@@ -229,20 +228,23 @@ existieren hier nicht").
   Anzeige im Leaderboard.
 - **Tests:** Spende erhält Pool-Summen; Embargo stoppt Routen-Auswahl.
 
-### PR G — Waffen-Feintuning (M, P2)
+### PR G — Waffen-Feintuning (M, P2) — **großteils erledigt (2026-07-04)**
 
-- **MIRV-Schwarm:** statt 6 Sprengköpfen viele kleine Warheads über das
-  Territorium des Ziel-Spielers verteilt (Anzahl skaliert mit Zielgröße,
-  Radius klein, deterministisches Scatter); Performance auf 2.5M-Tile-Maps
-  prüfen (Batch-Fallout).
+- **MIRV-Schwarm:** ✅ **erledigt** — Sättigungsschlag über das Territorium
+  des Ziel-Spielers (Besitzer des Ziel-Tiles): bis 350 Warheads, Landepunkte
+  ≥25 Manhattan-Tiles auseinander, je Warhead 12/18-Radien, einzeln
+  SAM-abfangbar (öffentliche Wiki-Werte, "MIRV", 2026-07). Deterministisches
+  Spatial-Thinning über die Tile-Menge des Opfers (Bucket-Grid).
 - **SAM-Quoten je Waffe** (Atom hoch, Hydrogen mittel, MIRV-Warheads 50 %) +
   Range-Stacking mehrerer SAMs — exakte Quoten vor Umsetzung öffentlich
-  verifizieren (Wiki-Angaben widersprechen sich).
-- **Defense-Post-Geschütz:** Forts beschießen Schiffe in Reichweite
-  (shellRate 100, Range 75, 250 Schaden — Balance-Plan §2.3).
-- **Hydrogen-Radien** gegen öffentliche Quellen verifizieren (aktuelle 20/50
-  sind als „clean-room scale-up" markiert, Wiki nennt deutlich größere).
-- **Tests:** Scatter-Determinismus; SAM-Quote pro Typ; Fort-vs-Warship-DPS.
+  verifizieren (Wiki-Angaben widersprechen sich). **Weiterhin offen.**
+- **Defense-Post-Geschütz:** ✅ **erledigt** — Forts beschießen feindliche
+  Schiffe in Reichweite (shellRate 100, Range 75, 250 Schaden; Transport vor
+  Warship, Trade-Schiffe nie).
+- **Hydrogen-Radien:** ✅ **erledigt** — 80/100 laut öffentlichen Wikis
+  (openfront.miraheze.org / openfront.wiki, "Hydrogen Bomb", 2026-07).
+- **Tests:** MIRV-Spacing/-Abdeckung, Fort-vs-Transport und Fort-vs-Warship
+  gepinnt; SAM-Quote pro Typ weiterhin offen.
 
 ### PR H — Map-Katalog I: Pipeline + Karten (L, P1)
 
@@ -312,8 +314,12 @@ in `docs/multiplayer-authority.md`. Sequenz:
 ## 4) Bewusste Nicht-Ziele (dokumentierte Abweichungen)
 
 - **Canvas 2D statt WebGL2** — Look wird gespiegelt, Engine nicht portiert.
-- **Pause/Speed-Keys, Warship-Box-Select, Raketenrichtung (U)** —
-  architektonisch nicht übertragbar bzw. bewusst ausgelassen (Gap-Analyse §3c #2).
+- **Pause/Speed-Keys, Raketenrichtung (U)** — architektonisch nicht
+  übertragbar bzw. bewusst ausgelassen. **Warship-Box-Select** ist seit dem
+  Unit-Umbau (2026-07-04: Warships sind mobile, per Wasser-Klick gekaufte
+  Einheiten mit Patrouillensektor, Spawn am nächsten Hafen, Heilung nur mit
+  Hafen, Trade-Kapern auf Kontakt bei doppelter Jagdgeschwindigkeit — Wiki-
+  Werte) grundsätzlich möglich, aber weiterhin unimplementiert (P3).
 - **Eigene Zugaben bleiben:** Minimap, 👑-Marker, Defeat/Spectate-Flow —
   OpenFront hat sie nicht, sie verbessern das Spiel und schaden der
   „Feel-Parität" nicht.

@@ -144,8 +144,9 @@ test("a port dispatches on OpenFront's cadence, not instantly", () => {
   // (the rejection counter has to climb to the rate first), but must by ~tick 110.
   const grid = new TerritoryGrid(rowMap("##  ##"));
   grid.addPlayer(1, 0);
+  grid.addPlayer(2, 0);
   grid.claim(1, 1);
-  grid.claim(4, 1);
+  grid.claim(4, 2);
   grid.placeBuilding(1, "port");
   grid.placeBuilding(4, "port");
   const trade = new TradeSystem(grid);
@@ -153,6 +154,113 @@ test("a port dispatches on OpenFront's cadence, not instantly", () => {
   assert.equal(trade.shipCount, 0, "no ship in the opening cadence window");
   for (let tick = 51; tick <= 120; tick += 1) trade.advance(tick);
   assert.ok(trade.shipCount > 0 || grid.goldOf(1) > 0, "a ship dispatched (or already arrived) by ~tick 110");
+});
+
+test("a player's own second port is never a trade partner (no self-trade)", () => {
+  // Two ports on the same sea, both owned by player 1: trade is inter-player,
+  // so no ship may ever dispatch and no gold may be earned — otherwise two own
+  // ports would be a risk-free double-payout gold machine.
+  const grid = new TerritoryGrid(rowMap("##  ##"));
+  grid.addPlayer(1, 0);
+  grid.claim(1, 1);
+  grid.claim(4, 1);
+  grid.placeBuilding(1, "port");
+  grid.placeBuilding(4, "port");
+  const trade = new TradeSystem(grid);
+  for (let tick = 0; tick <= 300; tick += 1) trade.advance(tick);
+  assert.equal(trade.shipCount, 0, "no ship sails between two same-owner ports");
+  assert.equal(grid.goldOf(1), 0, "no self-trade gold");
+});
+
+test("trade gold is priced on the tiles actually sailed, not the straight line", () => {
+  // The L-shaped channel from the route test: ports A(0,0) and B(1,2) are 3
+  // Manhattan tiles apart, but the water route hugs the channel (A → (1,0) →
+  // (2,0) → (2,1) → (2,2) → B = 5 hops). The payout must use the 5-hop trip.
+  const map = gridMap([
+    "#  #",
+    "## #",
+    "## #",
+    "####",
+  ]);
+  const grid = new TerritoryGrid(map);
+  const A = map.ref(0, 0);
+  const B = map.ref(1, 2);
+  grid.addPlayer(1, 0);
+  grid.addPlayer(2, 0);
+  grid.claim(A, 1);
+  grid.claim(B, 2);
+  grid.placeBuilding(A, "port");
+  grid.placeBuilding(B, "port");
+  const trade = new TradeSystem(grid);
+  for (let tick = 0; tick <= 300; tick += 1) trade.advance(tick);
+  const travelled = tradeShipGold(5);
+  const manhattan = tradeShipGold(3);
+  assert.ok(grid.goldOf(1) > 0, "a trip completed");
+  assert.equal(grid.goldOf(1) % travelled, 0, `payout is a multiple of the 5-hop price ${travelled}, got ${grid.goldOf(1)}`);
+  assert.notEqual(travelled, manhattan, "the two prices differ, so the assertion is meaningful");
+});
+
+test("a warship capture redirects a trade ship to the captor's port, which alone is paid", () => {
+  // One connected sea, three coasts. Players 1 and 2 trade; player 3's port is
+  // embargoed with both, so it can NEVER earn normal trade gold — any gold on
+  // player 3 must come from a captured prize arriving at its port.
+  const map = gridMap([
+    "##    ",
+    "      ",
+    "##  ##",
+  ]);
+  const grid = new TerritoryGrid(map);
+  const A = map.ref(1, 0); // player 1's port
+  const B = map.ref(4, 2); // player 2's port
+  const C = map.ref(0, 2); // player 3's port (the pirate's harbour)
+  grid.addPlayer(1, 0);
+  grid.addPlayer(2, 0);
+  grid.addPlayer(3, 0);
+  grid.claim(A, 1);
+  grid.claim(B, 2);
+  grid.claim(C, 3);
+  grid.placeBuilding(A, "port");
+  grid.placeBuilding(B, "port");
+  grid.placeBuilding(C, "port");
+
+  const trade = new TradeSystem(grid, (a, b) => a === 3 || b === 3);
+  let captured = false;
+  for (let tick = 0; tick <= 600; tick += 1) {
+    trade.advance(tick);
+    if (!captured) {
+      // Capture the first ship we see that belongs to a trader.
+      const ship = trade.targetableShips().find((s) => s.owner === 1 || s.owner === 2);
+      if (ship) {
+        assert.ok(trade.captureShip(ship.id, 3), "the capture succeeded");
+        captured = true;
+        // The prize now flies the captor's colours.
+        assert.ok(trade.targetableShips().some((s) => s.id === ship.id && s.owner === 3));
+      }
+    }
+    if (captured && grid.goldOf(3) > 0) break;
+  }
+  assert.ok(captured, "a ship was captured mid-voyage");
+  assert.ok(grid.goldOf(3) > 0, "the captor's port was paid on the prize's arrival");
+});
+
+test("a capture with no reachable captor port sinks the ship instead", () => {
+  const grid = new TerritoryGrid(rowMap("##  ##"));
+  grid.addPlayer(1, 0);
+  grid.addPlayer(2, 0);
+  grid.addPlayer(3, 0); // the pirate owns no port at all
+  grid.claim(1, 1);
+  grid.claim(4, 2);
+  grid.placeBuilding(1, "port");
+  grid.placeBuilding(4, "port");
+  const trade = new TradeSystem(grid);
+  for (let tick = 0; tick <= 300 && trade.shipCount === 0; tick += 1) trade.advance(tick);
+  // Both ports may have dispatched in the same attempt cycle — target one ship.
+  const ship = trade.targetableShips()[0];
+  assert.ok(ship, "a trade ship is at sea");
+  const before = trade.shipCount;
+  assert.equal(trade.captureShip(ship.id, 3), false, "no port → no prize");
+  assert.equal(trade.shipCount, before - 1, "the targeted ship was sunk");
+  assert.ok(!trade.targetableShips().some((s) => s.id === ship.id), "and it is gone");
 });
 
 test("an embargo stops trade ships routing between the two owners", () => {

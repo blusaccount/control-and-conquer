@@ -59,8 +59,16 @@ const NATION_BETRAYAL_TOLERANCE = 1;
 // bombs start flying. All deterministic (no RNG).
 // ---------------------------------------------------------------------------
 
-/** Defense posts a nation garrisons contested borders with. */
-const FORT_CAP = 2;
+/**
+ * Defense posts a nation garrisons contested borders with: a base pair, plus
+ * one more per {@link FORT_CAP_TILES_PER_EXTRA} tiles of territory (own
+ * heuristic — OpenFront's exact structure counts aren't public, but its large
+ * nations visibly field more posts than small ones). Capped so a sprawling
+ * empire doesn't carpet its borders.
+ */
+const FORT_CAP_BASE = 2;
+const FORT_CAP_TILES_PER_EXTRA = 25_000;
+const FORT_CAP_MAX = 6;
 /**
  * How close to a hostile border a fort must stand (Chebyshev tiles). Kept at
  * the structure-spacing distance so two forts fit around one contact point.
@@ -476,7 +484,11 @@ export class RasterBotController {
         const y = map.y(ref);
         return samples.some(([sx, sy]) => Math.max(Math.abs(sx - x), Math.abs(sy - y)) <= FORT_BORDER_RANGE);
       };
-      if (this.tryQueueBuild(grid, map, "fort", nearHostileBorder, FORT_CAP)) return true;
+      const fortCap = Math.min(
+        FORT_CAP_MAX,
+        FORT_CAP_BASE + Math.floor(grid.tileCountOf(me) / FORT_CAP_TILES_PER_EXTRA),
+      );
+      if (this.tryQueueBuild(grid, map, "fort", nearHostileBorder, fortCap)) return true;
     }
 
     if (cities < 2) return false; // the dearer tiers wait for a second city
@@ -510,9 +522,9 @@ export class RasterBotController {
       if (this.tryQueueBuild(grid, map, "factory", railServed, 1)) return true;
     }
 
-    // 3) A coastal nation floats a warship to patrol its waters.
+    // 3) A coastal nation floats a warship to patrol the water off its port.
     const warshipCap = WARSHIP_CAP_BASE + (p.aggression >= 0.6 ? 1 : 0);
-    if (this.tryQueueBuild(grid, map, "warship", (ref) => map.isShore(ref), warshipCap)) return true;
+    if (this.tryQueueWarship(grid, map, warshipCap)) return true;
 
     // 4) The silo — the war chest has been reserving for it (see warChest).
     const siloCap = SILO_CAP_BASE + (p.aggression >= 0.9 ? 1 : 0);
@@ -655,6 +667,30 @@ export class RasterBotController {
   private nextBuildCost(grid: TerritoryGrid, me: PlayerId, type: BuildingType): number {
     const ramp = costCounterTypes(type).reduce((sum, t) => sum + grid.totalLevelsOf(me, t), 0);
     return buildingCost(type, ramp);
+  }
+
+  /**
+   * Buy a warship when under `cap` and affordable: the patrol point is the
+   * water off the bot's first active port (warships are units bought against a
+   * water target and launched from a port — the session validates the rest).
+   * The cost ramp runs over the ships currently afloat.
+   */
+  private tryQueueWarship(grid: TerritoryGrid, map: GameMap, cap: number): boolean {
+    const me = this.myPlayerId;
+    const session = this.session;
+    if (me === null || !session) return false;
+    const afloat = session.peekWarshipCount(me);
+    if (afloat >= cap) return false;
+    if (grid.goldOf(me) < buildingCost("warship", afloat)) return false;
+    for (const [ref, type] of grid.activeBuildingEntries()) {
+      if (type !== "port" || grid.ownerOf(ref) !== me) continue;
+      for (const n of map.neighbors(ref)) {
+        if (!map.isWater(n)) continue;
+        session.queueBuild(this.config.botId, { targetX: map.x(n), targetY: map.y(n), building: "warship" });
+        return true;
+      }
+    }
+    return false;
   }
 
   private tryQueueBuild(
@@ -937,6 +973,22 @@ export class RasterBotController {
     const enemies = targets.filter(
       (t) => t.target !== NEUTRAL_PLAYER && !alliances.areAllied(me, t.target),
     );
+
+    // Retaliation first: a nation under attack FIGHTS BACK. While the most
+    // recent attacker still presses our border, it is the preferred
+    // conventional target — no strength gate and no war-trigger banking
+    // (defence can't wait); rolling over passively because the aggressor
+    // "wasn't the weakest beatable rival" is exactly the unresponsive-AI feel
+    // OpenFront's nations never give. Sized like any war strike (the deep
+    // reserve stays home; a tribe aggressor is farmed proportionally). The
+    // same signal already drives the nuclear doctrine's lead trigger.
+    if (this.lastAttackedBy !== 0) {
+      const foe = enemies.find((e) => e.target === this.lastAttackedBy);
+      if (foe) {
+        this.queueTroops(grid, map, me, foe.sample, this.warStrikeTroops(grid, me, foe.target));
+        return;
+      }
+    }
 
     // Honour an ally's target request (OpenFront): if an ally has asked us to
     // attack someone we border and can plausibly beat, oblige at once — a

@@ -6,8 +6,10 @@ import { RailSystem } from "../src/Core/railSystem.js";
 import { computeRailNetwork, type RailStation } from "../src/Core/railNetwork.js";
 import {
   RAIL_STATION_MAX_RANGE,
-  TRAIN_GOLD_SELF_BASE,
+  TRAIN_GOLD_ALLY_BASE,
   TRAIN_GOLD_FLOOR,
+  TRAIN_GOLD_OTHER_BASE,
+  TRAIN_GOLD_SELF_BASE,
   trainGold,
   trainSpawnRate,
 } from "../src/Core/buildings.js";
@@ -192,13 +194,13 @@ test("a station taps existing track at a T-junction, not a long parallel line", 
     "no long parallel track back to a distant station");
 });
 
-test("rails never link stations of different owners", () => {
-  const grid = landGrid(40, 10, 1);
+test("rails link stations across owners (the wiki's international network)", () => {
+  const grid = landGrid(60, 10, 1);
   const network = computeRailNetwork(grid.map, [
     stationAt(grid, 5, 5, 1, "factory"),
-    stationAt(grid, 12, 5, 2, "city"), // a different player's city
+    stationAt(grid, 30, 5, 2, "city"), // a different player's city, in range
   ]);
-  assert.equal(network.edges.length, 0);
+  assert.equal(network.edges.length, 1, "the factory wires up the foreign city");
 });
 
 // --- train economy ---------------------------------------------------------
@@ -234,6 +236,47 @@ test("a factory with no reachable station spawns no paying trains", () => {
   assert.equal(rails.edgeCount, 0);
   assert.equal(rails.trainCount, 0);
   assert.equal(grid.goldOf(1), 0);
+});
+
+test("a stop at another player's city pays the 25k tier to BOTH owners; an ally's pays 35k", () => {
+  const run = (allied: boolean): { mine: number; theirs: number } => {
+    const grid = landGrid(60, 10, 1);
+    grid.addPlayer(2);
+    // Player 2 owns the city's tile; player 1 the rest (factory owner).
+    const cityRef = grid.map.ref(30, 5);
+    grid.claim(cityRef, 2);
+    grid.setGold(1, 0);
+    grid.setGold(2, 0);
+    grid.placeBuilding(grid.map.ref(10, 5), "factory");
+    grid.placeBuilding(cityRef, "city");
+    const rails = new RailSystem(grid, () => allied);
+    for (let tick = 0; tick < 400; tick += 1) rails.advance(tick);
+    return { mine: grid.goldOf(1), theirs: grid.goldOf(2) };
+  };
+
+  const foreign = run(false);
+  assert.ok(foreign.mine > 0, "the train owner was paid at the foreign stop");
+  assert.equal(foreign.mine, foreign.theirs, "the station owner received the same amount");
+  assert.equal(foreign.mine % TRAIN_GOLD_OTHER_BASE, 0, "payouts come in 25k foreign-tier units");
+
+  const ally = run(true);
+  assert.equal(ally.mine % TRAIN_GOLD_ALLY_BASE, 0, "an allied stop pays the 35k tier");
+  assert.ok(ally.mine > foreign.mine, "allied lines out-earn foreign ones");
+});
+
+test("an embargo mutes payouts at the embargoed player's stations", () => {
+  const grid = landGrid(60, 10, 1);
+  grid.addPlayer(2);
+  const cityRef = grid.map.ref(30, 5);
+  grid.claim(cityRef, 2);
+  grid.setGold(1, 0);
+  grid.setGold(2, 0);
+  grid.placeBuilding(grid.map.ref(10, 5), "factory");
+  grid.placeBuilding(cityRef, "city");
+  const rails = new RailSystem(grid, () => false, () => true);
+  for (let tick = 0; tick < 400; tick += 1) rails.advance(tick);
+  assert.equal(grid.goldOf(1), 0, "no gold flows across an embargo");
+  assert.equal(grid.goldOf(2), 0);
 });
 
 test("trainGold pays the self base, then decays per stop to a floor (OpenFront)", () => {

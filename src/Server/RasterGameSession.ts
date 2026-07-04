@@ -1263,6 +1263,16 @@ export class RasterGameSession {
     return this.conflict.tick;
   }
 
+  /** Test helper: the engine's active attack fronts (attacker/target/troops/anchor). */
+  public peekFronts(): ReturnType<RasterConflict["activeFronts"]> {
+    return this.conflict.activeFronts();
+  }
+
+  /** Test/bot helper: warship units `playerId` currently has afloat (drives the cost ramp). */
+  public peekWarshipCount(playerId: PlayerId): number {
+    return this.conflict.warshipCountOf(playerId);
+  }
+
   /**
    * Eliminate any player that now holds no territory — a nation is beaten only
    * when its *entire* territory has been captured; there is no capital shortcut.
@@ -1461,6 +1471,34 @@ export class RasterGameSession {
     const def = BUILDING_DEFS[intent.building];
     if (!def) {
       return { kind: "rejected", reason: "INVALID_BUILDING", message: "Unknown building type." };
+    }
+
+    // A Warship is a mobile unit, not a structure (the wiki's model): the
+    // order targets water — its patrol sector — and the unit launches from the
+    // buyer's nearest port. Cost ramps over the ships currently afloat.
+    if (intent.building === "warship") {
+      const afloat = this.conflict.warshipCountOf(attacker);
+      const warshipCost = buildingCost("warship", afloat);
+      if (this.grid.goldOf(attacker) < warshipCost) {
+        return {
+          kind: "rejected",
+          reason: "INSUFFICIENT_GOLD",
+          message: `Not enough gold — a warship costs ${warshipCost}.`,
+        };
+      }
+      const reason = this.conflict.launchWarship(attacker, intent.targetX, intent.targetY);
+      if (reason === "NO_PORT") {
+        return { kind: "rejected", reason: "NOT_BUILDABLE", message: "A warship needs a Port to launch from — build one first." };
+      }
+      if (reason === "INVALID_TARGET") {
+        return { kind: "rejected", reason: "INVALID_TILE", message: "Target open water for the warship's patrol." };
+      }
+      this.grid.addGold(attacker, -warshipCost);
+      const buyerName = this.playerMeta.get(attacker)?.name ?? `Player ${attacker}`;
+      return {
+        kind: "ok",
+        line: `${buyerName} launched a Warship (${warshipCost} gold) to patrol (${intent.targetX}, ${intent.targetY}).`,
+      };
     }
 
     const clickRef = this.map.ref(intent.targetX, intent.targetY);

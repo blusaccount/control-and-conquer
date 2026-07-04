@@ -20,20 +20,24 @@ export type BuildingType = "city" | "port" | "fort" | "factory" | "warship" | "s
 export const BUILDING_TYPES: readonly BuildingType[] = ["city", "port", "fort", "factory", "warship", "silo", "sam"];
 
 /** Building types that must sit on a coastal (shore) tile. */
-export const COASTAL_BUILDING_TYPES: readonly BuildingType[] = ["port", "warship"];
+export const COASTAL_BUILDING_TYPES: readonly BuildingType[] = ["port"];
 
 /**
- * A Warship is built like any other structure (cost/coastal/construction as
- * usual, see {@link BUILDING_DEFS.warship}), but once construction finishes it
- * launches as a **mobile unit** — this is OpenFront's own model (Warship is a
- * `UnitType`, not a static defense post). Losing the home tile (captured or
- * the unit destroyed) tears down the structure too — one warship in, one
- * warship out.
+ * A Warship is a **mobile unit**, not a structure — OpenFront's own model, per
+ * the public wiki ("Warship", retrieved 2026-07): you buy one by targeting a
+ * patch of **water** (its patrol sector), it requires a **Port**, appears at
+ * the nearest owned port, and sails to the targeted location. It patrols its
+ * sector when idle and fires on hostile naval units entering range; it heals
+ * only while its owner still runs at least one port, and without a port it
+ * also stops capturing trade ships; chasing a trade prize it doubles its
+ * speed and captures on contact. It stays in the build *menu* (same cost
+ * ramp, `(n+1)·250k` over the ships currently afloat, cap 1M), but the grid
+ * never stores a warship building — the unit lives in the conflict engine.
  *
- * Values sourced from `docs/openfront-balance-replication-plan.md` §2.7
- * (maxHealth, patrol/target range, shellRate, shell damage, passiveHeal,
- * retreat threshold). Two figures aren't in our source material and are this
- * project's own clean-room approximations, called out below.
+ * Values are OpenFront's publicly documented warship figures (maxHealth,
+ * patrol/target range, shellRate, shell damage, passiveHeal, retreat
+ * threshold, trade-chase speed). Figures not in our source material are this
+ * project's own approximations, called out below.
  */
 export const WARSHIP_MAX_HP = 1000;
 
@@ -65,13 +69,30 @@ export const WARSHIP_RETREAT_RECOVER_HP = 900;
 /**
  * Tiles (Chebyshev) a warship must close to before it opens fire. Not a
  * sourced figure — `targetRange`(130) reads as a search/pursuit radius, not a
- * weapon range, so this project uses its own closer approximation (matching
- * the coast-defence radius this replaces).
+ * weapon range. Sized like naval artillery (the same order as the defense
+ * post's 75-tile gun) so a patrolling warship shells intruders across most of
+ * its patrol area instead of having to steam right up to them — with the old
+ * point-blank 12 a transport skirting the patrol edge routinely outran its
+ * hunter, which OpenFront's warships never allow.
  */
-export const WARSHIP_ENGAGE_RANGE = 12;
+export const WARSHIP_ENGAGE_RANGE = 70;
 
-/** Tiles a warship advances per tick while moving — not a sourced figure; matches every other ship's cruising speed. */
+/** Tiles a warship advances per tick while moving (wiki: "one tile per tick"). */
 export const WARSHIP_TILES_PER_TICK = 1;
+
+/** Tiles per tick while chasing a trade prize — the wiki's documented doubled chase speed. */
+export const WARSHIP_TRADE_CHASE_SPEED = 2;
+
+/** Chebyshev distance that counts as "contact" for a trade capture (the wiki captures on contact). */
+export const WARSHIP_CAPTURE_CONTACT_RANGE = 1.5;
+
+/**
+ * How far (Chebyshev) a patrol waypoint may sit from the sector's centre —
+ * half the patrol range, so the whole wander stays comfortably inside the
+ * assigned sector (our own interpretation of the wiki's "patrols their
+ * assigned sector"; OpenFront's exact wander shape isn't documented).
+ */
+export const WARSHIP_PATROL_WANDER_RADIUS = WARSHIP_PATROL_RANGE / 2;
 
 /** Runtime guard: is `value` a known building type id? */
 export const isBuildingType = (value: unknown): value is BuildingType =>
@@ -185,6 +206,23 @@ export const FORT_DEFENSE_RADIUS = 30;
 export const FORT_SPEED_BONUS = 3;
 
 /**
+ * The fort's **gun**: OpenFront's defense post doesn't just tax captures, it
+ * shells hostile ships that sail near it (`shellAttackRate` 100,
+ * `targettingRange` 75, shell damage 250). Ticks between shots; a shot is
+ * taken only when a target is in range, so an idle gun is always ready.
+ */
+export const FORT_SHELL_RATE_TICKS = 100;
+
+/** Tiles (Chebyshev) the fort's gun reaches (OpenFront's `targettingRange`). */
+export const FORT_SHELL_RANGE = 75;
+
+/**
+ * Damage one fort shell deals — sinks a transport outright (no HP pool) and
+ * takes a quarter off a warship, matching the warship's own shell.
+ */
+export const FORT_SHELL_DAMAGE = 250;
+
+/**
  * Minimum Euclidean distance (tiles) required between two of a player's
  * structures, mirroring OpenFront's `structureMinDist` (15). Keeps a player from
  * stacking buildings on adjacent tiles; placement snaps/validates against it.
@@ -211,7 +249,9 @@ export const BUILDING_CONSTRUCTION_TICKS: Readonly<Record<BuildingType, number>>
   factory: 20,
   port: 50,
   fort: 50,
-  warship: 30,
+  // A warship is a mobile unit, not a structure: it appears at the nearest
+  // owned port the moment it is bought (the wiki's behaviour) — no build time.
+  warship: 0,
   silo: 100,
   sam: 300,
 };
@@ -242,18 +282,22 @@ export const RAIL_PAYOUT_TYPES: readonly BuildingType[] = ["city", "port"];
 export const RAIL_STATION_MIN_RANGE = 15;
 
 /**
- * Greatest straight-line distance (tiles) between two linked stations, OpenFront's
- * `trainStationMaxRange` (110). A city/port only becomes a rail station at all
- * when a factory sits within this range of it (the factory is the catalyst).
+ * Greatest straight-line distance (tiles) between two linked stations — the
+ * public wiki's documented connection range ("between 15 and 100 units";
+ * openfront.miraheze.org "Factory"/"Railroad", retrieved 2026-07). A city/port
+ * only becomes a rail station at all when a factory sits within this range of
+ * it (the factory is the catalyst) — anyone's factory: rail networks span
+ * players, which is what makes foreign/allied train stops possible.
  */
-export const RAIL_STATION_MAX_RANGE = 110;
+export const RAIL_STATION_MAX_RANGE = 100;
 
 /**
- * Longest a single railroad's routed track may run, OpenFront's `railroadMaxSize`
- * = `trainStationMaxRange · √2 ≈ 155.56`. A route whose A* path exceeds this
- * (e.g. a long detour around water) is dropped, so no link is laid.
+ * Longest a single railroad's routed track may run — the wiki's documented
+ * per-connection cap ("each individual railroad connection having a maximum
+ * distance of 120 units"). A route whose A* path exceeds this (e.g. a long
+ * detour around water) is dropped, so no link is laid.
  */
-export const RAIL_MAX_TRACK_LENGTH = RAIL_STATION_MAX_RANGE * Math.SQRT2;
+export const RAIL_MAX_TRACK_LENGTH = 120;
 
 /**
  * Extra A* cost for laying track onto a water or shoreline tile, OpenFront's
@@ -273,13 +317,16 @@ export const RAIL_DIRECTION_CHANGE_PENALTY = 3;
 export const RAIL_HEURISTIC_WEIGHT = 2;
 
 /**
- * Base gold a train pays when it reaches a city/port on its **own** owner's
- * network — OpenFront's `trainGold` "self" tier (10 000). (OpenFront also pays a
- * higher tier when a train stops at another player's or an ally's station —
- * 25 000 / 35 000 — but our rail network only ever links one owner's own
- * stations, so the self tier is the only reachable one.)
+ * Train payout tiers, per the public wiki ("Train", retrieved 2026-07): a stop
+ * at your **own** city/port pays 10 000, at another player's 25 000, and at an
+ * **ally's** 35 000 — long international lines through friendly territory are
+ * the big rail money, which is exactly why the network spans players. On a
+ * paying stop **both** the train's owner and the station's owner receive the
+ * amount (once, if they're the same player).
  */
 export const TRAIN_GOLD_SELF_BASE = 10_000;
+export const TRAIN_GOLD_OTHER_BASE = 25_000;
+export const TRAIN_GOLD_ALLY_BASE = 35_000;
 /** Stops a train makes at full pay before the distance penalty starts (OpenFront's `-9`). */
 export const TRAIN_GOLD_FREE_STOPS = 9;
 /** Gold the payout drops per city/port stop beyond {@link TRAIN_GOLD_FREE_STOPS}. */
@@ -288,14 +335,14 @@ export const TRAIN_GOLD_STOP_DECAY = 5_000;
 export const TRAIN_GOLD_FLOOR = 5_000;
 
 /**
- * Gold a train pays its owner at a city/port stop, mirroring OpenFront's
- * `trainGold`: the self-tier base, minus 5 000 for every stop this train has made
- * beyond the first ~10, floored at 5 000. `stopsVisited` is how many paying stops
- * the train has already banked, so its payout decays the longer it runs.
+ * Gold one paying stop is worth, mirroring OpenFront's `trainGold`: the
+ * relationship tier's `base`, minus 5 000 for every stop this train has made
+ * beyond the first ~10, floored at 5 000. `stopsVisited` is how many paying
+ * stops the train has already banked, so its payout decays the longer it runs.
  */
-export const trainGold = (stopsVisited: number): number => {
+export const trainGold = (stopsVisited: number, base: number = TRAIN_GOLD_SELF_BASE): number => {
   const beyondFree = Math.max(0, Math.max(0, stopsVisited) - TRAIN_GOLD_FREE_STOPS);
-  return Math.max(TRAIN_GOLD_FLOOR, TRAIN_GOLD_SELF_BASE - beyondFree * TRAIN_GOLD_STOP_DECAY);
+  return Math.max(TRAIN_GOLD_FLOOR, base - beyondFree * TRAIN_GOLD_STOP_DECAY);
 };
 
 /** Tiles of track a train advances per tick (OpenFront's train `speed: 2`). */
@@ -395,7 +442,7 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
   city: {
     type: "city",
     name: "City",
-    description: "Raises max population and pays a gold dividend.",
+    description: "Raises your maximum population (no gold income).",
     baseCost: 125_000,
     costGrowth: 2,
     costCap: 1_000_000,
@@ -403,7 +450,7 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
   port: {
     type: "port",
     name: "Port",
-    description: "A coastal trade hub: steady gold income (must sit on a shore).",
+    description: "Sends trade ships to other players' ports — both ends earn gold (must sit on a shore).",
     baseCost: 125_000,
     costGrowth: 2,
     costCap: 1_000_000,
@@ -428,7 +475,7 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
   warship: {
     type: "warship",
     name: "Warship",
-    description: "Guards the coast: sinks enemy transport ships in range (must sit on a shore).",
+    description: "A patrol ship: target water and it launches from your nearest port (requires a Port).",
     baseCost: 250_000,
     costGrowth: 1,
     costCap: 1_000_000,

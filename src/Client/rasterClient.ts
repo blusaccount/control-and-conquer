@@ -2106,7 +2106,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       hoverBuilding.type === type &&
       !hoverBuilding.underConstruction &&
       UPGRADABLE_BUILDING_TYPES.includes(type);
-    const valid = isMine && (hoverBuilding === undefined || isUpgrade);
+    // A warship is a unit bought against WATER (its patrol sector), not a
+    // structure on owned land — its ghost is green over open water instead.
+    const valid = type === "warship"
+      ? map.isWater(ref)
+      : isMine && (hoverBuilding === undefined || isUpgrade);
     const outline = isUpgrade
       ? "rgba(250, 204, 21, 0.95)"
       : valid
