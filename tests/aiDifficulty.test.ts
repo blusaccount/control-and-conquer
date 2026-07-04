@@ -121,7 +121,7 @@ test("bot decision cadence follows OpenFront's nextInt(40, 80)", () => {
 });
 
 test("scalePersonality scales aggression by difficulty (cadence now comes from the seat)", () => {
-  const base = { id: "t", decisionCooldownTicks: 60, minPool: 0, reserveFraction: 0, expandCommit: 1, attackCommit: 1, attackPoolRatio: 1, aggression: 0.5 };
+  const base = { id: "t", decisionCooldownTicks: 60, minPool: 0, attackPoolRatio: 1, aggression: 0.5 };
   assert.ok(scalePersonality(base, "easy").aggression < base.aggression, "easy nations pick fewer fights");
   assert.ok(scalePersonality(base, "impossible").aggression > scalePersonality(base, "hard").aggression, "impossible presses hardest");
 });
@@ -142,7 +142,6 @@ test("buildFieldConfigs is bot-heavy with per-seat cadence, phase and handicaps"
       assert.equal(c.confusionChance, NATION_CONFUSION_CHANCE.hard);
     } else {
       assert.ok(c.personality.decisionCooldownTicks >= 40 && c.personality.decisionCooldownTicks <= 80, "bot cadence 40–80");
-      assert.equal(c.personality.attackCommit, 0.05, "bot attackAmount = troops/20");
       assert.equal(c.confusionChance, 0);
     }
   }

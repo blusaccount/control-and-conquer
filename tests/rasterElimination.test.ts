@@ -28,13 +28,13 @@ const grantExtraTiles = (session: RasterGameSession, playerId: number, count: nu
   }
 };
 
-test("a player begins holding a single founding tile and is not eliminated", () => {
+test("a player begins holding their founding blob and is not eliminated", () => {
   const session = new RasterGameSession({ width: 48, height: 32, seed: 9 });
   const messages = collect(session, "alice");
   const snap = lastSnapshot(messages);
   const me = snap.players.find((p) => p.playerId === 1);
   assert.ok(me, "player 1 must be present");
-  assert.equal(session.peekGrid().tileCountOf(1), 1, "exactly the founding tile");
+  assert.ok(session.peekGrid().tileCountOf(1) >= 1, "holds the founding blob");
   assert.equal(me!.eliminated, false);
 });
 

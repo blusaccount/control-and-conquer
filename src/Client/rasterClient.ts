@@ -27,7 +27,7 @@ import type {
   RasterTrain,
 } from "../Core/types.js";
 import { hideMenu, setStatus, type UiElements } from "./dom.js";
-import { formatCount, formatDuration, formatRate } from "./format.js";
+import { formatCount, formatDuration, formatRate, formatTroopRate, formatTroops } from "./format.js";
 import { readBoolSetting } from "./settings.js";
 import { digitAction } from "./hotkeys.js";
 import { createWebSocketTransport, createWorkerTransport, type RasterTransport } from "./transport.js";
@@ -457,7 +457,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   hideMenu(ui);
   ui.attackPercentOutput.textContent = `${ui.attackPercentInput.value}%`;
   ui.selectionInfo.textContent =
-    "Start phase: click anywhere on land to choose where your nation begins.";
+    "Choose a starting location: click anywhere on open land to found your nation.";
 
   const runtime: RasterRuntime = {
     map: null,
@@ -527,6 +527,19 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     spawned: false,
     phase: "spawn",
     spawnRemainingSeconds: 0,
+  };
+
+  /**
+   * The attack-ratio slider's readout, OpenFront-style: the percentage plus the
+   * troops a click at that ratio would commit right now — "20% (2.37K)" — so
+   * the number a player weighs is an army size, not an abstract percent.
+   * Refreshed on slider input, on T/Y-nudges, and every snapshot (the pool the
+   * percentage applies to changes each tick).
+   */
+  const updateRatioReadout = (): void => {
+    const percent = Number(ui.attackPercentInput.value) || 0;
+    ui.attackPercentOutput.textContent =
+      runtime.pool > 0 ? `${percent}% (${formatTroops(runtime.pool * (percent / 100))})` : `${percent}%`;
   };
 
   const transport: RasterTransport =
@@ -1123,11 +1136,32 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.tradeShips = snapshot.tradeShips ?? [];
 
     // The first snapshot in which we hold land marks the end of the spawn phase:
-    // zoom the camera in on the tile we founded on so the run starts at home.
-    if (!runtime.spawned && me && me.tiles > 0 && runtime.spawnX >= 0) {
+    // zoom the camera in on our founding blob so the run starts at home. Trust
+    // the click coordinates only when the tile there actually became ours — a
+    // rejected pick (water) followed by the countdown's auto-seat founds the
+    // nation somewhere else entirely, so fall back to locating an owned tile in
+    // the ownership raster rather than zooming into empty ocean.
+    if (!runtime.spawned && me && me.tiles > 0) {
       runtime.spawned = true;
-      centerOnTile(runtime.spawnX, runtime.spawnY, SPAWN_ZOOM_TILES);
-      setStatus(ui, `Founded at (${runtime.spawnX}, ${runtime.spawnY}).`);
+      let homeX = runtime.spawnX;
+      let homeY = runtime.spawnY;
+      const { map, owner } = runtime;
+      const clickedRef = map && homeX >= 0 ? homeY * map.width + homeX : -1;
+      if (map && owner && (clickedRef < 0 || owner[clickedRef] !== runtime.myPlayerId)) {
+        for (let ref = 0; ref < owner.length; ref += 1) {
+          if (owner[ref] === runtime.myPlayerId) {
+            homeX = ref % map.width;
+            homeY = Math.floor(ref / map.width);
+            break;
+          }
+        }
+      }
+      if (homeX >= 0 && homeY >= 0) {
+        runtime.spawnX = homeX;
+        runtime.spawnY = homeY;
+        centerOnTile(homeX, homeY, SPAWN_ZOOM_TILES);
+        setStatus(ui, `Founded at (${homeX}, ${homeY}).`);
+      }
     }
 
     runtime.fronts = snapshot.fronts ?? [];
@@ -1512,7 +1546,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       const nameY = showDetail ? sy - fontPx * 0.26 : sy;
       label(`${playerEmoji(player.playerId)} ${player.name}`, sx, nameY, fontPx, "600");
       if (showDetail) {
-        label(formatCount(player.troops), sx, sy + fontPx * 0.52, fontPx * 0.62, "500");
+        label(formatTroops(player.troops), sx, sy + fontPx * 0.52, fontPx * 0.62, "500");
         if (player.playerId === leaderId) {
           const crownPx = Math.max(13, fontPx * 0.7);
           ctx.font = `${crownPx}px serif`;
@@ -1996,7 +2030,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       if (front.troops <= 0) continue;
       const { x: sx, y: sy } = worldToScreen(front.x + 0.5, front.y + 0.5);
       if (sx < -90 || sy < -40 || sx > cw + 90 || sy > ch + 40) continue;
-      const text = `⚔ ${formatCount(front.troops)}`;
+      const text = `⚔ ${formatTroops(front.troops)}`;
       const w = ctx.measureText(text).width + px;
       const h = px * 1.5;
       const rx = sx - w / 2;
@@ -2443,11 +2477,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   const renderEconomy = (): void => {
     // Only "live" once the start phase is over and we hold land — until then the
     // resource bar shows a status hint rather than economy figures.
+    updateRatioReadout();
     const live = runtime.spawned && runtime.phase === "playing";
     if (!live) {
-      const hint = !runtime.spawned
-        ? "Pick a starting tile to begin"
-        : `Battle begins in ${runtime.spawnRemainingSeconds}s`;
+      const hint = "Choose a starting location";
       ui.goldInfo.innerHTML = `<span class="res res-muted">${escapeHtml(hint)}</span>`;
     } else {
       const maxPool = runtime.myMaxTroops;
@@ -2455,8 +2488,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       const pctStr = pct >= 10 ? String(Math.round(pct)) : pct.toFixed(1);
       ui.goldInfo.innerHTML =
         `<span class="res"><span class="res-ico">👥</span>` +
-        `<span class="res-val">${formatCount(runtime.pool)}/${formatCount(maxPool)}</span>` +
-        `<span class="res-rate">+${formatRate(runtime.troopsPerSecond)}/s</span></span>` +
+        `<span class="res-val">${formatTroops(runtime.pool)}/${formatTroops(maxPool)}</span>` +
+        `<span class="res-rate">+${formatTroopRate(runtime.troopsPerSecond)}/s</span></span>` +
         `<span class="res"><span class="res-ico">🪙</span>` +
         `<span class="res-val">${formatCount(runtime.gold)}</span>` +
         `<span class="res-rate">+${formatRate(runtime.goldPerSecond)}/s</span></span>` +
@@ -2479,24 +2512,22 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   /**
-   * Show or hide the big start-phase countdown banner over the map. Visible only
-   * during the `spawn` phase; its copy changes once the player has founded their
-   * nation and is just waiting for the game to begin.
+   * Show or hide the big start-phase banner over the map. Visible only during
+   * the `spawn` phase. OpenFront's singleplayer heads-up is "Choose a starting
+   * location" with **no countdown** (its `SpawnTimer` hides the bar in
+   * singleplayer, because picking a spawn starts the game immediately) — same
+   * here: the battle begins the moment you click, so the banner sells the
+   * choice, not a timer. The 10-second auto-seat fallback for a player who
+   * never clicks stays server-side.
    */
   const updateStartBanner = (): void => {
     if (runtime.phase !== "spawn") {
       ui.startBanner.classList.add("hidden");
       return;
     }
-    const secs = runtime.spawnRemainingSeconds;
-    const title = runtime.spawned ? "Get ready — the battle begins" : "Start phase — choose your spawn";
-    const sub = runtime.spawned
-      ? "Your nation is founded. Click open land to move it; territory opens when the timer hits zero."
-      : "Click anywhere on open land to found your nation.";
     ui.startBanner.innerHTML =
-      `<span class="start-banner-title">${escapeHtml(title)}</span>` +
-      `<span class="start-banner-timer">${secs}s</span>` +
-      `<span class="start-banner-sub">${escapeHtml(sub)}</span>`;
+      `<span class="start-banner-title">Choose a starting location</span>` +
+      `<span class="start-banner-sub">Click anywhere on open land — the battle begins the moment you do.</span>`;
     ui.startBanner.classList.remove("hidden");
   };
 
@@ -2517,15 +2548,14 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
 
   const renderSidebar = (): void => {
     renderEconomy();
-    // Pre-game: either still choosing a spawn, or founded but waiting out the
-    // start-phase countdown. Either way territory can't be taken yet.
+    // Pre-game: still choosing a spawn (picking one starts the battle at once,
+    // as in OpenFront singleplayer). Territory can't be taken yet, so the
+    // build/weapons UI stays out of sight — OpenFront's spawn screen is clean.
+    ui.buildSections.classList.toggle("hidden", !runtime.spawned || runtime.phase === "spawn");
     if (!runtime.spawned || runtime.phase === "spawn") {
-      const secs = runtime.spawnRemainingSeconds;
-      ui.selectionInfo.innerHTML = !runtime.spawned
-        ? `<strong>Choose your start position${runtime.phase === "spawn" ? ` — ${secs}s` : ""}.</strong><br/>` +
-          `<em>Click anywhere on open land to found your nation. Drag to pan, scroll to zoom.</em>`
-        : `<strong>Nation founded — the battle begins in ${secs}s.</strong><br/>` +
-          `<em>Click open land to relocate your spawn while the timer runs. Drag to pan, scroll to zoom.</em>`;
+      ui.selectionInfo.innerHTML =
+        `<strong>Choose a starting location.</strong><br/>` +
+        `<em>Click anywhere on open land to found your nation — the battle begins the moment you do. Drag to pan, scroll to zoom.</em>`;
       ui.eventsPanel.innerHTML = runtime.recentEvents
         .map((ev) => `<div class="event">${escapeHtml(ev)}</div>`)
         .join("");
@@ -2709,7 +2739,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
           `<span class="lb-name"><span class="lb-dot" style="background:${escapeHtml(p.color)}"></span><span class="txt">${name}</span></span>` +
           `<span class="lb-col">${ownStr}</span>` +
           `<span class="lb-col">${formatCount(p.gold)}</span>` +
-          `<span class="lb-col">${formatCount(p.maxTroops)}</span>` +
+          `<span class="lb-col">${formatTroops(p.maxTroops)}</span>` +
           (actions ? `<span class="lb-acts">${actions}</span>` : "") +
           `</div>`
         );
@@ -3166,14 +3196,14 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const tileY = Math.floor(runtime.view.y + y / runtime.view.scale);
     if (tileX < 0 || tileY < 0 || tileX >= runtime.map.width || tileY >= runtime.map.height) return;
 
-    // During the start phase every click (re)places your spawn: the first founds
-    // your nation and each later one relocates it, so you can move your start
-    // position freely until the countdown ends.
+    // During the start phase a click founds your nation — and, as in OpenFront
+    // singleplayer, that pick starts the battle immediately (the server ends
+    // the spawn phase on a human pick).
     if (runtime.phase === "spawn") {
       sendSelectSpawn(tileX, tileY);
       runtime.clickRipples.push({ x: tileX, y: tileY, color: "rgba(255,255,255,0.9)", start: performance.now() });
       sfx.click();
-      setStatus(ui, runtime.spawned ? `Moving spawn to (${tileX}, ${tileY})…` : `Founding at (${tileX}, ${tileY})…`);
+      setStatus(ui, `Founding at (${tileX}, ${tileY})…`);
       return;
     }
 
@@ -3370,7 +3400,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const hi = Number(ui.attackPercentInput.max) || 100;
     const next = Math.max(lo, Math.min(hi, Number(ui.attackPercentInput.value) + delta));
     ui.attackPercentInput.value = String(next);
-    ui.attackPercentOutput.textContent = `${next}%`;
+    updateRatioReadout();
   };
 
   window.addEventListener("keydown", (event) => {
@@ -3460,9 +3490,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   ui.minimapCanvas.addEventListener("pointerup", endMinimapDrag);
   ui.minimapCanvas.addEventListener("pointercancel", endMinimapDrag);
 
-  ui.attackPercentInput.addEventListener("input", () => {
-    ui.attackPercentOutput.textContent = `${ui.attackPercentInput.value}%`;
-  });
+  ui.attackPercentInput.addEventListener("input", updateRatioReadout);
 
   // Diplomacy: one delegated handler for the leaderboard's per-rival alliance
   // buttons (the rows are rebuilt every snapshot, so a delegated listener stays

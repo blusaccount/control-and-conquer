@@ -5,13 +5,13 @@ import { MAX_FIELD } from "../src/Server/botField.js";
 import { validateCommand } from "../src/Server/validateCommand.js";
 import { IDENTITY_MODIFIERS } from "../src/Core/playerModifiers.js";
 
-test("every player starts with a single capital tile", () => {
+test("every player starts on a founding blob (OpenFront's spawn radius)", () => {
   const session = new RasterGameSession({ width: 48, height: 32, seed: 9 });
   session.subscribe("a", () => {});
   session.subscribe("b", () => {});
   const grid = session.peekGrid();
-  assert.equal(grid.tileCountOf(1), 1, "player 1: just the capital");
-  assert.equal(grid.tileCountOf(2), 1, "player 2: just the capital");
+  assert.ok(grid.tileCountOf(1) > 1, "player 1: a small blob, not a lone tile");
+  assert.ok(grid.tileCountOf(2) > 1, "player 2: a small blob, not a lone tile");
 });
 
 test("every player joins with identity modifiers (no classes or perks)", () => {
