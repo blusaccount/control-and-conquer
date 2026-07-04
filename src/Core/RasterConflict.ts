@@ -18,8 +18,8 @@ import {
   WARSHIP_TILES_PER_TICK,
 } from "./buildings.js";
 import {
-  MIRV_SCATTER_RADIUS,
-  MIRV_WARHEAD_COUNT,
+  MIRV_MAX_WARHEADS,
+  MIRV_MIN_SPACING,
   NUKE_TILES_PER_TICK,
   nukeBlast,
   SAM_INTERCEPT_CHANCE,
@@ -629,11 +629,16 @@ export class RasterConflict {
    * Launch a warhead of `kind` from `(fromX, fromY)` — a silo tile the caller
    * has already confirmed `attacker` owns and is off cooldown — toward
    * `(targetX, targetY)`. Gold and silo-selection are the session's concern
-   * (mirroring building purchases); this only enqueues the flight(s). A MIRV
-   * splits into {@link MIRV_WARHEAD_COUNT} independent warheads that scatter
-   * around the aim point (each flies its own straight-line course and can be
-   * intercepted separately); every other kind is a single flight. Combat
-   * effects (troop loss, territory clearing) land on impact in
+   * (mirroring building purchases); this only enqueues the flight(s).
+   *
+   * A **MIRV** is a saturation strike on a *player*, not a point: the aim
+   * tile's owner is the victim, and up to {@link MIRV_MAX_WARHEADS} warheads
+   * blanket that player's territory, landing points at least
+   * {@link MIRV_MIN_SPACING} Manhattan tiles apart (the public wiki's
+   * documented behaviour). Each warhead flies its own straight-line course and
+   * is SAM-interceptable separately. An aim tile with no player owner degrades
+   * to a single warhead at the point. Every other kind is a single flight.
+   * Combat effects (troop loss, territory clearing) land on impact in
    * {@link detonateNuke}.
    */
   launchNuke(
@@ -645,22 +650,66 @@ export class RasterConflict {
     kind: NukeKind = "atom",
   ): void {
     if (kind === "mirv") {
-      // The warhead spread draws from a PRNG seeded with the launch tick plus
-      // the launching player — OpenFront's MIRVExecution seeds its spread
-      // stream `ticks + hash(player)` — so each salvo scatters differently but
-      // replays identically.
-      const rng = new Prng(this.tickCount + attacker);
-      for (let i = 0; i < MIRV_WARHEAD_COUNT; i += 1) {
-        const id = this.nextNukeId++;
-        const angle = rng.next() * Math.PI * 2;
-        const dist = rng.next() * MIRV_SCATTER_RADIUS;
-        const wx = targetX + Math.cos(angle) * dist;
-        const wy = targetY + Math.sin(angle) * dist;
-        this.enqueueNuke(id, attacker, fromX, fromY, wx, wy, "mirv");
+      const map = this.grid.map;
+      const tx = Math.max(0, Math.min(map.width - 1, Math.round(targetX)));
+      const ty = Math.max(0, Math.min(map.height - 1, Math.round(targetY)));
+      const aimRef = map.ref(tx, ty);
+      const victim = this.grid.isCapturable(aimRef) ? this.grid.ownerOf(aimRef) : NEUTRAL_PLAYER;
+      if (victim !== NEUTRAL_PLAYER) {
+        for (const ref of this.mirvLandingPoints(victim)) {
+          this.enqueueNuke(this.nextNukeId++, attacker, fromX, fromY, map.x(ref), map.y(ref), "mirv");
+        }
+        return;
       }
+      // No player under the aim point: a lone warhead lands where clicked.
+      this.enqueueNuke(this.nextNukeId++, attacker, fromX, fromY, targetX, targetY, "mirv");
       return;
     }
     this.enqueueNuke(this.nextNukeId++, attacker, fromX, fromY, targetX, targetY, kind);
+  }
+
+  /**
+   * The landing points of a MIRV strike on `victim`: a spatially-thinned
+   * sample of the victim's territory — greedy over the player's tiles in
+   * insertion order (deterministic), accepting each tile at least
+   * {@link MIRV_MIN_SPACING} Manhattan tiles from every already-accepted one,
+   * up to {@link MIRV_MAX_WARHEADS}. A coarse bucket grid (cell =
+   * {@link MIRV_MIN_SPACING}) keeps the spacing check O(1) per tile: any
+   * accepted point closer than the spacing lies within one cell in each axis.
+   */
+  private mirvLandingPoints(victim: PlayerId): TileRef[] {
+    const map = this.grid.map;
+    const cell = MIRV_MIN_SPACING;
+    const cols = Math.ceil(map.width / cell) + 2;
+    const buckets = new Map<number, TileRef[]>();
+    const accepted: TileRef[] = [];
+    for (const ref of this.grid.tilesOf(victim)) {
+      if (accepted.length >= MIRV_MAX_WARHEADS) break;
+      const x = map.x(ref);
+      const y = map.y(ref);
+      const bx = Math.floor(x / cell);
+      const by = Math.floor(y / cell);
+      let clear = true;
+      for (let dy = -1; dy <= 1 && clear; dy += 1) {
+        for (let dx = -1; dx <= 1 && clear; dx += 1) {
+          const near = buckets.get((by + dy) * cols + (bx + dx));
+          if (!near) continue;
+          for (const a of near) {
+            if (Math.abs(map.x(a) - x) + Math.abs(map.y(a) - y) < MIRV_MIN_SPACING) {
+              clear = false;
+              break;
+            }
+          }
+        }
+      }
+      if (!clear) continue;
+      accepted.push(ref);
+      const key = by * cols + bx;
+      const bucket = buckets.get(key);
+      if (bucket) bucket.push(ref);
+      else buckets.set(key, [ref]);
+    }
+    return accepted;
   }
 
   /** Enqueue a single warhead flight (shared by {@link launchNuke}'s single- and multi-warhead paths). */

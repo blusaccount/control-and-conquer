@@ -228,20 +228,23 @@ existieren hier nicht").
   Anzeige im Leaderboard.
 - **Tests:** Spende erhält Pool-Summen; Embargo stoppt Routen-Auswahl.
 
-### PR G — Waffen-Feintuning (M, P2)
+### PR G — Waffen-Feintuning (M, P2) — **großteils erledigt (2026-07-04)**
 
-- **MIRV-Schwarm:** statt 6 Sprengköpfen viele kleine Warheads über das
-  Territorium des Ziel-Spielers verteilt (Anzahl skaliert mit Zielgröße,
-  Radius klein, deterministisches Scatter); Performance auf 2.5M-Tile-Maps
-  prüfen (Batch-Fallout).
+- **MIRV-Schwarm:** ✅ **erledigt** — Sättigungsschlag über das Territorium
+  des Ziel-Spielers (Besitzer des Ziel-Tiles): bis 350 Warheads, Landepunkte
+  ≥25 Manhattan-Tiles auseinander, je Warhead 12/18-Radien, einzeln
+  SAM-abfangbar (öffentliche Wiki-Werte, "MIRV", 2026-07). Deterministisches
+  Spatial-Thinning über die Tile-Menge des Opfers (Bucket-Grid).
 - **SAM-Quoten je Waffe** (Atom hoch, Hydrogen mittel, MIRV-Warheads 50 %) +
   Range-Stacking mehrerer SAMs — exakte Quoten vor Umsetzung öffentlich
-  verifizieren (Wiki-Angaben widersprechen sich).
-- **Defense-Post-Geschütz:** Forts beschießen Schiffe in Reichweite
-  (shellRate 100, Range 75, 250 Schaden — Balance-Plan §2.3).
-- **Hydrogen-Radien** gegen öffentliche Quellen verifizieren (aktuelle 20/50
-  sind als „clean-room scale-up" markiert, Wiki nennt deutlich größere).
-- **Tests:** Scatter-Determinismus; SAM-Quote pro Typ; Fort-vs-Warship-DPS.
+  verifizieren (Wiki-Angaben widersprechen sich). **Weiterhin offen.**
+- **Defense-Post-Geschütz:** ✅ **erledigt** — Forts beschießen feindliche
+  Schiffe in Reichweite (shellRate 100, Range 75, 250 Schaden; Transport vor
+  Warship, Trade-Schiffe nie).
+- **Hydrogen-Radien:** ✅ **erledigt** — 80/100 laut öffentlichen Wikis
+  (openfront.miraheze.org / openfront.wiki, "Hydrogen Bomb", 2026-07).
+- **Tests:** MIRV-Spacing/-Abdeckung, Fort-vs-Transport und Fort-vs-Warship
+  gepinnt; SAM-Quote pro Typ weiterhin offen.
 
 ### PR H — Map-Katalog I: Pipeline + Karten (L, P1)
 

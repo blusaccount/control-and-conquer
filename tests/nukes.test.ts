@@ -11,8 +11,8 @@ import {
   HYDROGEN_BOMB_COST,
   MIRV_BASE_COST,
   MIRV_COST_PER_SILO,
-  MIRV_SCATTER_RADIUS,
-  MIRV_WARHEAD_COUNT,
+  MIRV_MAX_WARHEADS,
+  MIRV_MIN_SPACING,
   nukeBlast,
   nukeCost,
 } from "../src/Core/nukes.js";
@@ -355,58 +355,85 @@ test("nukeCost matches each warhead tier's documented formula", () => {
   assert.equal(nukeCost("mirv", 4), MIRV_BASE_COST + 4 * MIRV_COST_PER_SILO);
 });
 
-test("nukeBlast gives the Hydrogen Bomb a bigger footprint than the Atom Bomb, and a MIRV warhead the Atom Bomb's own", () => {
+test("nukeBlast footprints: Hydrogen (80/100) dwarfs Atom (12/30); a MIRV warhead (12/18) is smaller still", () => {
   const atom = nukeBlast("atom");
   const hydrogen = nukeBlast("hydrogen");
   const mirv = nukeBlast("mirv");
-  assert.ok(hydrogen.inner > atom.inner && hydrogen.outer > atom.outer, "Hydrogen Bomb blasts a larger area");
-  assert.deepEqual(mirv, atom, "a MIRV's individual warheads are atom-sized");
+  assert.ok(hydrogen.inner > atom.inner && hydrogen.outer > atom.outer, "Hydrogen Bomb blasts a far larger area");
+  assert.equal(hydrogen.inner, 80, "wiki-documented Hydrogen inner radius");
+  assert.equal(hydrogen.outer, 100, "wiki-documented Hydrogen outer radius");
+  assert.equal(mirv.inner, 12, "wiki-documented MIRV warhead inner radius");
+  assert.equal(mirv.outer, 18, "wiki-documented MIRV warhead outer radius");
 });
 
-// --- MIRV: engine-level warhead split ---------------------------------------
+// --- MIRV: engine-level saturation strike ------------------------------------
 
-test("launchNuke with kind 'mirv' splits into MIRV_WARHEAD_COUNT independent, scattered warheads", () => {
+test("a MIRV blankets the aim tile's owner with spaced warheads across their whole territory", () => {
   const grid = landSquare(200);
   grid.addPlayer(1, 1);
+  grid.addPlayer(2, 1);
   claimBlock(grid, 1, 10, 10, 2);
+  // The victim holds a ~100×100 block (centre 110,110, radius 50) — big
+  // enough for a whole grid of landing points at the 25-tile spacing.
+  claimBlock(grid, 2, 110, 110, 50);
   const conflict = new RasterConflict(grid);
 
-  conflict.launchNuke(1, 10, 10, 100, 100, "mirv");
+  conflict.launchNuke(1, 10, 10, 110, 110, "mirv");
   const warheads = conflict.activeNukes();
-  assert.equal(warheads.length, MIRV_WARHEAD_COUNT, "the launch produced one flight per warhead");
+  assert.ok(warheads.length >= 20, `a saturation strike deploys many warheads, got ${warheads.length}`);
+  assert.ok(warheads.length <= MIRV_MAX_WARHEADS, "and never more than the documented cap");
 
   const seenIds = new Set<number>();
   for (const w of warheads) {
     assert.equal(w.kind, "mirv");
     assert.equal(w.attacker, 1);
     seenIds.add(w.id);
-    const dx = w.toX - 100;
-    const dy = w.toY - 100;
     assert.ok(
-      Math.sqrt(dx * dx + dy * dy) <= MIRV_SCATTER_RADIUS + 0.001,
-      "each warhead's aim point lands within the scatter radius of the target",
+      w.toX >= 60 && w.toX <= 160 && w.toY >= 60 && w.toY <= 160,
+      `every landing point lies on the victim's territory, got (${w.toX}, ${w.toY})`,
     );
   }
-  assert.equal(seenIds.size, MIRV_WARHEAD_COUNT, "every warhead has a distinct id");
+  assert.equal(seenIds.size, warheads.length, "every warhead has a distinct id");
+  // Documented spacing: no two landing points closer than 25 Manhattan tiles.
+  for (let i = 0; i < warheads.length; i += 1) {
+    for (let j = i + 1; j < warheads.length; j += 1) {
+      const d = Math.abs(warheads[i].toX - warheads[j].toX) + Math.abs(warheads[i].toY - warheads[j].toY);
+      assert.ok(d >= MIRV_MIN_SPACING, `warheads ${i} and ${j} are only ${d} apart`);
+    }
+  }
 });
 
-test("a MIRV's scattered warheads can detonate on separate ticks, each with the Atom Bomb's blast", () => {
+test("a MIRV aimed at unowned ground degrades to a single warhead at the point", () => {
+  const grid = landSquare(200);
+  grid.addPlayer(1, 1);
+  claimBlock(grid, 1, 10, 10, 2);
+  const conflict = new RasterConflict(grid);
+  conflict.launchNuke(1, 10, 10, 100, 100, "mirv");
+  assert.equal(conflict.activeNukes().length, 1, "no owner under the aim point → one warhead");
+});
+
+test("a MIRV's warheads detonate across ticks and shred the victim's troops and land", () => {
   const grid = landSquare(220);
   grid.addPlayer(1, 1);
-  grid.addPlayer(2, 1);
+  grid.addPlayer(2, 100_000);
   claimBlock(grid, 2, 150, 150, 60);
+  const tilesBefore = grid.tileCountOf(2);
   const conflict = new RasterConflict(grid);
 
-  conflict.launchNuke(1, 0, 0, 150, 150, "mirv");
+  conflict.launchNuke(1, 0, 0, 170, 170, "mirv");
+  const expected = conflict.activeNukes().length;
+  assert.ok(expected >= 4, `a 60×60 empire eats several warheads, got ${expected}`);
   let detonations = 0;
-  for (let i = 0; i < 120 && detonations < MIRV_WARHEAD_COUNT; i += 1) {
+  for (let i = 0; i < 500 && detonations < expected; i += 1) {
     const result = conflict.processTick();
     for (const d of result.nukeDetonations) {
       assert.equal(d.kind, "mirv");
       detonations += 1;
     }
   }
-  assert.equal(detonations, MIRV_WARHEAD_COUNT, "every scattered warhead eventually detonates");
+  assert.equal(detonations, expected, "every warhead eventually detonates");
+  assert.ok(grid.tileCountOf(2) < tilesBefore, "the victim lost territory");
+  assert.ok(grid.troopsOf(2) < 100_000, "and troops proportional to it");
 });
 
 // --- SAM Launcher: building + interception ----------------------------------
