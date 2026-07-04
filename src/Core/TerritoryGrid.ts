@@ -886,8 +886,10 @@ export class TerritoryGrid {
    * within that one water body. Deterministic via the map's fixed neighbour order.
    */
   findSeaPath(attacker: PlayerId, dest: TileRef): TileRef[] | null {
-    // A boat can't storm radioactive ground either — no landing until it decays.
-    if (!this.isCapturable(dest) || this.owner[dest] === attacker || this.hasFallout(dest)) return null;
+    // Fallout ground stays a valid landing: like a land attack, a boat may
+    // storm irradiated shores — the fallout combat penalty is charged by the
+    // land assault that follows the beachhead, not by the crossing.
+    if (!this.isCapturable(dest) || this.owner[dest] === attacker) return null;
     const launch = this.launchComponentsOf(attacker);
     if (launch.size === 0) return null;
 

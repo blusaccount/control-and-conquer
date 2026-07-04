@@ -415,7 +415,7 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
   city: {
     type: "city",
     name: "City",
-    description: "Raises max population and pays a gold dividend.",
+    description: "Raises your maximum population (no gold income).",
     baseCost: 125_000,
     costGrowth: 2,
     costCap: 1_000_000,
@@ -423,7 +423,7 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
   port: {
     type: "port",
     name: "Port",
-    description: "A coastal trade hub: steady gold income (must sit on a shore).",
+    description: "Sends trade ships to other players' ports — both ends earn gold (must sit on a shore).",
     baseCost: 125_000,
     costGrowth: 2,
     costCap: 1_000_000,

@@ -908,7 +908,9 @@ export class RasterConflict {
    * `attackLogic`: neutral land costs `mag/5`; an enemy tile blends the clamped
    * defender/attacker troop ratio with the defender's density (see
    * {@link attackerLossPerTile}). `attackForce` is the attack's current committed
-   * pool, so the ratio shifts as the assault is spent down.
+   * pool, so the ratio shifts as the assault is spent down. `ratioDebuff` is the
+   * tick's large-empire loss factor, applied inside the ratio term only (see
+   * {@link attackerLossPerTile}).
    */
   private attackerTileLoss(
     ref: TileRef,
@@ -917,6 +919,7 @@ export class RasterConflict {
     attackForce: number,
     defenderTroops: number,
     defenderDensity: number,
+    ratioDebuff = 1,
   ): number {
     const mag = this.tileMagnitude(ref, target);
     if (target === NEUTRAL_PLAYER) {
@@ -925,7 +928,7 @@ export class RasterConflict {
       // attacker's neutralCostMultiplier (1 for everyone else, 0.5 for a Bot).
       return neutralLossPerTile(mag) * this.grid.modifiersOf(attacker).neutralCostMultiplier;
     }
-    return attackerLossPerTile(defenderTroops, defenderDensity, attackForce, mag);
+    return attackerLossPerTile(defenderTroops, defenderDensity, attackForce, mag, ratioDebuff);
   }
 
   /**
@@ -1533,7 +1536,9 @@ export class RasterConflict {
         if (this.grid.ownerOf(ref) !== attack.target) continue;
         // OpenFront's per-tile attacker loss: the ratio shifts as the assault is
         // spent down, so a front that bleeds out grinds to a halt on the spot.
-        const loss = this.attackerTileLoss(ref, attack.attacker, attack.target, attack.committed, defenderTroops, defenderDensity) * largeFactor;
+        // The large-empire factor rides inside the ratio term only (OpenFront
+        // never discounts the density half of the blend).
+        const loss = this.attackerTileLoss(ref, attack.attacker, attack.target, attack.committed, defenderTroops, defenderDensity, largeFactor);
 
         // Budget drain (OpenFront's `tilesPerTickUsed`): the tile's terrain
         // speed (16.5/20/25), tripled inside the defender's fort aura, scaled

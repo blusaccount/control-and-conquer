@@ -263,14 +263,22 @@ export const defenderStrengthFactor = (defenderTroops: number, attackerTroops: n
  * defensive multipliers (defense post, fortress wall). A weak, thinly-spread
  * defender is cheap to roll over; a dense, well-garrisoned one is dear — so a
  * stockpiled army has real defensive value and high ground costs more to take.
+ *
+ * `ratioDebuff` carries the large-empire loss factors
+ * ({@link largeDefenderLossFactor} × {@link largeAttackerLossFactor}). OpenFront
+ * applies these *inside the ratio term only* — `0.6·[ratio·mag·0.8·debuffs] +
+ * 0.4·[density·mag/100]` — so the density half of the blend is never
+ * discounted; scaling the whole blend would make a sprawling defender's dense
+ * garrison cheaper to grind than the original allows.
  */
 export const attackerLossPerTile = (
   defenderTroops: number,
   defenderDensity: number,
   attackForce: number,
   mag: number,
+  ratioDebuff = 1,
 ): number => {
-  const ratioTerm = defenderStrengthFactor(defenderTroops, attackForce) * mag * ATTACKER_EFFICIENCY;
+  const ratioTerm = defenderStrengthFactor(defenderTroops, attackForce) * mag * ATTACKER_EFFICIENCY * ratioDebuff;
   const densityTerm = ATTACK_DENSITY_FACTOR * defenderDensity * (mag / 100);
   return ATTACK_RATIO_LOSS_WEIGHT * ratioTerm + ATTACK_DENSITY_LOSS_WEIGHT * densityTerm;
 };
