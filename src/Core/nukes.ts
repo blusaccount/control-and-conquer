@@ -4,8 +4,8 @@
  * per its own Steam store page and community wiki (openfront.wiki / miraheze
  * wiki / openfrontpro.com, cross-referenced), one of the game's signature
  * systems. Facts and formulas only, no OpenFront source or assets — see
- * `docs/openfront-balance-replication-plan.md` for the project's clean-room
- * methodology.
+ * `docs/openfront-pr-plan.md` for the project's licensing evaluation and
+ * sourcing methodology.
  *
  * Three warhead tiers, all launched from a Missile Silo:
  *  - **Atom Bomb** — one blast, source-verified radii (see below).
@@ -25,8 +25,7 @@
  * the roll hits. OpenFront's exact intercept-probability formula wasn't found
  * in the available source excerpts either, so {@link SAM_INTERCEPT_CHANCE} is
  * this project's own reasonable constant, not a sourced figure. `samRange` and
- * `SAMCooldown` (90 ticks) themselves *are* sourced (see
- * `docs/openfront-balance-replication-plan.md` §2.3/§3c).
+ * `SAMCooldown` (90 ticks) themselves *are* sourced OpenFront figures.
  *
  * The Atom Bomb's radii and the inner-full / outer-50%-chance blast shape
  * match OpenFront's `nukeMagnitudes(AtomBomb) = { inner: 12, outer: 30 }` and
@@ -53,7 +52,7 @@ export const ATOM_BOMB_OUTER_DESTROY_CHANCE = 0.5;
 
 /**
  * Ticks a Missile Silo must wait after a launch before it can fire again,
- * matching OpenFront's `SiloCooldown` (see `docs/openfront-balance-replication-plan.md` §2.4).
+ * matching OpenFront's `SiloCooldown`.
  */
 export const SILO_RELOAD_TICKS = 90;
 
@@ -135,8 +134,7 @@ export const SAM_RANGE = 70;
 
 /**
  * Ticks a SAM Launcher must wait after firing an interceptor (hit or miss)
- * before it can fire again, matching OpenFront's `SAMCooldown` (see
- * `docs/openfront-balance-replication-plan.md` §2.3/§3c).
+ * before it can fire again, matching OpenFront's `SAMCooldown`.
  */
 export const SAM_RELOAD_TICKS = 90;
 

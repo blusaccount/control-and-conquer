@@ -150,13 +150,13 @@ Browser (Canvas 2D)  ──WebSocket──►  Node + ws
   boat animations for amphibious crossings.
 
 See [`docs/`](docs/) for the tick model, multiplayer authority design, and the
-OpenFront gap analysis / roadmap.
+OpenFront PR roadmap.
 
 ## Status
 
 Early prototype. Solo-vs-bots only (no human-vs-human yet); state is in-memory; the faction/nation and
 roguelite layers are designed but not yet implemented. See
-[`docs/openfront-gap-analysis.md`](docs/openfront-gap-analysis.md) for the
+[`docs/openfront-pr-plan.md`](docs/openfront-pr-plan.md) for the
 prioritized roadmap.
 
 ## License
@@ -165,5 +165,5 @@ Proprietary — see [`LICENSE`](LICENSE). This project is an independent,
 clean-room reimplementation of certain OpenFront.io gameplay mechanics (game
 rules and numeric formulas are not copyrightable); no OpenFront source code or
 assets are used. See
-[`docs/openfront-balance-replication-plan.md`](docs/openfront-balance-replication-plan.md#0-methodik--lizenz-grenze-wichtig)
-for the clean-room methodology.
+[`docs/openfront-pr-plan.md`](docs/openfront-pr-plan.md#1-lizenz-evaluierung-grundlage-für-alles-weitere)
+for the licensing evaluation and sourcing methodology.

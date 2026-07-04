@@ -4,10 +4,10 @@
 > evaluierter PR-Plan, der das exakte Spielgefühl von OpenFront nachbaut und
 > das Projekt **kommerziell nutzbar** hält.
 >
-> Ergänzt `openfront-gap-analysis.md` (Ist-Zustand, §3c) und
-> `openfront-balance-replication-plan.md` (wertgenaue Zielwerte). Dieses
-> Dokument ist die **Umsetzungsreihenfolge**: konkrete, einzeln mergebare PRs
-> mit Scope, Dateien, Akzeptanzkriterien und Lizenz-Leitplanken.
+> Dieses Dokument ist die **Umsetzungsreihenfolge**: konkrete, einzeln
+> mergebare PRs mit Scope, Dateien, Akzeptanzkriterien und Lizenz-Leitplanken.
+> (Die früheren Begleit-Dokumente Gap-Analyse, Balance-Replication-Plan und
+> Playthrough-Notizen wurden als veraltet entfernt.)
 
 ## 1) Lizenz-Evaluierung (Grundlage für alles Weitere)
 
@@ -65,8 +65,7 @@ copyleft-Hebel auf dieses Repo.
 
 ## 2) Review-Ergebnis: Wo steht die Codebase?
 
-Kurzfassung (Details in `openfront-gap-analysis.md` §3c; heute gegen Code
-verifiziert, 309 Tests grün):
+Kurzfassung (heute gegen Code verifiziert, 309 Tests grün):
 
 **Bereits wertgenau bzw. funktional gleichauf:** 10 TPS, Start 25k,
 `maxTroops`-/Wachstums-Glockenkurve, komplettes Land-Kampf-Modell
