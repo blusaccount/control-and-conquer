@@ -20,19 +20,23 @@ export type BuildingType = "city" | "port" | "fort" | "factory" | "warship" | "s
 export const BUILDING_TYPES: readonly BuildingType[] = ["city", "port", "fort", "factory", "warship", "silo", "sam"];
 
 /** Building types that must sit on a coastal (shore) tile. */
-export const COASTAL_BUILDING_TYPES: readonly BuildingType[] = ["port", "warship"];
+export const COASTAL_BUILDING_TYPES: readonly BuildingType[] = ["port"];
 
 /**
- * A Warship is built like any other structure (cost/coastal/construction as
- * usual, see {@link BUILDING_DEFS.warship}), but once construction finishes it
- * launches as a **mobile unit** — this is OpenFront's own model (Warship is a
- * `UnitType`, not a static defense post). Losing the home tile (captured or
- * the unit destroyed) tears down the structure too — one warship in, one
- * warship out.
+ * A Warship is a **mobile unit**, not a structure — OpenFront's own model, per
+ * the public wiki ("Warship", retrieved 2026-07): you buy one by targeting a
+ * patch of **water** (its patrol sector), it requires a **Port**, appears at
+ * the nearest owned port, and sails to the targeted location. It patrols its
+ * sector when idle and fires on hostile naval units entering range; it heals
+ * only while its owner still runs at least one port, and without a port it
+ * also stops capturing trade ships; chasing a trade prize it doubles its
+ * speed and captures on contact. It stays in the build *menu* (same cost
+ * ramp, `(n+1)·250k` over the ships currently afloat, cap 1M), but the grid
+ * never stores a warship building — the unit lives in the conflict engine.
  *
  * Values are OpenFront's publicly documented warship figures (maxHealth,
  * patrol/target range, shellRate, shell damage, passiveHeal, retreat
- * threshold). Two figures aren't in our source material and are this
+ * threshold, trade-chase speed). Figures not in our source material are this
  * project's own approximations, called out below.
  */
 export const WARSHIP_MAX_HP = 1000;
@@ -73,8 +77,22 @@ export const WARSHIP_RETREAT_RECOVER_HP = 900;
  */
 export const WARSHIP_ENGAGE_RANGE = 70;
 
-/** Tiles a warship advances per tick while moving — not a sourced figure; matches every other ship's cruising speed. */
+/** Tiles a warship advances per tick while moving (wiki: "one tile per tick"). */
 export const WARSHIP_TILES_PER_TICK = 1;
+
+/** Tiles per tick while chasing a trade prize — the wiki's documented doubled chase speed. */
+export const WARSHIP_TRADE_CHASE_SPEED = 2;
+
+/** Chebyshev distance that counts as "contact" for a trade capture (the wiki captures on contact). */
+export const WARSHIP_CAPTURE_CONTACT_RANGE = 1.5;
+
+/**
+ * How far (Chebyshev) a patrol waypoint may sit from the sector's centre —
+ * half the patrol range, so the whole wander stays comfortably inside the
+ * assigned sector (our own interpretation of the wiki's "patrols their
+ * assigned sector"; OpenFront's exact wander shape isn't documented).
+ */
+export const WARSHIP_PATROL_WANDER_RADIUS = WARSHIP_PATROL_RANGE / 2;
 
 /** Runtime guard: is `value` a known building type id? */
 export const isBuildingType = (value: unknown): value is BuildingType =>
@@ -231,7 +249,9 @@ export const BUILDING_CONSTRUCTION_TICKS: Readonly<Record<BuildingType, number>>
   factory: 20,
   port: 50,
   fort: 50,
-  warship: 30,
+  // A warship is a mobile unit, not a structure: it appears at the nearest
+  // owned port the moment it is bought (the wiki's behaviour) — no build time.
+  warship: 0,
   silo: 100,
   sam: 300,
 };
@@ -455,7 +475,7 @@ export const BUILDING_DEFS: Readonly<Record<BuildingType, BuildingDef>> = {
   warship: {
     type: "warship",
     name: "Warship",
-    description: "Guards the coast: sinks enemy transport ships in range (must sit on a shore).",
+    description: "A patrol ship: target water and it launches from your nearest port (requires a Port).",
     baseCost: 250_000,
     costGrowth: 1,
     costCap: 1_000_000,

@@ -251,8 +251,9 @@ test("a land attack never crosses water", () => {
   assert.equal(conflict.launchAttack({ attacker: 1, target: NEUTRAL_PLAYER, troops: 10 }), "NO_FRONTIER");
 });
 
-test("a coastal warship sinks an enemy transport in range before it lands", () => {
-  // owned 0,1 | water 2,3 | player-2 shore 4,5 with a warship guarding tile 4.
+test("a patrolling warship sinks an enemy transport in range before it lands", () => {
+  // owned 0,1 | water 2,3 | player-2 shore 4,5 with a port and a warship
+  // patrolling the strait off it.
   const grid = new TerritoryGrid(rowMap("##  ##"));
   grid.addPlayer(1, 200);
   grid.addPlayer(2, 0);
@@ -260,9 +261,10 @@ test("a coastal warship sinks an enemy transport in range before it lands", () =
   grid.claim(1, 1);
   grid.claim(4, 2);
   grid.claim(5, 2);
-  grid.placeBuilding(4, "warship"); // player 2's coastal warship
+  grid.placeBuilding(4, "port"); // player 2's port (instantly active)
   freezeIncome(grid);
   const conflict = new RasterConflict(grid);
+  assert.equal(conflict.launchWarship(2, 3, 0), null, "the warship launches from the port");
 
   assert.equal(conflict.launchShip({ attacker: 1, dest: 4, troops: 100 }), null);
   for (let i = 0; i < 10; i += 1) conflict.processTick();
@@ -281,9 +283,10 @@ test("a warship never sinks its owner's own transport", () => {
   grid.claim(1, 1);
   grid.claim(4, 2);
   grid.claim(5, 2);
-  grid.placeBuilding(1, "warship"); // player 1's own coastal warship
+  grid.placeBuilding(1, "port"); // player 1's own port
   freezeIncome(grid);
   const conflict = new RasterConflict(grid);
+  assert.equal(conflict.launchWarship(1, 2, 0), null, "player 1's own patrol is afloat");
 
   assert.equal(conflict.launchShip({ attacker: 1, dest: 4, troops: 100 }), null);
   for (let i = 0; i < 10; i += 1) conflict.processTick();

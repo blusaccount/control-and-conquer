@@ -314,8 +314,12 @@ in `docs/multiplayer-authority.md`. Sequenz:
 ## 4) Bewusste Nicht-Ziele (dokumentierte Abweichungen)
 
 - **Canvas 2D statt WebGL2** — Look wird gespiegelt, Engine nicht portiert.
-- **Pause/Speed-Keys, Warship-Box-Select, Raketenrichtung (U)** —
-  architektonisch nicht übertragbar bzw. bewusst ausgelassen (Gap-Analyse §3c #2).
+- **Pause/Speed-Keys, Raketenrichtung (U)** — architektonisch nicht
+  übertragbar bzw. bewusst ausgelassen. **Warship-Box-Select** ist seit dem
+  Unit-Umbau (2026-07-04: Warships sind mobile, per Wasser-Klick gekaufte
+  Einheiten mit Patrouillensektor, Spawn am nächsten Hafen, Heilung nur mit
+  Hafen, Trade-Kapern auf Kontakt bei doppelter Jagdgeschwindigkeit — Wiki-
+  Werte) grundsätzlich möglich, aber weiterhin unimplementiert (P3).
 - **Eigene Zugaben bleiben:** Minimap, 👑-Marker, Defeat/Spectate-Flow —
   OpenFront hat sie nicht, sie verbessern das Spiel und schaden der
   „Feel-Parität" nicht.

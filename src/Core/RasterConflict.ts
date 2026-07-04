@@ -7,8 +7,11 @@ import {
   FORT_SHELL_RATE_TICKS,
   FORT_SPEED_BONUS,
   GOLD_BASE_PER_TICK,
+  WARSHIP_CAPTURE_CONTACT_RANGE,
   WARSHIP_ENGAGE_RANGE,
   WARSHIP_MAX_HP,
+  WARSHIP_PATROL_WANDER_RADIUS,
+  WARSHIP_TRADE_CHASE_SPEED,
   WARSHIP_PASSIVE_HEAL_PER_TICK,
   WARSHIP_RETREAT_HP,
   WARSHIP_RETREAT_RECOVER_HP,
@@ -35,6 +38,7 @@ import {
   attackerLossPerTile,
   attackTilesPerTick,
   BORDER_JITTER_STEPS,
+  CLICK_SNAP_RADIUS,
   DEAD_DEFENDER_MAX_TILES,
   defenderLossPerTile,
   defenderStrengthFactor,
@@ -261,15 +265,20 @@ interface TransportShip {
 }
 
 /**
- * A live warship unit — spawned when its home "warship" structure finishes
- * construction, torn down (structure and all) when it's sunk or its home tile
- * is lost. `x`/`y` are fractional tile-space, so movement eases smoothly.
+ * A live warship unit — bought via the build menu against a **water** target
+ * (its patrol sector), spawned at the owner's nearest port, sunk when its HP
+ * runs out. It exists independently of any structure (OpenFront's model).
+ * `x`/`y` are fractional tile-space, so movement eases smoothly.
  */
 interface Warship {
   id: number;
   owner: PlayerId;
-  /** The structure tile this warship launched from — where it heals and retreats to. */
-  homeRef: TileRef;
+  /** Centre of the assigned patrol sector — the water the build order targeted. */
+  patrolX: number;
+  patrolY: number;
+  /** Current wander waypoint inside the patrol sector. */
+  wanderX: number;
+  wanderY: number;
   x: number;
   y: number;
   hp: number;
@@ -278,7 +287,16 @@ interface Warship {
   retreating: boolean;
   /** Tick (exclusive) this warship's guns are next ready to fire. */
   shellReadyAt: number;
+  /** The unit's own random stream, driving its patrol wander deterministically. */
+  rng: Prng;
 }
+
+/** Why a warship purchase was refused. */
+export type WarshipRejectReason =
+  /** The buyer runs no active port — the wiki requires one to launch from. */
+  | "NO_PORT"
+  /** No water near the click to patrol. */
+  | "INVALID_TARGET";
 
 /** A nuke in flight: a straight-line, constant-speed trip from silo to target. */
 interface Nuke {
@@ -359,12 +377,10 @@ export class RasterConflict {
   private readonly rails: RailSystem;
   /** Port-to-port trade ships, paying both ends gold per completed trip. */
   private readonly trade: TradeSystem;
-  /** Live mobile warship units, one per active "warship" structure. */
+  /** Live mobile warship units (bought via {@link launchWarship}). */
   private readonly warships: Warship[] = [];
   /** Monotonic id source so each warship has a stable handle for the client. */
   private nextWarshipId = 1;
-  /** Home structure tile → warship id, so {@link syncWarships} spawns/despawns exactly once per structure. */
-  private readonly warshipByHome = new Map<TileRef, number>();
   /** Transport-ship landings resolved during the current tick. */
   private crossings: SeaCrossing[] = [];
   private tickCount = 0;
@@ -400,7 +416,7 @@ export class RasterConflict {
     return this.rails.trainViews();
   }
 
-  /** Live mobile warships, for the snapshot (empty until a warship structure finishes building). */
+  /** Live mobile warships, for the snapshot (empty until someone buys one). */
   activeWarships(): WarshipState[] {
     return this.warships.map((w) => ({
       id: w.id,
@@ -1130,37 +1146,98 @@ export class RasterConflict {
    * remain as a land attack radiating from the new beachhead. Landings are
    * recorded as {@link SeaCrossing}s for the client to flash.
    */
-  /**
-   * Spawn a mobile warship the tick its home "warship" structure finishes
-   * construction, and despawn one whose home structure is gone (captured, or
-   * torn down by {@link fireOn} when the unit itself was sunk) — a warship
-   * structure and its mobile unit live and die together, one-to-one.
-   */
-  private syncWarships(): void {
-    const activeHomes = new Set<TileRef>();
+  /** Live warship units `owner` currently has afloat (drives the cost ramp). */
+  warshipCountOf(owner: PlayerId): number {
+    let count = 0;
+    for (const w of this.warships) if (w.owner === owner) count += 1;
+    return count;
+  }
+
+  /** `owner`'s active (finished) port tiles, ascending. */
+  private activePortsOf(owner: PlayerId): TileRef[] {
+    const ports: TileRef[] = [];
     for (const [ref, type] of this.grid.activeBuildingEntries()) {
-      if (type !== "warship") continue;
-      activeHomes.add(ref);
-      if (this.warshipByHome.has(ref)) continue;
-      const id = this.nextWarshipId++;
-      this.warshipByHome.set(ref, id);
-      this.warships.push({
-        id,
-        owner: this.grid.ownerOf(ref),
-        homeRef: ref,
-        x: this.grid.map.x(ref),
-        y: this.grid.map.y(ref),
-        hp: WARSHIP_MAX_HP,
-        target: null,
-        retreating: false,
-        shellReadyAt: 0,
-      });
+      if (type === "port" && this.grid.ownerOf(ref) === owner) ports.push(ref);
     }
-    for (const [ref, id] of [...this.warshipByHome]) {
-      if (activeHomes.has(ref)) continue;
-      this.warshipByHome.delete(ref);
-      this.removeWarship(id);
+    return ports;
+  }
+
+  /** The tile of `refs` nearest (Chebyshev) to `(x, y)`, ties to the lowest ref. */
+  private nearestRef(refs: readonly TileRef[], x: number, y: number): TileRef | null {
+    const map = this.grid.map;
+    let best: TileRef | null = null;
+    let bestD = Infinity;
+    for (const ref of refs) {
+      const d = Math.max(Math.abs(map.x(ref) - x), Math.abs(map.y(ref) - y));
+      if (d < bestD || (d === bestD && (best === null || ref < best))) {
+        bestD = d;
+        best = ref;
+      }
     }
+    return best;
+  }
+
+  /** The water tile nearest the click within the coastal snap radius, or null. */
+  private nearestWater(targetX: number, targetY: number, maxRadius: number): TileRef | null {
+    const map = this.grid.map;
+    const cx = Math.round(targetX);
+    const cy = Math.round(targetY);
+    let best: TileRef | null = null;
+    let bestScore = Infinity;
+    for (let dy = -maxRadius; dy <= maxRadius; dy += 1) {
+      const y = cy + dy;
+      if (y < 0 || y >= map.height) continue;
+      for (let dx = -maxRadius; dx <= maxRadius; dx += 1) {
+        const x = cx + dx;
+        if (x < 0 || x >= map.width) continue;
+        const candidate = map.ref(x, y);
+        if (!map.isWater(candidate)) continue;
+        const score = dx * dx + dy * dy;
+        if (score < bestScore || (score === bestScore && (best === null || candidate < best))) {
+          bestScore = score;
+          best = candidate;
+        }
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Buy a warship — the wiki's flow: the order targets a patch of **water**
+   * (the unit's patrol sector; a near-miss click snaps to the nearest water
+   * within the coastal snap radius), requires an active **port**, and the unit
+   * appears at the owner's port nearest that sector, then sails to it. Gold is
+   * the session's concern (like building purchases); this validates and spawns.
+   */
+  launchWarship(owner: PlayerId, targetX: number, targetY: number): WarshipRejectReason | null {
+    const ports = this.activePortsOf(owner);
+    if (ports.length === 0) return "NO_PORT";
+    const patrol = this.nearestWater(targetX, targetY, CLICK_SNAP_RADIUS);
+    if (patrol === null) return "INVALID_TARGET";
+    const map = this.grid.map;
+    const px = map.x(patrol);
+    const py = map.y(patrol);
+    const home = this.nearestRef(ports, px, py)!;
+    const id = this.nextWarshipId++;
+    this.warships.push({
+      id,
+      owner,
+      patrolX: px,
+      patrolY: py,
+      wanderX: px,
+      wanderY: py,
+      x: map.x(home),
+      y: map.y(home),
+      hp: WARSHIP_MAX_HP,
+      target: null,
+      retreating: false,
+      shellReadyAt: 0,
+      // Every unit draws its patrol wander from its own seeded stream, so
+      // replays stay identical without Math.random (OpenFront seeds its
+      // executions' PseudoRandom the same way).
+      rng: new Prng(ATTACK_RNG_SEED + id),
+    });
+    return null;
   }
 
   /** Drop a warship from the live roster by id (already-dead entries are a no-op). */
@@ -1174,10 +1251,14 @@ export class RasterConflict {
    * {@link WARSHIP_TARGET_RANGE} of `w`, in OpenFront's fixed priority order:
    * any enemy transport ship beats every enemy warship, which beats every
    * enemy trade ship — never a nearer lower-tier target over a farther
-   * higher-tier one.
+   * higher-tier one. Trade prizes are considered only while the owner still
+   * runs a port (`canCaptureTrade` — the wiki: no port, no capturing), and a
+   * trader already *heading to* one of the owner's ports is left alone (its
+   * arrival pays that port in full).
    */
   private pickWarshipTarget(
     w: Warship,
+    canCaptureTrade: boolean,
   ): { kind: WarshipTargetKind; id: number; x: number; y: number } | null {
     const map = this.grid.map;
     const isHostile = (owner: PlayerId): boolean =>
@@ -1203,8 +1284,9 @@ export class RasterConflict {
     }
     if (best) return best;
 
+    if (!canCaptureTrade) return null;
     for (const t of this.trade.targetableShips()) {
-      if (!isHostile(t.owner)) continue;
+      if (!isHostile(t.owner) || t.toOwner === w.owner) continue;
       consider("trade", t.id, t.x, t.y);
     }
     return best;
@@ -1221,12 +1303,12 @@ export class RasterConflict {
    * a ship for a while — a documented simplification versus full per-tick BFS
    * water routing, which a moving target would make far more expensive.
    */
-  private moveWarshipToward(w: Warship, tx: number, ty: number): void {
+  private moveWarshipToward(w: Warship, tx: number, ty: number, speed = WARSHIP_TILES_PER_TICK): void {
     const dx = tx - w.x;
     const dy = ty - w.y;
     const dist = Math.max(Math.abs(dx), Math.abs(dy));
     if (dist === 0) return;
-    const step = Math.min(WARSHIP_TILES_PER_TICK, dist);
+    const step = Math.min(speed, dist);
     const nx = w.x + (dx / dist) * step;
     const ny = w.y + (dy / dist) * step;
     if (step >= dist) {
@@ -1271,12 +1353,9 @@ export class RasterConflict {
 
   /**
    * Resolve `w`'s shot at `target`: an enemy transport is sunk outright (no HP
-   * pool — its troops are lost with no refund); an enemy trade ship is
-   * **captured**, not sunk (OpenFront's piracy — it changes owner and sails to
-   * the captor's nearest port, which is paid on arrival; see
-   * {@link TradeSystem.captureShip}); an enemy warship takes
-   * {@link WARSHIP_SHELL_DAMAGE} and, if that kills it, its home structure is
-   * demolished along with it.
+   * pool — its troops are lost with no refund); an enemy warship takes
+   * {@link WARSHIP_SHELL_DAMAGE}. Trade ships are never *shot* — a trade prize
+   * is chased down and captured on contact in {@link advanceWarships}.
    */
   private fireOn(w: Warship, target: { kind: WarshipTargetKind; id: number }): void {
     if (target.kind === "transport") {
@@ -1284,23 +1363,46 @@ export class RasterConflict {
       if (idx !== -1) this.ships.splice(idx, 1);
       return;
     }
-    if (target.kind === "trade") {
-      this.trade.captureShip(target.id, w.owner);
-      return;
-    }
+    if (target.kind === "trade") return; // captured on contact, not shelled
     const enemy = this.warships.find((x) => x.id === target.id);
     if (!enemy) return;
     this.damageWarship(enemy, WARSHIP_SHELL_DAMAGE);
   }
 
-  /** Apply `damage` to a warship; a kill demolishes its home structure with it. */
+  /** Apply `damage` to a warship; at 0 HP the unit sinks (nothing else falls with it). */
   private damageWarship(enemy: Warship, damage: number): void {
     enemy.hp -= damage;
-    if (enemy.hp <= 0) {
-      this.warshipByHome.delete(enemy.homeRef);
-      this.grid.demolishBuilding(enemy.homeRef);
-      this.removeWarship(enemy.id);
+    if (enemy.hp <= 0) this.removeWarship(enemy.id);
+  }
+
+  /**
+   * Idle patrol: wander the assigned sector. On (or near) the current
+   * waypoint, draw the next one from the unit's own random stream — a point
+   * within {@link WARSHIP_PATROL_WANDER_RADIUS} of the sector centre that
+   * lands on water (a few tries; the centre itself as the fallback) — then
+   * sail toward it.
+   */
+  private patrolWarship(w: Warship): void {
+    const map = this.grid.map;
+    if (Math.max(Math.abs(w.wanderX - w.x), Math.abs(w.wanderY - w.y)) < 1) {
+      let nextX = w.patrolX;
+      let nextY = w.patrolY;
+      for (let tries = 0; tries < 8; tries += 1) {
+        const cx = w.patrolX + (w.rng.next() * 2 - 1) * WARSHIP_PATROL_WANDER_RADIUS;
+        const cy = w.patrolY + (w.rng.next() * 2 - 1) * WARSHIP_PATROL_WANDER_RADIUS;
+        const rx = Math.round(cx);
+        const ry = Math.round(cy);
+        if (map.inBounds(rx, ry) && map.isWater(map.ref(rx, ry))) {
+          nextX = cx;
+          nextY = cy;
+          break;
+        }
+      }
+      w.wanderX = nextX;
+      w.wanderY = nextY;
+      return;
     }
+    this.moveWarshipToward(w, w.wanderX, w.wanderY);
   }
 
   /**
@@ -1361,37 +1463,55 @@ export class RasterConflict {
   }
 
   /**
-   * Advance every mobile warship one tick: sync new/lost units, heal, run the
-   * retreat hysteresis, pick (or keep) a target, close the distance, and fire
-   * once in range and off cooldown. A destroyed enemy warship's home structure
-   * is torn down in the same tick, so its own advance this tick — later in the
+   * Advance every mobile warship one tick: heal (only while the owner still
+   * runs a port — the wiki's rule), run the retreat hysteresis, pick a target,
+   * close the distance, and act — shells for transports/warships, a full-speed
+   * chase ending in an on-contact capture for a trade prize. Idle ships wander
+   * their patrol sector. A warship sunk earlier this tick — later in the
    * `[...this.warships]` snapshot — is skipped via the `hp <= 0` guard below.
    */
   private advanceWarships(): void {
-    this.syncWarships();
     if (this.warships.length === 0) return;
     const map = this.grid.map;
 
     for (const w of [...this.warships]) {
       if (w.hp <= 0) continue; // sunk by an earlier warship's shot this tick
 
-      w.hp = Math.min(WARSHIP_MAX_HP, w.hp + WARSHIP_PASSIVE_HEAL_PER_TICK);
+      const ports = this.activePortsOf(w.owner);
+      const hasPort = ports.length > 0;
+      // The wiki: a warship heals only while its owner has at least one port.
+      if (hasPort) w.hp = Math.min(WARSHIP_MAX_HP, w.hp + WARSHIP_PASSIVE_HEAL_PER_TICK);
       if (w.hp < WARSHIP_RETREAT_HP) w.retreating = true;
       else if (w.hp >= WARSHIP_RETREAT_RECOVER_HP) w.retreating = false;
 
       if (w.retreating) {
         w.target = null;
-        this.moveWarshipToward(w, map.x(w.homeRef), map.y(w.homeRef));
+        // Limp to the nearest own port to heal; with no harbour left, fall
+        // back to the patrol centre (it can't heal there, but it stays on
+        // station instead of drifting).
+        const haven = this.nearestRef(ports, w.x, w.y);
+        if (haven !== null) this.moveWarshipToward(w, map.x(haven), map.y(haven));
+        else this.moveWarshipToward(w, w.patrolX, w.patrolY);
         continue;
       }
 
-      const target = this.pickWarshipTarget(w);
+      const target = this.pickWarshipTarget(w, hasPort);
       w.target = target ? { kind: target.kind, id: target.id } : null;
       if (!target) {
-        // No hostile in range: hold near home rather than a scripted patrol
-        // route — deterministic, and it still reads as "on station" until
-        // something worth chasing shows up.
-        this.moveWarshipToward(w, map.x(w.homeRef), map.y(w.homeRef));
+        this.patrolWarship(w);
+        continue;
+      }
+
+      if (target.kind === "trade") {
+        // The wiki's piracy: rush the prize at double speed and capture it on
+        // contact — no shells, no cooldown.
+        const d = Math.max(Math.abs(target.x - w.x), Math.abs(target.y - w.y));
+        if (d <= WARSHIP_CAPTURE_CONTACT_RANGE) {
+          this.trade.captureShip(target.id, w.owner);
+          w.target = null;
+        } else {
+          this.moveWarshipToward(w, target.x, target.y, WARSHIP_TRADE_CHASE_SPEED);
+        }
         continue;
       }
 

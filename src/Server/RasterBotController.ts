@@ -508,9 +508,9 @@ export class RasterBotController {
       if (this.tryQueueBuild(grid, map, "factory", railServed, 1)) return true;
     }
 
-    // 3) A coastal nation floats a warship to patrol its waters.
+    // 3) A coastal nation floats a warship to patrol the water off its port.
     const warshipCap = WARSHIP_CAP_BASE + (p.aggression >= 0.6 ? 1 : 0);
-    if (this.tryQueueBuild(grid, map, "warship", (ref) => map.isShore(ref), warshipCap)) return true;
+    if (this.tryQueueWarship(grid, map, warshipCap)) return true;
 
     // 4) The silo — the war chest has been reserving for it (see warChest).
     const siloCap = SILO_CAP_BASE + (p.aggression >= 0.9 ? 1 : 0);
@@ -653,6 +653,30 @@ export class RasterBotController {
   private nextBuildCost(grid: TerritoryGrid, me: PlayerId, type: BuildingType): number {
     const ramp = costCounterTypes(type).reduce((sum, t) => sum + grid.totalLevelsOf(me, t), 0);
     return buildingCost(type, ramp);
+  }
+
+  /**
+   * Buy a warship when under `cap` and affordable: the patrol point is the
+   * water off the bot's first active port (warships are units bought against a
+   * water target and launched from a port — the session validates the rest).
+   * The cost ramp runs over the ships currently afloat.
+   */
+  private tryQueueWarship(grid: TerritoryGrid, map: GameMap, cap: number): boolean {
+    const me = this.myPlayerId;
+    const session = this.session;
+    if (me === null || !session) return false;
+    const afloat = session.peekWarshipCount(me);
+    if (afloat >= cap) return false;
+    if (grid.goldOf(me) < buildingCost("warship", afloat)) return false;
+    for (const [ref, type] of grid.activeBuildingEntries()) {
+      if (type !== "port" || grid.ownerOf(ref) !== me) continue;
+      for (const n of map.neighbors(ref)) {
+        if (!map.isWater(n)) continue;
+        session.queueBuild(this.config.botId, { targetX: map.x(n), targetY: map.y(n), building: "warship" });
+        return true;
+      }
+    }
+    return false;
   }
 
   private tryQueueBuild(

@@ -84,18 +84,27 @@ test("a coastal nation floats a warship patrol once its economy matures", () => 
   const bot = new RasterBotController({ botId: "b1", personality: FAST, kind: "nation" });
   bot.attach(session);
   const me = bot.getPlayerId()!;
+  // A vastly stronger rival holds the other half, so the bot can't hit the
+  // 80% domination win before its port (50 build ticks) even finishes.
+  session.subscribe("rival", noop, true, false, undefined, "nation"); // player 2
   claimRect(session, me, 0, 49, 0, 22); // includes the shore row at y=22
+  claimRect(session, 2, 50, 79, 0, 22);
   const grid = session.peekGrid();
   const map = session.peekMap();
+  grid.addTroops(2, 1_000_000);
   grid.placeBuilding(map.ref(5, 3), "city");
   grid.placeBuilding(map.ref(25, 3), "city");
-  // Covers the economy openers (125k port + 250k factory) AND the 250k
-  // warship, but not the 1M silo.
-  grid.setGold(me, 700_000);
+  // Covers the ladder up to the warship — 125k port + two border forts
+  // (50k+100k, the hostile rival triggers those) + 250k factory + the 250k
+  // warship = 775k — but never the 1M silo.
+  grid.setGold(me, 900_000);
 
-  for (let i = 0; i < 10; i += 1) session.tick();
+  // The port takes 50 ticks to finish, and a warship (a mobile unit now) can
+  // only launch from an ACTIVE port — run well past both.
+  for (let i = 0; i < 150; i += 1) session.tick();
 
-  assert.equal(grid.buildingCountOf(me, "warship"), 1, "one warship patrols the coast (cap for a balanced nation)");
+  assert.equal(session.peekWarshipCount(me), 1, "one warship patrols the coast (cap for a balanced nation)");
+  assert.equal(grid.buildingCountOf(me, "warship"), 0, "a warship is a unit, never a structure on the grid");
 });
 
 test("the war chest keeps city spending from raiding the silo budget", () => {

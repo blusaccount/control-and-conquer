@@ -674,6 +674,11 @@ export class TerritoryGrid {
    * player or already holds a building (one structure per tile).
    */
   placeBuilding(ref: TileRef, type: BuildingType, startTick = 0, readyTick = 0): void {
+    if (type === "warship") {
+      // A warship is a mobile unit, never a structure — buy it through the
+      // session/conflict (`launchWarship`), which spawns it at a port.
+      throw new Error("A warship is a mobile unit, not a structure — use RasterConflict.launchWarship.");
+    }
     const owner = this.owner[ref];
     if (owner === NEUTRAL_PLAYER || !this.isCapturable(ref)) {
       throw new Error(`Tile ${ref} must be owned land to hold a building.`);

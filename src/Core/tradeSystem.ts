@@ -74,6 +74,12 @@ export interface TradeView {
 export interface TradeShipTarget {
   id: number;
   owner: PlayerId;
+  /**
+   * Owner of the destination port (read live). The wiki's warships only chase
+   * trade ships that are NOT heading to their own owner's ports — an inbound
+   * trader is about to pay that port in full, so it is left alone.
+   */
+  toOwner: PlayerId;
   x: number;
   y: number;
 }
@@ -128,11 +134,11 @@ export class TradeSystem {
     return this.ships.length;
   }
 
-  /** Every live trade ship's id, owner and current position — a warship's target scan reads this. */
+  /** Every live trade ship's id, owner, destination owner and position — a warship's target scan reads this. */
   targetableShips(): TradeShipTarget[] {
     return this.ships.map((ship) => {
       const { x, y } = this.shipPosition(ship);
-      return { id: ship.id, owner: ship.owner, x, y };
+      return { id: ship.id, owner: ship.owner, toOwner: this.grid.ownerOf(ship.to), x, y };
     });
   }
 
