@@ -1,5 +1,6 @@
 import { FILLER_PERSONALITY, RASTER_BOT_PERSONALITIES, type RasterBotConfig, type RasterBotPersonality } from "./RasterBotController.js";
 import type { RasterDifficulty } from "../Core/messages.js";
+import type { RasterPlayerKind } from "../Core/types.js";
 
 /**
  * Bot-field sizing and difficulty tuning — the rules that decide how many rival
@@ -18,8 +19,12 @@ import type { RasterDifficulty } from "../Core/messages.js";
  * handicaps (see {@link NATION_START_MANPOWER} et al.). This engine has no
  * map manifest to draw Nations from, so both tiers are procedurally seated
  * here; `"human"` is the connecting player, never an AI seat.
+ *
+ * The union itself lives in `Core/types.ts` (it is public wire data — every
+ * snapshot names each player's class, as OpenFront's player overlay does);
+ * re-exported here so seat-plumbing callers keep their import path.
  */
-export type RasterPlayerKind = "human" | "bot" | "nation";
+export type { RasterPlayerKind } from "../Core/types.js";
 
 /**
  * Which tier the seat at `seatIndex` plays, given how many **Nation** seats the
@@ -216,32 +221,33 @@ export const seatPhaseOffset = (seatIndex: number, cadence: number): number =>
   seatPick(seatIndex + 7919, [0, Math.max(0, cadence - 1)]);
 
 /**
- * Land-per-opponent density as a square-root divisor, by difficulty: the field
- * grows with the square root of the capturable land divided by this, so a 4×
- * larger map roughly doubles the field rather than quadrupling it. Smaller =
- * denser, so Impossible packs the most opponents onto the same map. Tuned for
- * OpenFront's *packed* feel (its default is a flat 400 bots): earth-standard
- * (~155k land) seats ~130, earth-large (~620k) ~260, and earth-huge (~2.5M)
- * hits the {@link MAX_FIELD} 400 ceiling — a dense mosaic of tribes, not the
- * old sparse handful. (Server tick cost is ~3.5 ms even at 500 seats, so the
- * ceiling is a rendering/legibility choice, not a perf one.)
+ * **Land tiles per AI seat**, by difficulty — the field's density anchor,
+ * calibrated against the real OpenFront World FFA: 651,609 land tiles
+ * (`resources/maps/world/manifest.json`) shared by ~475 AI seats (400 bots +
+ * ~75 nations) ≈ **1,370 land tiles per seat**. Medium pins that exact
+ * density; Easy spreads seats a little thinner and Hard/Impossible pack them
+ * tighter (their harder feel is partly a more crowded map). The old
+ * square-root scaling over-seated small maps ~2× (earth-standard came out at
+ * ~600 land tiles/seat), which made the opening land-grab end in well under a
+ * minute — half the first-five-minutes experience was simply missing.
  */
-const DIFFICULTY_FIELD_DIVISOR: Record<RasterDifficulty, number> = {
-  easy: 4,
-  medium: 3,
-  hard: 2.6,
-  impossible: 2.2,
+const LAND_TILES_PER_SEAT: Record<RasterDifficulty, number> = {
+  easy: 1600,
+  medium: 1370,
+  hard: 1150,
+  impossible: 1000,
 };
 
 /**
  * Total AI opponents to seat for a map of `capturableTiles` land — bots plus
- * nations combined (split bot-heavy by {@link splitField}). Scales with the
- * square root of the land so small maps stay readable and the big Earth maps
- * fill with an OpenFront-style crowd, floored per difficulty and capped at
- * {@link MAX_FIELD}.
+ * nations combined (split bot-heavy by {@link splitField}). **Linear** in the
+ * capturable land at the per-difficulty {@link LAND_TILES_PER_SEAT} density,
+ * so every map size plays at OpenFront's World density instead of small maps
+ * running twice as crowded as large ones; floored per difficulty and capped at
+ * {@link MAX_FIELD} (OpenFront's default bot count).
  */
 export const scaleFieldCount = (capturableTiles: number, difficulty: RasterDifficulty): number => {
-  const byLand = Math.round(Math.sqrt(Math.max(0, capturableTiles)) / DIFFICULTY_FIELD_DIVISOR[difficulty]);
+  const byLand = Math.round(Math.max(0, capturableTiles) / LAND_TILES_PER_SEAT[difficulty]);
   return Math.max(DIFFICULTY_BOT_COUNT[difficulty], Math.min(byLand, MAX_FIELD));
 };
 

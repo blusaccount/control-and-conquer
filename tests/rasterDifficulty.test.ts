@@ -16,25 +16,35 @@ test("difficulty seats more rival nations as it rises", () => {
 
 test("the field scales up with the land a map offers", () => {
   // A tiny (Classic-scale) map stays a small handful; ever-larger maps seat
-  // strictly more opponents, scaling with the tiles available.
+  // strictly more opponents, scaling with the land available.
   const tiny = scaleFieldCount(1_500, "medium");
-  const standard = scaleFieldCount(30_000, "medium");
   const large = scaleFieldCount(120_000, "medium");
   const huge = scaleFieldCount(480_000, "medium");
-  assert.ok(tiny < standard, `tiny (${tiny}) should field fewer than standard (${standard})`);
-  assert.ok(standard < large, `standard (${standard}) should field fewer than large (${large})`);
-  assert.ok(large <= huge, `large (${large}) should not exceed huge (${huge})`);
+  assert.ok(tiny < large, `tiny (${tiny}) should field fewer than large (${large})`);
+  assert.ok(large < huge, `large (${large}) should field fewer than huge (${huge})`);
 });
 
-test("the default field is OpenFront-dense — a packed mosaic, not a handful", () => {
-  // OpenFront's World is ~1370 tiles/player (651k land, ~475 AI). Our default
-  // scaling lands in the same ballpark: earth-standard (~155k) ~130 opponents
-  // (~1200 tiles/player), earth-large (~620k) ~260. Far past the old ~80.
-  const standard = scaleFieldCount(155_000, "medium");
-  const large = scaleFieldCount(620_000, "medium");
-  assert.ok(standard >= 110, `a standard Earth map seats a packed field, got ${standard}`);
-  assert.ok(155_000 / standard <= 1600, "density is in OpenFront's tiles-per-player range");
-  assert.ok(large >= 220, `a large Earth map is densely crowded, got ${large}`);
+test("the field density matches OpenFront's World (≈1370 land tiles per seat)", () => {
+  // OpenFront's World FFA: 651,609 land tiles (world/manifest.json) shared by
+  // ~475 AI (400 bots + ~75 nations) ≈ 1,370 land tiles per seat. Our maps
+  // must seat at that *land* density — the old sqrt scaling packed small maps
+  // ~2× too tight, ending the opening land-grab in under a minute.
+  const standardLand = 40_000; // earth-standard's capturable land (measured ~40.4k)
+  const largeLand = 161_000; // earth-large ≈ 4× standard
+  const hugeLand = 645_000; // earth-huge ≈ OpenFront's World land count
+  const large = scaleFieldCount(largeLand, "medium");
+  assert.ok(
+    largeLand / large >= 1200 && largeLand / large <= 1600,
+    `earth-large lands on OpenFront's density, got ${largeLand / large} tiles/seat`,
+  );
+  // earth-huge carries OpenFront's whole World-scale crowd (capped at 400).
+  assert.equal(scaleFieldCount(hugeLand, "medium"), MAX_FIELD);
+  // Small maps floor at the difficulty minimum rather than over-packing.
+  const standard = scaleFieldCount(standardLand, "medium");
+  assert.ok(
+    standardLand / standard >= 1200 || standard === DIFFICULTY_BOT_COUNT.medium,
+    `earth-standard is not over-packed, got ${standardLand / standard} tiles/seat`,
+  );
   // The ceiling matches OpenFront's default bot count.
   assert.equal(MAX_FIELD, 400);
 });
@@ -67,10 +77,12 @@ test("a session seats many distinct nations on a real map", () => {
   const grid = session.peekGrid();
   const players = [...grid.players()];
   assert.equal(players.length, N, "every nation is seated");
-  // Each holds exactly its own founding tile, so no two share a spawn.
-  let owned = 0;
-  for (const id of players) owned += grid.tileCountOf(id);
-  assert.equal(owned, N, "spawns are distinct (one tile each, no overlap)");
+  // Every nation founds its own blob (OpenFront's spawn radius). Blobs only
+  // claim unowned land, so the seats never overlap — each keeps at least its
+  // own founding tile.
+  for (const id of players) {
+    assert.ok(grid.tileCountOf(id) >= 1, `player ${id} holds its founding blob`);
+  }
 });
 
 // --- Bot (Tribe) vs Nation field composition --------------------------------

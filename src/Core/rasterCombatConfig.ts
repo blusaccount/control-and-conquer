@@ -97,6 +97,19 @@ export const WIN_TILE_FRACTION = 0.8;
 export const DEAD_DEFENDER_MAX_TILES = 100;
 
 /**
+ * Radius (in tiles, Euclidean) of the **founding blob** a spawn claims,
+ * mirroring OpenFront's `getSpawnTiles` (`euclDistFN(tile, 4)`): picking a
+ * start position seats the nation on every connected, capturable, unclaimed
+ * land tile within this distance of the pick (~49 tiles on open plains) rather
+ * than a single pixel. This is what makes freshly-placed nations *visible* on
+ * the map during the spawn phase and gives the opening land-grab its OpenFront
+ * scale — a new nation is a small blob with a readable border, not a lone dot.
+ * The blob is clipped by coastline/mountains/other owners, exactly as
+ * OpenFront clips a shore spawn.
+ */
+export const SPAWN_BLOB_RADIUS = 4;
+
+/**
  * Seconds of **spawn immunity** a freshly-seated nation gets, mirroring
  * OpenFront's post-spawn protection: for this window the player's tiles can't be
  * attacked (by land or sea), so a new spawn isn't instantly steamrolled by a

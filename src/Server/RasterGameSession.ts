@@ -24,7 +24,7 @@ import type {
   RasterTrain,
   RasterWarship,
 } from "../Core/types.js";
-import { LAND_ATTACK_REACH, SPAWN_IMMUNITY_SECONDS, WIN_TILE_FRACTION } from "../Core/rasterCombatConfig.js";
+import { LAND_ATTACK_REACH, SPAWN_BLOB_RADIUS, SPAWN_IMMUNITY_SECONDS, WIN_TILE_FRACTION } from "../Core/rasterCombatConfig.js";
 import { NUKE_DEFS, nukeCost, SILO_RELOAD_TICKS, type NukeKind } from "../Core/nukes.js";
 import { BUILDING_CONSTRUCTION_TICKS, BUILDING_DEFS, buildingCost, COASTAL_BUILDING_TYPES, COASTAL_SNAP_RADIUS, CONQUER_GOLD_FRACTION_AI, CONQUER_GOLD_FRACTION_HUMAN, costCounterTypes, STRUCTURE_MIN_DIST, UPGRADABLE_BUILDING_TYPES } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
@@ -187,9 +187,10 @@ const MAX_PLAYERS = MAX_FIELD + 8;
  * two-word tribal name (see {@link tribeName}); a human or Nation seat draws
  * from the curated {@link NATION_NAMES} list (wrapping for ids beyond it).
  */
-const metaForPlayer = (id: PlayerId, kind: RasterPlayerKind): { name: string; color: string } => ({
+const metaForPlayer = (id: PlayerId, kind: RasterPlayerKind): { name: string; color: string; kind: RasterPlayerKind } => ({
   name: kind === "bot" ? tribeName(id - 1) : NATION_NAMES[(id - 1) % NATION_NAMES.length],
   color: colorForPlayer(id),
+  kind,
 });
 
 export interface RasterGameSessionOptions {
@@ -551,9 +552,43 @@ export class RasterGameSession {
   }
 
   /**
-   * Place a player on the map at `spawnRef`: their founding (and, at this
-   * instant, only) tile. There is no capital — a nation is beaten only once its
-   * whole territory is captured — so the spawn tile carries no special status.
+   * The **founding blob** a spawn at `center` claims: every capturable,
+   * unclaimed land tile connected to the pick within {@link SPAWN_BLOB_RADIUS}
+   * Euclidean tiles, mirroring OpenFront's `getSpawnTiles` (a BFS bounded by
+   * `euclDistFN(tile, 4)`). Clipped naturally by water, impassable rock and
+   * other players' land, so a coastal pick founds a half-moon exactly as the
+   * original does. Always contains at least `center` itself when it is open.
+   */
+  private spawnBlobTiles(center: TileRef): TileRef[] {
+    const cx = this.map.x(center);
+    const cy = this.map.y(center);
+    const radiusSq = SPAWN_BLOB_RADIUS * SPAWN_BLOB_RADIUS;
+    const blob: TileRef[] = [];
+    const seen = new Set<TileRef>([center]);
+    const queue: TileRef[] = [center];
+    while (queue.length > 0) {
+      const ref = queue.shift() as TileRef;
+      if (!this.grid.isCapturable(ref) || this.grid.ownerOf(ref) !== NEUTRAL_PLAYER) continue;
+      blob.push(ref);
+      for (const n of this.map.neighbors(ref)) {
+        if (seen.has(n)) continue;
+        const dx = this.map.x(n) - cx;
+        const dy = this.map.y(n) - cy;
+        if (dx * dx + dy * dy > radiusSq) continue;
+        seen.add(n);
+        queue.push(n);
+      }
+    }
+    return blob;
+  }
+
+  /**
+   * Place a player on the map at `spawnRef`: their founding **blob** — the
+   * spawn tile plus the open land around it within {@link SPAWN_BLOB_RADIUS}
+   * (OpenFront's `getSpawnTiles`), so a fresh nation starts as a visible patch
+   * of territory rather than a single pixel. There is no capital — a nation is
+   * beaten only once its whole territory is captured — so no founding tile
+   * carries special status.
    *
    * A **Nation** is seated with OpenFront's per-difficulty handicaps: a
    * smaller starting army, a lower population ceiling and slower growth, so
@@ -583,20 +618,22 @@ export class RasterGameSession {
         troopCapMultiplier: NATION_TROOP_CAP_MULTIPLIER[this.difficulty],
       });
     }
-    this.grid.claim(spawnRef, playerId);
+    for (const ref of this.spawnBlobTiles(spawnRef)) this.grid.claim(ref, playerId);
     this.peakTiles.set(playerId, this.grid.tileCountOf(playerId));
     this.kills.set(playerId, 0);
   }
 
   /**
-   * Move an already-seated player's founding tile to `ref`, releasing whatever
-   * (single) tile they currently hold. Only meaningful during the start phase,
-   * where a player owns nothing but their freshly picked spawn — it lets them
-   * relocate their nation freely before the countdown elapses.
+   * Move an already-seated player's founding blob to `ref`, releasing whatever
+   * tiles they currently hold. Only meaningful during the start phase, where a
+   * player owns nothing but their freshly picked spawn blob — it lets them
+   * relocate their nation freely before the countdown elapses (OpenFront's
+   * re-pickable spawn; its `SpawnExecution` likewise relinquishes all tiles
+   * before re-placing).
    */
   private moveSpawn(playerId: PlayerId, ref: TileRef): void {
     for (const old of this.grid.tilesOf(playerId)) this.grid.claim(old, NEUTRAL_PLAYER);
-    this.grid.claim(ref, playerId);
+    for (const tile of this.spawnBlobTiles(ref)) this.grid.claim(tile, playerId);
     this.peakTiles.set(playerId, this.grid.tileCountOf(playerId));
   }
 
@@ -638,7 +675,14 @@ export class RasterGameSession {
       return;
     }
     if (alreadySpawned) this.moveSpawn(playerId, ref);
-    else this.seatPlayer(playerId, ref);
+    else this.seatPlayer(playerId, ref, subscriber.kind);
+    // OpenFront singleplayer: "spawn ends when player selects a spawn location"
+    // (its `SpawnExecution` calls `endSpawnPhase()` for a human pick in a
+    // singleplayer game). Every session here hosts exactly one human against an
+    // AI field, so a human's pick starts the battle at once — no dead wait for
+    // the countdown. The countdown remains only as the fallback for a human who
+    // never clicks (they are auto-seated when it elapses).
+    if (this.phase === "spawn" && subscriber.kind === "human") this.beginPlayingPhase();
     // Push the seated state straight away so the client can zoom to the spawn
     // without waiting for the next tick.
     this.sendSnapshotTo(subscriber);

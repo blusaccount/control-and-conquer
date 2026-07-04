@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { formatCount, formatDuration, formatRate } from "../src/Client/format.js";
+import { formatCount, formatDuration, formatRate, formatTroopRate, formatTroops } from "../src/Client/format.js";
 
 test("formatCount keeps values under a thousand raw", () => {
   assert.equal(formatCount(0), "0");
@@ -36,6 +36,17 @@ test("formatRate keeps small rates readable and reuses the compact notation", ()
   assert.equal(formatRate(0.4), "0.4");
   assert.equal(formatRate(42), "42");
   assert.equal(formatRate(19_595), "19.6K");
+});
+
+test("formatTroops renders at OpenFront's display scale (manpower ÷ 10)", () => {
+  // OpenFront's client shows troops/10 (`renderTroops`): a fresh human's
+  // 25,000 starting manpower reads "2.5K" on the real openfront.io.
+  assert.equal(formatTroops(25_000), "2.50K");
+  assert.equal(formatTroops(115_000), "11.5K");
+  assert.equal(formatTroops(394_000), "39.4K");
+  assert.equal(formatTroops(682), "68");
+  // The per-second rate scales the same way.
+  assert.equal(formatTroopRate(3_270), "327");
 });
 
 test("formatDuration renders m:ss", () => {

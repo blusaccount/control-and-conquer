@@ -31,13 +31,6 @@ export interface RasterBotPersonality {
   readonly decisionCooldownTicks: number;
   /** The bot sits idle (banking income) until its pool reaches this. */
   readonly minPool: number;
-  /** Fraction of the pool held back rather than committed, so the bot can keep
-   * opening fresh fronts instead of locking everything into one push (0..1). */
-  readonly reserveFraction: number;
-  /** Fraction of the *available* (non-reserve) pool committed to a neutral grab. */
-  readonly expandCommit: number;
-  /** Fraction of the available pool committed to an attack on an enemy. */
-  readonly attackCommit: number;
   /** Only attack an enemy when `myPool >= theirPool * this`. Lower = braver. */
   readonly attackPoolRatio: number;
   /** Tendency to strike a beatable enemy even while neutral land remains (0..1).
@@ -93,11 +86,41 @@ const EMOJI_ANGRY = 3;
 const EMOJI_HANDSHAKE = 4;
 
 /**
- * Odds a Tribe pokes a bordering rival on a decision with no neutral land left,
- * mirroring OpenFront's `TribeExecution` attack odds (~1/3 against a non-ally).
- * Low enough that the world-wide churn is a steady simmer, not a snowball.
+ * Odds a Tribe opens an attack on a bordering rival on a decision with no
+ * neutral land left, mirroring OpenFront's `TribeExecution`/`AiAttackBehavior`
+ * odds (~1/3 against a non-ally). The attack itself is sized by the OpenFront
+ * ratio model (see {@link attackSizeTroops}) — a real strike down to the
+ * tribe's reserve, not a token poke — but it only comes once the tribe has
+ * banked past its trigger ratio, so tribes are farmable most of the time and
+ * dangerous in bursts.
  */
 const TRIBE_POKE_ODDS = 1 / 3;
+
+// ---------------------------------------------------------------------------
+// OpenFront AI attack sizing (`AiAttackBehavior`, current upstream main).
+//
+// Both Tribes and Nations draw three per-seat ratios of their max population:
+//   triggerRatio 50–60% — bank until the pool crosses this before opening a
+//                          war (expansion into wilderness is exempt);
+//   reserveRatio 30–40% — a war strike sends `troops − maxTroops·reserve`;
+//   expandRatio  10–20% — a wilderness grab sends `troops − maxTroops·expand`
+//                          (nearly the whole pool — the OpenFront land rush).
+// Values are behaviour constants from the documented upstream behaviour, not
+// ported code; per-seat variation comes from a deterministic hash, standing in
+// for OpenFront's per-player seeded `nextInt` rolls.
+// ---------------------------------------------------------------------------
+export const AI_TRIGGER_RATIO: readonly [number, number] = [0.5, 0.6];
+export const AI_RESERVE_RATIO: readonly [number, number] = [0.3, 0.4];
+export const AI_EXPAND_RATIO: readonly [number, number] = [0.1, 0.2];
+
+/** Deterministic per-seat ratio inside `[lo, hi]` (stand-in for OF's seeded nextInt). */
+export const seatRatio = (playerId: number, salt: number, [lo, hi]: readonly [number, number]): number =>
+  lo + hash01(playerId, salt) * (hi - lo);
+
+// Hash salts separating the three per-seat ratio rolls (arbitrary, fixed).
+const SALT_EXPAND = 101;
+const SALT_RESERVE = 103;
+const SALT_TRIGGER = 107;
 
 /**
  * Cheap deterministic hash of two integers onto [0, 1) — the confusion roll.
@@ -116,46 +139,43 @@ const hash01 = (a: number, b: number): number => {
  * order so a solo match fields a recognisable mix — a land-grabber, a warmonger,
  * a measured all-rounder, an opportunist and a turtle — rather than five clones.
  */
-// Nation commit fractions mirror OpenFront's `NationExecution` behaviour ratios
-// (reserveRatio 30–40%, expandRatio 10–20%, plus a trigger to open a war): a
-// nation keeps a deep reserve and commits a *modest* slice per move, so borders
-// creep deliberately rather than blobbing the whole pool at once. The archetypes
-// vary within those ranges. `decisionCooldownTicks` here is only a fallback —
-// the seat loop overrides it with a per-seat `nationDecisionCadence`
-// (Easy 65–100 … Impossible 30–50 ticks).
+// Attack *sizing* is no longer a personality trait: every AI seat sends
+// OpenFront's ratio-model strikes (see {@link AI_EXPAND_RATIO} etc.), exactly
+// like upstream, where all nations share the same nextInt ratio ranges. What a
+// personality still shapes is *when and whom* to fight (`aggression`,
+// `attackPoolRatio`) and how often it acts. `decisionCooldownTicks` here is
+// only a fallback — the seat loop overrides it with a per-seat
+// `nationDecisionCadence` (Easy 65–100 … Impossible 30–50 ticks).
 export const RASTER_BOT_PERSONALITIES: readonly RasterBotPersonality[] = [
   // Expander: races for neutral land to compound income, fights only when boxed in.
-  { id: "expander", decisionCooldownTicks: 80, minPool: 5, reserveFraction: 0.30, expandCommit: 0.30, attackCommit: 0.28, attackPoolRatio: 1.5, aggression: 0.2 },
+  { id: "expander", decisionCooldownTicks: 80, minPool: 5, attackPoolRatio: 1.5, aggression: 0.2 },
   // Aggressor: hunts the weakest neighbour early and commits harder to the kill.
-  { id: "aggressor", decisionCooldownTicks: 55, minPool: 5, reserveFraction: 0.30, expandCommit: 0.24, attackCommit: 0.40, attackPoolRatio: 1.0, aggression: 0.9 },
+  { id: "aggressor", decisionCooldownTicks: 55, minPool: 5, attackPoolRatio: 1.0, aggression: 0.9 },
   // Balanced: grabs land first, then turns on a clearly weaker rival.
-  { id: "balanced", decisionCooldownTicks: 65, minPool: 8, reserveFraction: 0.35, expandCommit: 0.25, attackCommit: 0.30, attackPoolRatio: 1.25, aggression: 0.5 },
+  { id: "balanced", decisionCooldownTicks: 65, minPool: 8, attackPoolRatio: 1.25, aggression: 0.5 },
   // Opportunist: expands patiently but pounces on a lopsided advantage.
-  { id: "opportunist", decisionCooldownTicks: 65, minPool: 6, reserveFraction: 0.35, expandCommit: 0.26, attackCommit: 0.32, attackPoolRatio: 1.4, aggression: 0.6 },
+  { id: "opportunist", decisionCooldownTicks: 65, minPool: 6, attackPoolRatio: 1.4, aggression: 0.6 },
   // Turtle: banks a deep reserve, expands cautiously, rarely starts a war.
-  { id: "turtle", decisionCooldownTicks: 90, minPool: 12, reserveFraction: 0.40, expandCommit: 0.22, attackCommit: 0.25, attackPoolRatio: 1.8, aggression: 0.15 },
+  { id: "turtle", decisionCooldownTicks: 90, minPool: 12, attackPoolRatio: 1.8, aggression: 0.15 },
 ];
 
 /**
  * The passive **Bot** ("Tribe") personality: OpenFront's low-threat map
- * filler. It reacts slowly, commits only a sliver of its pool per attack
- * (mirroring OpenFront's `attackAmount` for `PlayerType.Bot`, `troops/20` = 5% —
- * a fifth of a Nation's `troops/5`), and almost never picks a fight it isn't
- * heavily favoured to win — but it grabs neutral land eagerly (and cheaply, at
- * OpenFront's `mag/10`; see the Bot `neutralCostMultiplier`). Paired with
- * `kind: "bot"` (see {@link RasterBotConfig.kind}), which additionally skips
- * building and always accepts alliance offers rather than weighing them — see
- * {@link RasterBotController.maybeBuild}/{@link RasterBotController.manageDiplomacy}.
- * `decisionCooldownTicks` is a fallback — the seat loop overrides it with a
- * per-seat `botDecisionCadence` (OpenFront's `nextInt(40, 80)`).
+ * filler. It shares the universal OpenFront attack-ratio model (bank to the
+ * trigger, strike down to the reserve, dump the pool into wilderness), grabs
+ * neutral land cheaply (OpenFront's `mag/10`; see the Bot
+ * `neutralCostMultiplier`) and picks fights only by odds, never by strategy.
+ * Paired with `kind: "bot"` (see {@link RasterBotConfig.kind}), which
+ * additionally skips building and always accepts alliance offers rather than
+ * weighing them — see {@link RasterBotController.maybeBuild}/
+ * {@link RasterBotController.manageDiplomacy}. `decisionCooldownTicks` is a
+ * fallback — the seat loop overrides it with a per-seat `botDecisionCadence`
+ * (OpenFront's `nextInt(40, 80)`).
  */
 export const FILLER_PERSONALITY: RasterBotPersonality = {
   id: "filler",
   decisionCooldownTicks: 60,
   minPool: 20,
-  reserveFraction: 0.5,
-  expandCommit: 0.4, // grab a healthy bite of cheap neutral land each poke
-  attackCommit: 0.05, // OpenFront's Bot attackAmount = troops/20
   attackPoolRatio: 2.5,
   aggression: 0.05,
 };
@@ -236,6 +256,8 @@ export class RasterBotController {
   private lastAttackedBy = 0;
   /** True once any warhead has flown this match — the cue to stand up SAM cover. */
   private nukesSeen = false;
+  /** Each seat's public player class, read off the snapshot (drives tribe-farming sizing). */
+  private readonly kindOf = new Map<PlayerId, RasterPlayerKind>();
 
   /**
    * The bot reinvests in a city once it holds at least this much land — early
@@ -277,6 +299,7 @@ export class RasterBotController {
       this.lastDecisionTick = Number.NEGATIVE_INFINITY;
       this.lastAttackedBy = 0;
       this.nukesSeen = false;
+      this.kindOf.clear();
       unsubscribe();
     };
   }
@@ -327,6 +350,9 @@ export class RasterBotController {
     if (!this.nukesSeen && (snapshot.nukes.length > 0 || snapshot.nukeDetonations.length > 0)) {
       this.nukesSeen = true;
     }
+    // Public player classes (as in OpenFront's player overlay): a nation farms
+    // a bordering tribe with a proportional strike rather than its full army.
+    for (const p of snapshot.players) this.kindOf.set(p.playerId, p.kind);
 
     // Throttle decisions (and the work behind them) to the personality cadence.
     if (snapshot.tick - this.lastDecisionTick < this.config.personality.decisionCooldownTicks) return;
@@ -776,21 +802,47 @@ export class RasterBotController {
     }
   }
 
+  /** This seat's max troop pool (its territory-scaled, handicap-adjusted ceiling). */
+  private troopCapOf(grid: TerritoryGrid, me: PlayerId): number {
+    return (
+      maxTroops(grid.tileCountOf(me), grid.activeLevelsOf(me, "city")) *
+      grid.modifiersOf(me).troopCapMultiplier
+    );
+  }
+
   /**
-   * A passive **Bot** (Tribe)'s move, mirroring OpenFront's `TribeExecution`:
-   * grab adjacent **neutral** land when there is any (the early-game blanket),
-   * otherwise **weakly poke a bordering rival** at roughly OpenFront's odds
-   * (~1/3 for a non-ally) — a `troops/20` jab that rarely conquers much but
-   * keeps the borders alive with constant low-level churn instead of a dead,
-   * frozen map. Never allies-first, never banks idle: a Tribe is always fidgeting.
+   * OpenFront's AI attack sizing (`AiAttackBehavior.calculateAttackTroops`):
+   * everything above `maxTroops × ratio` marches — the ratio names what stays
+   * *home*, not what is sent. A wilderness grab keeps only the small
+   * {@link AI_EXPAND_RATIO} (near-full commitment, the OpenFront land rush); a
+   * war strike keeps the deeper {@link AI_RESERVE_RATIO}. Returns 0 when the
+   * pool sits at or below the reserve (OpenFront skips the attack entirely).
+   */
+  private attackSizeTroops(grid: TerritoryGrid, me: PlayerId, ratio: readonly [number, number], salt: number): number {
+    const reserve = this.troopCapOf(grid, me) * seatRatio(me, salt, ratio);
+    return Math.max(0, Math.floor(grid.troopsOf(me) - reserve));
+  }
+
+  /** OpenFront's war gate: bank until the pool crosses `triggerRatio × maxTroops`. */
+  private hasTriggerTroops(grid: TerritoryGrid, me: PlayerId): boolean {
+    return grid.troopsOf(me) >= this.troopCapOf(grid, me) * seatRatio(me, SALT_TRIGGER, AI_TRIGGER_RATIO);
+  }
+
+  /**
+   * A passive **Bot** (Tribe)'s move, mirroring OpenFront's current
+   * `TribeExecution`/`AiAttackBehavior`: while **neutral** land borders it,
+   * dump the pool (minus the small expand reserve) into the wilderness — the
+   * early-game blanket. Once boxed in, **bank to the trigger ratio**, then
+   * strike: first back at whoever attacked it last (OpenFront retaliates
+   * against the largest incoming attack), else the weakest bordering non-ally
+   * at ~1/3 odds — a real strike down to the war reserve, so tribes are
+   * farmable between bursts but genuinely bite back.
    * Deterministic (the odds roll is a per-tick/-seat hash, no RNG).
    */
   private decideBot(grid: TerritoryGrid, map: GameMap): void {
     const me = this.myPlayerId;
     const session = this.session;
     if (me === null || !session) return;
-    const p = this.config.personality;
-    const pool = grid.troopsOf(me);
     const alliances = session.peekAlliances();
 
     const targets = grid.frontierTargets(me);
@@ -800,33 +852,71 @@ export class RasterBotController {
     // preference) — this is what makes tribes blanket the empty map so fast.
     const neutral = targets.find((t) => t.target === NEUTRAL_PLAYER) ?? null;
     if (neutral) {
-      this.queueCommit(grid, map, me, neutral.sample, p.expandCommit);
+      this.queueSizedAttack(grid, map, me, neutral.sample, AI_EXPAND_RATIO, SALT_EXPAND);
       return;
     }
 
-    // No neutral land left: poke a bordering non-ally, but only at OpenFront's
-    // ~1/3 odds per decision, so the churn is a steady simmer, not a firehose.
-    if (hash01(session.peekTick(), me) >= TRIBE_POKE_ODDS) return;
+    // No neutral land left: bank until the trigger ratio, then strike.
+    if (!this.hasTriggerTroops(grid, me)) return;
     const enemies = targets.filter((t) => t.target !== NEUTRAL_PLAYER && !alliances.areAllied(me, t.target));
     if (enemies.length === 0) return;
-    // Jab the weakest bordering rival (best chance the weak poke actually lands),
-    // regardless of relative strength — a Tribe attacks by odds, not advantage.
+    // Retaliation first (OpenFront answers the largest incoming attack), no
+    // odds roll — someone is already on our soil.
+    const retaliate = this.lastAttackedBy !== 0 ? enemies.find((e) => e.target === this.lastAttackedBy) : undefined;
+    if (retaliate) {
+      this.queueSizedAttack(grid, map, me, retaliate.sample, AI_RESERVE_RATIO, SALT_RESERVE);
+      return;
+    }
+    // Otherwise open a fight only at OpenFront's ~1/3 odds per decision, on the
+    // weakest bordering rival — a Tribe attacks by odds, not strategy.
+    if (hash01(session.peekTick(), me) >= TRIBE_POKE_ODDS) return;
     const prey = enemies.reduce((a, b) => (grid.troopsOf(b.target) < grid.troopsOf(a.target) ? b : a));
-    this.queueCommit(grid, map, me, prey.sample, p.attackCommit);
+    this.queueSizedAttack(grid, map, me, prey.sample, AI_RESERVE_RATIO, SALT_RESERVE);
   }
 
-  /** Commit `fraction` of the reserve-adjusted pool toward `sample`, as a percent expand order. */
-  private queueCommit(grid: TerritoryGrid, map: GameMap, me: PlayerId, sample: TileRef, fraction: number): void {
+  /** Queue an OpenFront ratio-model strike toward `sample` (no-op when the pool is spent). */
+  private queueSizedAttack(
+    grid: TerritoryGrid,
+    map: GameMap,
+    me: PlayerId,
+    sample: TileRef,
+    ratio: readonly [number, number],
+    salt: number,
+  ): void {
+    this.queueTroops(grid, map, me, sample, this.attackSizeTroops(grid, me, ratio, salt));
+  }
+
+  /** Queue an expand order committing `troops` toward `sample` (no-op below 1). */
+  private queueTroops(grid: TerritoryGrid, map: GameMap, me: PlayerId, sample: TileRef, troops: number): void {
     const session = this.session;
-    if (!session) return;
+    if (!session || troops < 1) return;
     const pool = grid.troopsOf(me);
-    const available = pool * (1 - this.config.personality.reserveFraction);
-    const troops = Math.max(1, Math.floor(available * fraction));
     session.queueExpand(this.config.botId, {
       targetX: map.x(sample),
       targetY: map.y(sample),
       percent: Math.min(100, Math.max(1, Math.round((troops / Math.max(1, pool)) * 100))),
     });
+  }
+
+  /**
+   * Troops a **war** strike on `target` commits, mirroring OpenFront's
+   * `calculateAttackTroops`: normally everything above the war reserve; but a
+   * *nation* attacking a *tribe* farms it proportionally
+   * (`calculateBotAttackTroops`) — send `4× the tribe's pool`, capped by the
+   * above-reserve budget, and skip entirely when the budget can't spare at
+   * least `2×` (too weak a strike would just bleed). This is why OpenFront
+   * nations graze on bots for the whole match instead of emptying their army
+   * into every tribal border.
+   */
+  private warStrikeTroops(grid: TerritoryGrid, me: PlayerId, target: PlayerId): number {
+    const budget = this.attackSizeTroops(grid, me, AI_RESERVE_RATIO, SALT_RESERVE);
+    if ((this.config.kind ?? "nation") === "nation" && this.kindOf.get(target) === "bot") {
+      const tribePool = Math.max(0, grid.troopsOf(target));
+      const wanted = Math.floor(tribePool * 4);
+      if (wanted <= budget) return wanted;
+      return budget < tribePool * 2 ? 0 : budget;
+    }
+    return budget;
   }
 
   /** Pick and queue one expand intent for this decision tick (or bank troops). */
@@ -855,13 +945,7 @@ export class RasterBotController {
     if (requested.size > 0) {
       const ask = enemies.find((e) => requested.has(e.target) && pool >= grid.troopsOf(e.target) * p.attackPoolRatio);
       if (ask) {
-        const available = pool * (1 - p.reserveFraction);
-        const troops = Math.max(1, Math.floor(available * p.attackCommit));
-        session.queueExpand(this.config.botId, {
-          targetX: map.x(ask.sample),
-          targetY: map.y(ask.sample),
-          percent: Math.min(100, Math.max(1, Math.round((troops / pool) * 100))),
-        });
+        this.queueTroops(grid, map, me, ask.sample, this.warStrikeTroops(grid, me, ask.target));
         return;
       }
     }
@@ -879,33 +963,39 @@ export class RasterBotController {
     }
 
     let sample: TileRef;
-    let fraction: number;
+    /** The player a war strike aims at (drives OpenFront's tribe-farming sizing); null = wilderness grab. */
+    let warTarget: PlayerId | null;
     // A "decisive" edge is well beyond the bare ratio — enough to be worth opening
     // a war over while cheap neutral land is still on the table.
     const decisive = beatable !== null && pool >= beatablePool * (p.attackPoolRatio + 0.5);
+    // OpenFront's war gate: attacks on players wait until the pool has banked
+    // past the seat's trigger ratio (expansion into wilderness is exempt) —
+    // nations strike in deliberate, weighty pushes instead of a constant drip.
+    const warReady = this.hasTriggerTroops(grid, me);
 
-    if (beatable && (!neutral || (p.aggression >= 0.5 && decisive))) {
+    if (beatable && warReady && (!neutral || (p.aggression >= 0.5 && decisive))) {
       sample = beatable.sample;
-      fraction = p.attackCommit;
+      warTarget = beatable.target;
     } else if (neutral) {
       sample = neutral.sample;
-      fraction = p.expandCommit;
-    } else if (beatable) {
+      warTarget = null;
+    } else if (beatable && warReady) {
       // No neutral land and only this rival is beatable.
       sample = beatable.sample;
-      fraction = p.attackCommit;
+      warTarget = beatable.target;
+    } else if (beatable) {
+      // Boxed in with a beatable rival but still below the trigger — bank.
+      return;
     } else {
       // Boxed in by stronger rivals only. Banking income is the right call —
       // unless the pool is saturating (capped at the territory-scaled ceiling),
       // in which case further income is lost, so spend down on the softest target.
       // With nothing left to fight (only allies or neutral-free borders), bank.
       if (enemies.length === 0) return;
-      const cap = maxTroops(grid.tileCountOf(me), grid.activeLevelsOf(me, "city")) *
-        grid.modifiersOf(me).troopCapMultiplier;
-      if (pool < cap * 0.9) return;
+      if (pool < this.troopCapOf(grid, me) * 0.9) return;
       const softest = enemies.reduce((a, b) => (grid.troopsOf(b.target) < grid.troopsOf(a.target) ? b : a));
       sample = softest.sample;
-      fraction = p.attackCommit;
+      warTarget = softest.target;
     }
 
     // Nation confusion (OpenFront): on lower difficulties a nation sometimes
@@ -923,14 +1013,15 @@ export class RasterBotController {
       }
     }
 
-    const available = pool * (1 - p.reserveFraction);
-    const troops = Math.max(1, Math.floor(available * fraction));
-    const percent = Math.min(100, Math.max(1, Math.round((troops / pool) * 100)));
-
-    session.queueExpand(this.config.botId, {
-      targetX: map.x(sample),
-      targetY: map.y(sample),
-      percent,
-    });
+    // OpenFront sizing: a war strike keeps the deep reserve at home (and farms
+    // a tribe proportionally), a wilderness grab keeps only the small expand
+    // reserve (near-full commitment). Sizing follows the *intended* target even
+    // when confusion misdirected the click — the mistake is in the aim, not the
+    // muster.
+    if (warTarget !== null) {
+      this.queueTroops(grid, map, me, sample, this.warStrikeTroops(grid, me, warTarget));
+    } else {
+      this.queueSizedAttack(grid, map, me, sample, AI_EXPAND_RATIO, SALT_EXPAND);
+    }
   }
 }

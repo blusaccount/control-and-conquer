@@ -17,6 +17,8 @@ export interface UiElements {
   buildMenu: HTMLDivElement;
   buildHint: HTMLDivElement;
   weaponsMenu: HTMLDivElement;
+  /** Wrapper around the Build/Weapons sections, hidden during the spawn phase. */
+  buildSections: HTMLDivElement;
   eventsPanel: HTMLDivElement;
   leaderboard: HTMLDivElement;
   menuOverlay: HTMLDivElement;
@@ -43,6 +45,7 @@ export const getUiElements = (): UiElements => {
   const buildMenu = document.querySelector<HTMLDivElement>("#buildMenu");
   const buildHint = document.querySelector<HTMLDivElement>("#buildHint");
   const weaponsMenu = document.querySelector<HTMLDivElement>("#weaponsMenu");
+  const buildSections = document.querySelector<HTMLDivElement>("#buildSections");
   const eventsPanel = document.querySelector<HTMLDivElement>("#events");
   const leaderboard = document.querySelector<HTMLDivElement>("#leaderboard");
   const menuOverlay = document.querySelector<HTMLDivElement>("#menuOverlay");
@@ -63,6 +66,7 @@ export const getUiElements = (): UiElements => {
     !buildMenu ||
     !buildHint ||
     !weaponsMenu ||
+    !buildSections ||
     !eventsPanel ||
     !leaderboard ||
     !menuOverlay ||
@@ -94,6 +98,7 @@ export const getUiElements = (): UiElements => {
     buildMenu,
     buildHint,
     weaponsMenu,
+    buildSections,
     eventsPanel,
     leaderboard,
     menuOverlay,

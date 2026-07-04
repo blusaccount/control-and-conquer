@@ -56,6 +56,14 @@ export interface RasterAllianceRequest {
 }
 
 /** Per-player snapshot row for raster mode. */
+/**
+ * Which class a seat plays as — OpenFront's public `PlayerType` (Human, Nation
+ * or Bot/"Tribe"). Public information in OpenFront too (its player-info
+ * overlay names the type), and it drives both the client's labelling and the
+ * nations' tribe-farming attack sizing.
+ */
+export type RasterPlayerKind = "human" | "bot" | "nation";
+
 export interface RasterPlayerInfo {
   /** Engine-side numeric id (1+). 0 reserved for NEUTRAL. */
   playerId: number;
@@ -63,6 +71,8 @@ export interface RasterPlayerInfo {
   name: string;
   /** Hex color string, e.g. "#3b82f6". */
   color: string;
+  /** Player class: human, full-strategy nation, or passive tribe filler. */
+  kind: RasterPlayerKind;
   /** Current troop pool. */
   troops: number;
   /** Current gold pool — the economy resource spent on buildings. */

@@ -95,15 +95,16 @@ test("two subscribers get distinct playerIds and distinct spawn tiles", () => {
   const bId = b[0].type === "SERVER_RASTER_PLAYER_ASSIGNED" ? b[0].payload.playerId : -1;
   assert.notEqual(aId, bId);
 
-  // After both join, the grid should have at least 2 distinct claimed tiles.
+  // After both join, each holds its own founding blob (disjoint by construction:
+  // a blob claims only unowned land).
   const grid = session.peekGrid();
   let claimedA = 0, claimedB = 0;
   for (let i = 0; i < grid.owner.length; i += 1) {
     if (grid.owner[i] === aId) claimedA += 1;
     if (grid.owner[i] === bId) claimedB += 1;
   }
-  assert.equal(claimedA, 1);
-  assert.equal(claimedB, 1);
+  assert.ok(claimedA > 1, "alice holds her founding blob");
+  assert.ok(claimedB > 1, "bob holds his founding blob");
 });
 
 test("startingTroops option seeds each player's pool", () => {

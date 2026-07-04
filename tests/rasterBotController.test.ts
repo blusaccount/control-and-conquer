@@ -17,9 +17,6 @@ const EAGER: RasterBotPersonality = {
   id: "test-eager",
   decisionCooldownTicks: 0,
   minPool: 1,
-  reserveFraction: 0.05,
-  expandCommit: 0.9,
-  attackCommit: 0.9,
   attackPoolRatio: 1.0,
   aggression: 0.9,
 };
@@ -182,15 +179,18 @@ test("a Bot filler unconditionally accepts an incoming alliance offer", () => {
   assert.ok(allied, "the Bot filler accepted the human's alliance offer");
 });
 
-test("a Tribe (bot) keeps poking a neighbour when no neutral land is left — no dead map", () => {
-  // OpenFront's Tribes never go idle: with the map full and a rival on their
-  // border, they weakly poke it (troops/20) instead of banking forever. Set up
-  // a bot boxed by a weak rival with zero neutral land and confirm the poke
-  // actually takes ground (churn), proving decideBot isn't passive.
+test("a Tribe (bot) strikes a neighbour once banked past its trigger — no dead map", () => {
+  // OpenFront's current Tribes bank to their trigger ratio (50–60% of max
+  // troops), then strike a bordering rival down to the war reserve at ~1/3
+  // odds per decision. Set up a bot boxed by a weak rival with zero neutral
+  // land, hand it a pool past the trigger, and confirm the strike actually
+  // takes ground (churn), proving decideBot isn't passive.
+  // Wide enough that neither side's share trips the 80% domination win.
+  const W = 12;
   const flat = buildTerrainFromMask({
-    width: 6, height: 1,
-    land: new Uint8Array([1, 1, 1, 1, 1, 1]),
-    elevation: new Uint8Array(6),
+    width: W, height: 1,
+    land: new Uint8Array(W).fill(1),
+    elevation: new Uint8Array(W),
   });
   const session = new RasterGameSession({ prebuiltMap: flat, spawnPhaseTicks: 0 });
   session.subscribe("human", () => {}); // player 1 (the rival)
@@ -204,13 +204,15 @@ test("a Tribe (bot) keeps poking a neighbour when no neutral land is left — no
   const grid = session.peekGrid();
   session.tick(); // leave the (0-tick) spawn phase before arranging the board
 
-  // Whole row to the weak rival, one border tile to the tribe — no neutral left.
-  for (let r = 0; r < 6; r += 1) grid.claim(r, 1);
-  grid.claim(0, p2);
-  // Freeze income and make the rival thin so the weak poke can land.
+  // Split the whole row between the two — no neutral left, nobody at the
+  // domination threshold (7/12 vs 5/12).
+  for (let r = 0; r < 7; r += 1) grid.claim(r, 1);
+  for (let r = 7; r < W; r += 1) grid.claim(r, p2);
+  // Freeze income and make the rival thin so the strike can land.
   grid.setModifiers(1, { ...IDENTITY_MODIFIERS, income: 0 });
   grid.setModifiers(p2, { ...IDENTITY_MODIFIERS, income: 0, neutralCostMultiplier: 0.5 });
-  grid.addTroops(1, 40 - grid.troopsOf(1)); // rival down to ~40 troops over 5 tiles
+  grid.addTroops(1, 40 - grid.troopsOf(1)); // rival down to ~40 troops over its 7 tiles
+  grid.addTroops(p2, 90_000 - grid.troopsOf(p2)); // tribe banked past its trigger ratio
 
   const rivalBefore = grid.tileCountOf(1);
   for (let i = 0; i < 400; i += 1) session.tick();

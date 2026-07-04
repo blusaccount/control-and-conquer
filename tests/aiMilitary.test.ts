@@ -10,9 +10,6 @@ const FAST: RasterBotPersonality = {
   id: "test",
   decisionCooldownTicks: 1,
   minPool: 0,
-  reserveFraction: 0.3,
-  expandCommit: 0.25,
-  attackCommit: 0.3,
   attackPoolRatio: 1.25,
   aggression: 0.5,
 };

@@ -32,7 +32,7 @@ test("a human stays unspawned until they pick a start position", () => {
   session.selectSpawn("human", map.x(ref), map.y(ref));
 
   assert.equal(grid.hasPlayer(1), true, "seated after selecting a spawn");
-  assert.equal(grid.tileCountOf(1), 1, "starts on the single chosen tile");
+  assert.ok(grid.tileCountOf(1) > 1, "starts on a founding blob, not a lone tile (OpenFront spawn radius)");
   assert.equal(grid.ownerOf(ref), 1, "the chosen tile is now ours");
 });
 
@@ -67,24 +67,33 @@ test("once the game is live the spawn is fixed and re-picks are ignored", () => 
   assert.equal(session.peekGrid().ownerOf(a), 1, "the original founding tile is still ours");
 });
 
-test("during the start phase a player can move their spawn freely", () => {
+test("a human's spawn pick starts the battle at once (OpenFront singleplayer)", () => {
+  // OpenFront's `SpawnExecution` ends the spawn phase the moment the human
+  // picks in a singleplayer game — no dead wait for the countdown. Every
+  // session here hosts exactly one human, so the same rule applies.
   const session = new RasterGameSession({ width: 32, height: 24, seed: 9, spawnPhaseTicks: 20 });
-  session.subscribe("human", () => {}, false);
+  const messages: RasterServerMessage[] = [];
+  session.subscribe("human", (m) => messages.push(m), false);
   const grid = session.peekGrid();
   const map = session.peekMap();
 
   const a = firstNeutralLand(session);
   session.selectSpawn("human", map.x(a), map.y(a));
-  assert.equal(grid.ownerOf(a), 1, "founded on the first pick");
-  assert.equal(grid.tileCountOf(1), 1);
+  assert.equal(grid.ownerOf(a), 1, "founded on the pick");
 
-  // Re-pick a different open tile: the spawn relocates, releasing the old one.
+  const snapshot = messages
+    .filter((m) => m.type === "SERVER_RASTER_SNAPSHOT")
+    .at(-1);
+  assert.ok(snapshot && snapshot.type === "SERVER_RASTER_SNAPSHOT");
+  assert.equal(snapshot.payload.phase, "playing", "the pick ends the spawn phase immediately");
+  assert.equal(snapshot.payload.spawnRemainingSeconds, 0);
+
+  // The game is live now, so a re-pick is ignored — the spawn is fixed.
+  const held = grid.tileCountOf(1);
   const b = a + 1;
-  assert.ok(grid.isCapturable(b) && grid.ownerOf(b) === 0, "a distinct open tile to move to");
   session.selectSpawn("human", map.x(b), map.y(b));
-  assert.equal(grid.ownerOf(b), 1, "the spawn moved to the re-picked tile");
-  assert.equal(grid.ownerOf(a), 0, "the old founding tile is released back to neutral");
-  assert.equal(grid.tileCountOf(1), 1, "still a single founding tile after the move");
+  assert.equal(grid.tileCountOf(1), held, "no relocation once the battle has begun");
+  assert.equal(grid.ownerOf(a), 1, "the founding tile is still ours");
 });
 
 test("re-picking your own current spawn tile is a harmless no-op", () => {
