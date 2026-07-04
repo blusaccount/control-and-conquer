@@ -1176,11 +1176,13 @@ export class RasterConflict {
   }
 
   /**
-   * Resolve `w`'s shot at `target`: an enemy transport or trade ship is sunk
-   * outright (neither has an HP pool in this engine — a transport's troops are
-   * lost with no refund, mirroring the old coast-defence behaviour this
-   * replaces); an enemy warship takes {@link WARSHIP_SHELL_DAMAGE} and, if that
-   * kills it, its home structure is demolished along with it.
+   * Resolve `w`'s shot at `target`: an enemy transport is sunk outright (no HP
+   * pool — its troops are lost with no refund); an enemy trade ship is
+   * **captured**, not sunk (OpenFront's piracy — it changes owner and sails to
+   * the captor's nearest port, which is paid on arrival; see
+   * {@link TradeSystem.captureShip}); an enemy warship takes
+   * {@link WARSHIP_SHELL_DAMAGE} and, if that kills it, its home structure is
+   * demolished along with it.
    */
   private fireOn(w: Warship, target: { kind: WarshipTargetKind; id: number }): void {
     if (target.kind === "transport") {
@@ -1189,7 +1191,7 @@ export class RasterConflict {
       return;
     }
     if (target.kind === "trade") {
-      this.trade.destroyShip(target.id);
+      this.trade.captureShip(target.id, w.owner);
       return;
     }
     const enemy = this.warships.find((x) => x.id === target.id);
