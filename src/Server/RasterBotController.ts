@@ -66,8 +66,16 @@ const NATION_BETRAYAL_TOLERANCE = 1;
 // bombs start flying. All deterministic (no RNG).
 // ---------------------------------------------------------------------------
 
-/** Defense posts a nation garrisons contested borders with. */
-const FORT_CAP = 2;
+/**
+ * Defense posts a nation garrisons contested borders with: a base pair, plus
+ * one more per {@link FORT_CAP_TILES_PER_EXTRA} tiles of territory (own
+ * heuristic — OpenFront's exact structure counts aren't public, but its large
+ * nations visibly field more posts than small ones). Capped so a sprawling
+ * empire doesn't carpet its borders.
+ */
+const FORT_CAP_BASE = 2;
+const FORT_CAP_TILES_PER_EXTRA = 25_000;
+const FORT_CAP_MAX = 6;
 /**
  * How close to a hostile border a fort must stand (Chebyshev tiles). Kept at
  * the structure-spacing distance so two forts fit around one contact point.
@@ -98,6 +106,14 @@ const EMOJI_HANDSHAKE = 4;
  * Low enough that the world-wide churn is a steady simmer, not a snowball.
  */
 const TRIBE_POKE_ODDS = 1 / 3;
+
+/**
+ * The slice of its pool a Tribe commits to **every** move — OpenFront's Bot
+ * `attackAmount`, `troops/20` = 5%, for neutral grabs and pokes alike. Applied
+ * to the raw pool (no reserve adjustment): a Tribe's restraint IS this small
+ * commit, not a held-back reserve.
+ */
+const TRIBE_COMMIT_PERCENT = 5;
 
 /**
  * Cheap deterministic hash of two integers onto [0, 1) — the confusion roll.
@@ -153,9 +169,13 @@ export const FILLER_PERSONALITY: RasterBotPersonality = {
   id: "filler",
   decisionCooldownTicks: 60,
   minPool: 20,
+  // The commit fractions below are unused for a Tribe — decideBot always
+  // commits the flat TRIBE_COMMIT_PERCENT (OpenFront's troops/20) instead of
+  // a reserve-adjusted slice. They stay populated so the personality remains
+  // a complete, valid preset.
   reserveFraction: 0.5,
-  expandCommit: 0.4, // grab a healthy bite of cheap neutral land each poke
-  attackCommit: 0.05, // OpenFront's Bot attackAmount = troops/20
+  expandCommit: 0.05,
+  attackCommit: 0.05,
   attackPoolRatio: 2.5,
   aggression: 0.05,
 };
@@ -450,7 +470,11 @@ export class RasterBotController {
         const y = map.y(ref);
         return samples.some(([sx, sy]) => Math.max(Math.abs(sx - x), Math.abs(sy - y)) <= FORT_BORDER_RANGE);
       };
-      if (this.tryQueueBuild(grid, map, "fort", nearHostileBorder, FORT_CAP)) return true;
+      const fortCap = Math.min(
+        FORT_CAP_MAX,
+        FORT_CAP_BASE + Math.floor(grid.tileCountOf(me) / FORT_CAP_TILES_PER_EXTRA),
+      );
+      if (this.tryQueueBuild(grid, map, "fort", nearHostileBorder, fortCap)) return true;
     }
 
     if (cities < 2) return false; // the dearer tiers wait for a second city
@@ -780,27 +804,35 @@ export class RasterBotController {
    * A passive **Bot** (Tribe)'s move, mirroring OpenFront's `TribeExecution`:
    * grab adjacent **neutral** land when there is any (the early-game blanket),
    * otherwise **weakly poke a bordering rival** at roughly OpenFront's odds
-   * (~1/3 for a non-ally) — a `troops/20` jab that rarely conquers much but
-   * keeps the borders alive with constant low-level churn instead of a dead,
-   * frozen map. Never allies-first, never banks idle: a Tribe is always fidgeting.
-   * Deterministic (the odds roll is a per-tick/-seat hash, no RNG).
+   * (~1/3 for a non-ally). Every move commits OpenFront's Bot `attackAmount` —
+   * {@link TRIBE_COMMIT_PERCENT} (troops/20) of the raw pool — a jab that
+   * rarely conquers much but keeps the borders alive with constant low-level
+   * churn instead of a dead, frozen map. Never allies-first, never banks idle:
+   * a Tribe is always fidgeting. Deterministic (the odds roll is a
+   * per-tick/-seat hash, no RNG).
    */
   private decideBot(grid: TerritoryGrid, map: GameMap): void {
     const me = this.myPlayerId;
     const session = this.session;
     if (me === null || !session) return;
-    const p = this.config.personality;
-    const pool = grid.troopsOf(me);
     const alliances = session.peekAlliances();
 
     const targets = grid.frontierTargets(me);
     if (targets.length === 0) return;
 
+    const commit = (sample: TileRef): void => {
+      session.queueExpand(this.config.botId, {
+        targetX: map.x(sample),
+        targetY: map.y(sample),
+        percent: TRIBE_COMMIT_PERCENT,
+      });
+    };
+
     // Prefer cheap neutral land whenever it borders us (OpenFront's terraNullius
     // preference) — this is what makes tribes blanket the empty map so fast.
     const neutral = targets.find((t) => t.target === NEUTRAL_PLAYER) ?? null;
     if (neutral) {
-      this.queueCommit(grid, map, me, neutral.sample, p.expandCommit);
+      commit(neutral.sample);
       return;
     }
 
@@ -812,21 +844,7 @@ export class RasterBotController {
     // Jab the weakest bordering rival (best chance the weak poke actually lands),
     // regardless of relative strength — a Tribe attacks by odds, not advantage.
     const prey = enemies.reduce((a, b) => (grid.troopsOf(b.target) < grid.troopsOf(a.target) ? b : a));
-    this.queueCommit(grid, map, me, prey.sample, p.attackCommit);
-  }
-
-  /** Commit `fraction` of the reserve-adjusted pool toward `sample`, as a percent expand order. */
-  private queueCommit(grid: TerritoryGrid, map: GameMap, me: PlayerId, sample: TileRef, fraction: number): void {
-    const session = this.session;
-    if (!session) return;
-    const pool = grid.troopsOf(me);
-    const available = pool * (1 - this.config.personality.reserveFraction);
-    const troops = Math.max(1, Math.floor(available * fraction));
-    session.queueExpand(this.config.botId, {
-      targetX: map.x(sample),
-      targetY: map.y(sample),
-      percent: Math.min(100, Math.max(1, Math.round((troops / Math.max(1, pool)) * 100))),
-    });
+    commit(prey.sample);
   }
 
   /** Pick and queue one expand intent for this decision tick (or bank troops). */
@@ -847,6 +865,26 @@ export class RasterBotController {
     const enemies = targets.filter(
       (t) => t.target !== NEUTRAL_PLAYER && !alliances.areAllied(me, t.target),
     );
+
+    // Retaliation first: a nation under attack FIGHTS BACK. While the most
+    // recent attacker still presses our border, it is the preferred
+    // conventional target — no strength gate; rolling over passively because
+    // the aggressor "wasn't the weakest beatable rival" is exactly the
+    // unresponsive-AI feel OpenFront's nations never give. (The same signal
+    // already drives the nuclear doctrine's lead trigger in maybeNuke.)
+    if (this.lastAttackedBy !== 0) {
+      const foe = enemies.find((e) => e.target === this.lastAttackedBy);
+      if (foe) {
+        const available = pool * (1 - p.reserveFraction);
+        const troops = Math.max(1, Math.floor(available * p.attackCommit));
+        session.queueExpand(this.config.botId, {
+          targetX: map.x(foe.sample),
+          targetY: map.y(foe.sample),
+          percent: Math.min(100, Math.max(1, Math.round((troops / pool) * 100))),
+        });
+        return;
+      }
+    }
 
     // Honour an ally's target request (OpenFront): if an ally has asked us to
     // attack someone we border and can plausibly beat, oblige at once — a

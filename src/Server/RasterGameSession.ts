@@ -1219,6 +1219,11 @@ export class RasterGameSession {
     return this.conflict.tick;
   }
 
+  /** Test helper: the engine's active attack fronts (attacker/target/troops/anchor). */
+  public peekFronts(): ReturnType<RasterConflict["activeFronts"]> {
+    return this.conflict.activeFronts();
+  }
+
   /**
    * Eliminate any player that now holds no territory — a nation is beaten only
    * when its *entire* territory has been captured; there is no capital shortcut.

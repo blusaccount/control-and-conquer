@@ -182,6 +182,57 @@ test("a Bot filler unconditionally accepts an incoming alliance offer", () => {
   assert.ok(allied, "the Bot filler accepted the human's alliance offer");
 });
 
+test("a Nation retaliates conventionally against its last attacker, even a stronger one", () => {
+  // Two big blocks sharing a border (each >100 tiles so the dead-defender
+  // sweep can't end the war in one capture): a strong human and a timid
+  // nation that would never attack a stronger rival on its own — with no
+  // neutral land and an unbeatable neighbour it banks forever. After the
+  // human attacks it, the retaliation path must fight back: first the
+  // counter-commits net against the incoming front (OpenFront's
+  // incoming-cancel), then — once that front is spent — a real counter-front
+  // opens against the human.
+  const width = 30;
+  const height = 8;
+  const flat = buildTerrainFromMask({
+    width, height,
+    land: new Uint8Array(width * height).fill(1),
+    elevation: new Uint8Array(width * height),
+  });
+  const session = new RasterGameSession({ prebuiltMap: flat, spawnPhaseTicks: 0 });
+  session.subscribe("human", () => {}); // player 1
+  const bot = new RasterBotController({
+    botId: "nation",
+    kind: "nation",
+    personality: { ...FILLER_PERSONALITY, id: "timid", decisionCooldownTicks: 1, minPool: 1, attackPoolRatio: 5, aggression: 0 },
+  });
+  bot.attach(session); // player 2
+  const p2 = bot.getPlayerId()!;
+  const grid = session.peekGrid();
+  session.tick(); // leave the (0-tick) spawn phase before arranging the board
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      grid.claim(y * width + x, x < 15 ? 1 : p2);
+    }
+  }
+  grid.setModifiers(1, { ...IDENTITY_MODIFIERS, income: 0 });
+  grid.setModifiers(p2, { ...IDENTITY_MODIFIERS, income: 0 });
+  grid.addTroops(1, 100_000 - grid.troopsOf(1));
+  grid.addTroops(p2, 10_000 - grid.troopsOf(p2));
+  const humanTilesBefore = grid.tileCountOf(1);
+
+  // A modest human push — enough to stamp lastAttackedBy, not enough to win.
+  session.queueExpand("human", { targetX: 20, targetY: 4, percent: 3 });
+  let foughtBack = false;
+  for (let i = 0; i < 300 && !foughtBack; i += 1) {
+    session.tick();
+    foughtBack =
+      session.peekFronts().some((f) => f.attacker === p2 && f.target === 1) ||
+      grid.tileCountOf(1) < humanTilesBefore;
+  }
+  assert.ok(foughtBack, "the nation fought back against its attacker instead of banking");
+});
+
 test("a Tribe (bot) keeps poking a neighbour when no neutral land is left — no dead map", () => {
   // OpenFront's Tribes never go idle: with the map full and a rival on their
   // border, they weakly poke it (troops/20) instead of banking forever. Set up
