@@ -91,14 +91,98 @@ Client                              Server
 
 ---
 
+## Server-Refereed Lockstep (the scalable multiplayer wire mode)
+
+Alongside the snapshot-streaming path above, the server supports a **lockstep
+relay mode** (`Core/lockstep.ts`) designed for large lobbies, where streaming
+owner-deltas to every client would dominate egress:
+
+- A client joins with `lockstep: true`. The server seats it as usual but sends
+  it no snapshots — only a one-time `SERVER_RASTER_LOCKSTEP_START` (map id,
+  terrain hash, session options, the full seat list) and then one
+  `SERVER_RASTER_TURN` per tick.
+- Every command entering the session — human intents *and* server-side bot
+  decisions — is recorded at the session's public entry points, before
+  validation, and relayed in the next turn in exact application order.
+- The client runs the identical deterministic sim in a Web Worker
+  (`Client/lockstep/lockstepWorker.ts` + `replica.ts`): per received turn it
+  applies the commands through the same session entry points, then ticks. The
+  server's cadence paces the replica; the rendering client consumes the
+  replica's locally generated message stream unchanged.
+- **The server still simulates** — it is the referee, not a relay. Every
+  `HASH_INTERVAL_TICKS` turns it embeds its state hash (portable FNV-1a over
+  ownership, pools, structures, fallout, clock); a replica that disagrees
+  surfaces `SERVER_RASTER_DESYNC`. Server-side state remains authoritative for
+  anti-cheat and is the basis for future reconnect snapshots.
+- Ordering guarantee: turns are flushed at the top of `tick()`, so a turn
+  holds exactly the commands applied since the previous tick, and the hash is
+  taken at the one instant referee and replica agree by construction (all of
+  the turn's commands applied, tick not yet simulated). Commands bots issue
+  *during* a tick's snapshot broadcast land in the next turn — which is also
+  when the sim first reads them on both sides.
+
+Wire cost per lockstep client is a few KB/s of intents instead of the
+owner-delta stream — the property that makes ~100-player lobbies affordable.
+Try it against a running server with `?net=lockstep` in the client URL
+(`?net=ws` selects the snapshot-streaming thin client).
+
+Determinism replay coverage: `tests/lockstepReplica.test.ts` replays a full
+bot-field match from the recorded turn stream and asserts bit-identical state.
+
+### Private lobbies (shared PvP matches)
+
+Human-vs-human runs on the lockstep mode via private lobbies
+(`MatchRegistry`, wire types in `Core/messages.ts`):
+
+- `CLIENT_RASTER_LOBBY_CREATE` opens a waiting room with the host's chosen
+  map/difficulty/field size and returns a 6-character share code; members join
+  with `CLIENT_RASTER_LOBBY_JOIN` (optionally carrying a display name), and
+  every change broadcasts a `SERVER_RASTER_LOBBY_STATE`.
+- `CLIENT_RASTER_LOBBY_START` (host only) seats **all** members into one
+  shared lockstep session — plus the AI field — and sends each its setup.
+  Seats are fixed at start; the replica protocol has no seat-add event, which
+  is why a started room cannot be joined.
+- Shared matches open with a longer start phase
+  (`LOBBY_SPAWN_PHASE_SECONDS`); the battle begins early only once **every**
+  human has picked a spawn (the solo pick-and-go rule, generalised).
+- In the client, the whole flow lives on one WebSocket: the lobby UI drives
+  it first (`Client/lobby.ts`), then hands socket + setup to the game client,
+  which attaches the lockstep transport to it (no re-join, no race).
+
+### Reconnect (resume tokens + turn backlog)
+
+Every `SERVER_RASTER_LOCKSTEP_START` carries a private `resumeToken`. When a
+socket dies mid-match the seat is **not** removed — it goes mute and keeps
+being simulated identically on every replica (removing it would desync the
+spawn-phase auto-seat logic, and an AFK nation should keep its territory
+anyway). Within `LOCKSTEP_RECONNECT_GRACE_MS` the client can present the
+token on a fresh connection (`CLIENT_RASTER_RESUME`): the server re-binds the
+seat (migrating any still-pending intents, so the referee never drops a
+command the replicas already received) and replies with the setup plus the
+match's full turn history as `SERVER_RASTER_TURN_BACKLOG` messages, sliced
+into bounded chunks so no single serialization stalls the shared tick loop.
+A fresh replica replays it (deterministic fast-forward) and rejoins the live
+per-tick stream. The lockstep transport does this automatically with
+exponential backoff; a refused resume is surfaced as a fatal error and winds
+the client down instead of freezing it. Ended matches are reaped immediately;
+one whose last human stays gone past the grace is reaped too. A seat whose
+socket dies unspawned during the start phase is auto-seated via a recorded
+pick, so it cannot veto the everyone-picked early start.
+
+The turn log doubles as a complete match replay; a replay viewer only needs
+to feed it to a replica at its own pace.
+
+Lobby/resume coverage: `tests/lockstepLobby.test.ts` (multi-human spawn
+gating, identical member turn streams, backlog convergence, lifecycle edges).
+
+---
+
 ## Known Limitations (MVP)
 
 | # | Limitation | Impact |
 |---|-----------|--------|
-| 1 | **No player identity / auth** — the server trusts the socket; one socket = one solo match. | Fine for solo-vs-bot; real PvP needs identity. |
-| 2 | **No reconnection / resync** — a dropped socket ends the match; the terrain cache is keyed by `terrainHash` but there is no session resume. | Reloading starts a fresh match. |
-| 3 | **Solo matches only** — every client gets an isolated session vs one bot. There is no shared-session PvP or matchmaking yet. | No human-vs-human. |
-| 4 | **Full ownership raster every tick** — the owner array is re-sent each tick (terrain is sent once). Acceptable at current map sizes; delta encoding will matter for larger maps or many players. | Bandwidth scales with map size × tick rate. |
-| 5 | **No rate limiting beyond per-tick batching** — intents are buffered and applied at tick boundaries, but there is no per-client action-frequency cap. | Programmatic spam is throttled only by the tick cadence. |
-
-Items 1 and 3 are the highest-priority gaps before real multiplayer.
+| 1 | **No player identity / auth** — the server trusts the socket; resume tokens are per-match secrets, not accounts. | Fine for private lobbies; ranked/public needs identity. |
+| 2 | **No public lobbies / matchmaking** — shared matches are code-invite only; nothing schedules open games. | Friends-only PvP for now. |
+| 3 | **Snapshot-thin-client path unchanged** — the `websocket` transport still streams full owner deltas; large lobbies should use lockstep. | Bandwidth scales with map size × clients on that path. |
+| 4 | **No rate limiting beyond per-tick batching** — intents are buffered and applied at tick boundaries, but there is no per-client action-frequency cap. | Programmatic spam is throttled only by the tick cadence. |
+| 5 | **Desync recovery is manual** — a desynced replica warns but does not yet auto-resync (the resume flow could rebuild it from the backlog). | Rare; requires a rejoin. |

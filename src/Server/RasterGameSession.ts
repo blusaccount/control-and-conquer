@@ -43,7 +43,15 @@ import {
 } from "./botField.js";
 import type { RasterMatchPhase } from "../Core/types.js";
 import { attachOwnership, buildSharedSnapshot, encodeOwnerDelta, encodeOwners, encodeTerrain, type PlayerMeta } from "./rasterSerialization.js";
-import type { RasterSnapshot } from "../Core/types.js";
+import type { RasterClientMessage, RasterSnapshot } from "../Core/types.js";
+import {
+  fnv1aInit,
+  fnv1aMix,
+  HASH_INTERVAL_TICKS,
+  type LockstepSeat,
+  type RasterTurn,
+  type RasterTurnCommand,
+} from "../Core/lockstep.js";
 
 /** Human-readable, correctly-articled label for an event-log line, e.g. "an Atom Bomb". */
 const nukeLabel = (kind: NukeKind): string => `${NUKE_DEFS[kind].article} ${NUKE_DEFS[kind].name}`;
@@ -79,6 +87,14 @@ interface RasterSubscriber {
    * (full-owner) snapshot is sent. Always `null` for headless subscribers.
    */
   lastOwner: Uint16Array | null;
+  /**
+   * Lockstep subscriber: simulates locally off the relayed turn stream. Gets
+   * `SERVER_RASTER_TURN` messages only — no snapshots, no rejections, no
+   * match-end payloads; its own replica reproduces all of those. The referee
+   * sim here stays authoritative for anti-cheat and (later) reconnect
+   * snapshots, but the wire cost per lockstep client is just the intents.
+   */
+  lockstep: boolean;
 }
 
 interface PendingExpand {
@@ -320,6 +336,25 @@ export class RasterGameSession {
   private lastNukeInterceptions: RasterNukeInterception[] = [];
   /** Determines spawn placement: each new subscriber takes the next slot. */
   private nextPlayerId: PlayerId = 1;
+  /**
+   * Commands recorded since the last relay turn was flushed, in exact
+   * application order (see {@link record}). Drained at the top of every tick
+   * into a {@link RasterTurn} for the lockstep subscribers.
+   */
+  private recordedCommands: RasterTurnCommand[] = [];
+  /** Dense relay-turn sequence number: one per tick, spawn phase included. */
+  private turnCounter = 0;
+  /** Live lockstep subscribers, counted so `recordingEnabled` stays O(1). */
+  private lockstepSubscriberCount = 0;
+  /** Optional tap on the relay-turn stream (tests, future replay recording). */
+  private turnListener: ((turn: RasterTurn) => void) | null = null;
+  /**
+   * Every relay turn flushed so far — the match's full command history. Kept
+   * only while recording is active (lockstep matches). A resuming client's
+   * fresh replica replays it to fast-forward to the live state; it is also,
+   * by construction, a complete replay of the match.
+   */
+  private readonly turnLog: RasterTurn[] = [];
   private matchEndedBroadcast = false;
   /**
    * The match's winner once decided, including a timeLimit finish (where
@@ -498,6 +533,7 @@ export class RasterGameSession {
     wantsRaster = true,
     playerName?: string,
     kind: RasterPlayerKind = "human",
+    lockstep = false,
   ): (() => void) | null {
     if (this.nextPlayerId > MAX_PLAYERS) {
       return null;
@@ -516,8 +552,10 @@ export class RasterGameSession {
       wantsRaster,
       kind,
       lastOwner: null,
+      lockstep,
     };
     this.subscribers.set(clientId, subscriber);
+    if (lockstep) this.lockstepSubscriberCount += 1;
 
     // Bots (and any auto-spawn caller) take their precomputed spawn immediately;
     // a human is left *unspawned* until they pick a start position via
@@ -527,16 +565,207 @@ export class RasterGameSession {
       if (spawn !== undefined) this.seatPlayer(playerId, spawn, kind);
     }
 
-    send({
-      type: "SERVER_RASTER_PLAYER_ASSIGNED",
-      payload: { playerId, name: meta.name, color: meta.color },
-    });
-    // First snapshot includes the terrain so the client can paint the map.
-    this.sendSnapshotTo(subscriber);
+    // A lockstep subscriber's replica produces the assignment and every
+    // snapshot locally — the referee sends it nothing but the setup (via the
+    // registry) and the per-tick turns.
+    if (!lockstep) {
+      send({
+        type: "SERVER_RASTER_PLAYER_ASSIGNED",
+        payload: { playerId, name: meta.name, color: meta.color },
+      });
+      // First snapshot includes the terrain so the client can paint the map.
+      this.sendSnapshotTo(subscriber);
+    }
 
     return () => {
-      this.subscribers.delete(clientId);
+      // Look up via the subscriber's *current* id — a resume rebind may have
+      // re-keyed the seat since this closure was created. Idempotent.
+      if (this.subscribers.get(subscriber.clientId) === subscriber) {
+        this.subscribers.delete(subscriber.clientId);
+        if (subscriber.lockstep) this.lockstepSubscriberCount -= 1;
+      }
     };
+  }
+
+  /** The seated player id behind `clientId`, or null if unknown. */
+  public playerIdOf(clientId: string): PlayerId | null {
+    return this.subscribers.get(clientId)?.playerId ?? null;
+  }
+
+  /**
+   * Every seat in ascending playerId order, as a lockstep replica must mirror
+   * it (same ids, kinds and names → identical seating mutations and event
+   * lines). Snapshot of the current subscriber set; taken right after the
+   * match is seated, before any turn is relayed.
+   */
+  public seatList(): LockstepSeat[] {
+    const seats: LockstepSeat[] = [];
+    for (const sub of this.subscribers.values()) {
+      const meta = this.playerMeta.get(sub.playerId);
+      seats.push({
+        playerId: sub.playerId,
+        kind: sub.kind,
+        name: meta?.name ?? `Player ${sub.playerId}`,
+        color: meta?.color ?? "#888",
+      });
+    }
+    return seats.sort((a, b) => a.playerId - b.playerId);
+  }
+
+  /** Fingerprint of this session's terrain bytes (replica integrity check). */
+  public peekTerrainHash(): string {
+    return this.terrainHash;
+  }
+
+  /** Map name this session runs on (lockstep setup payload). */
+  public peekMapName(): string {
+    return this.mapName;
+  }
+
+  /** Human starting troop pool (lockstep setup payload). */
+  public peekStartingTroops(): number {
+    return this.startingTroops;
+  }
+
+  /** Configured start-phase length in ticks (lockstep setup payload). */
+  public peekSpawnPhaseTicks(): number {
+    return this.spawnPhaseTicks;
+  }
+
+  /** Tap the relay-turn stream (tests / replay recording). Enables recording. */
+  public setTurnListener(listener: ((turn: RasterTurn) => void) | null): void {
+    this.turnListener = listener;
+  }
+
+  /**
+   * Whether commands need to be recorded at all. False for plain
+   * snapshot-streamed sessions, so the record calls in every command path stay
+   * zero-cost unless someone actually consumes turns. O(1): a subscriber scan
+   * here would run at the top of every command with up to a 400-bot field.
+   */
+  private recordingEnabled(): boolean {
+    return this.turnListener !== null || this.lockstepSubscriberCount > 0;
+  }
+
+  /**
+   * Record one command against the acting player, in application order. Called
+   * at the top of every public command entry point, *before* validation — the
+   * replica runs the identical validation, so recording rejected commands too
+   * keeps both sides byte-for-byte on the same path.
+   */
+  private record(playerId: PlayerId, command: RasterClientMessage): void {
+    if (!this.recordingEnabled()) return;
+    this.recordedCommands.push({ playerId, command });
+  }
+
+  /**
+   * Flush the recorded commands as the tick's relay turn — called first thing
+   * in {@link tick}, so a turn holds exactly the commands applied since the
+   * previous tick and the embedded hash is taken at the one instant referee
+   * and replica agree by construction (all of this turn's commands applied,
+   * tick not yet simulated).
+   */
+  private flushTurn(): void {
+    if (!this.recordingEnabled()) {
+      this.recordedCommands.length = 0;
+      return;
+    }
+    const turn: RasterTurn = {
+      turn: this.turnCounter,
+      commands: this.recordedCommands,
+      ...(this.turnCounter % HASH_INTERVAL_TICKS === 0 ? { hash: this.stateHash() } : {}),
+    };
+    this.recordedCommands = [];
+    this.turnCounter += 1;
+    this.turnLog.push(turn);
+    this.turnListener?.(turn);
+    for (const sub of this.subscribers.values()) {
+      if (sub.lockstep) sub.send({ type: "SERVER_RASTER_TURN", payload: turn });
+    }
+  }
+
+  /** The full relay-turn history (resume backlog / replay source). */
+  public turnBacklog(): readonly RasterTurn[] {
+    return this.turnLog;
+  }
+
+  /**
+   * Re-bind a seat to a new connection id and message sink — the resume path
+   * after a dropped socket. The seat itself (player id, kind, meta) is
+   * untouched, so nothing about the simulation changes; only where its
+   * messages go and under which client id its commands arrive. No-ops if the
+   * old id is unknown or the new id is already taken.
+   *
+   * Pending intents queued under the old id are re-keyed too. They were
+   * already recorded into the relay stream at queue time, so every replica
+   * WILL apply them — if the referee dropped them at drain time (a dangling
+   * clientId misses the subscriber lookup), referee and replicas would
+   * diverge at the next hash turn.
+   */
+  public rebindSubscriber(oldClientId: string, newClientId: string, send: RasterMessageHandler): boolean {
+    const subscriber = this.subscribers.get(oldClientId);
+    if (!subscriber) return false;
+    if (newClientId !== oldClientId && this.subscribers.has(newClientId)) return false;
+    this.subscribers.delete(oldClientId);
+    subscriber.clientId = newClientId;
+    subscriber.send = send;
+    this.subscribers.set(newClientId, subscriber);
+    if (newClientId !== oldClientId) {
+      for (const pending of this.pendingExpands) if (pending.clientId === oldClientId) pending.clientId = newClientId;
+      for (const pending of this.pendingBuilds) if (pending.clientId === oldClientId) pending.clientId = newClientId;
+      for (const pending of this.pendingNukes) if (pending.clientId === oldClientId) pending.clientId = newClientId;
+    }
+    return true;
+  }
+
+  /**
+   * Seat an unspawned player at their reserved spawn tile, as the countdown
+   * fallback would. Called when a client abandons the start phase (socket
+   * gone, nothing to wait for) so their empty seat stops vetoing the
+   * everyone-picked early start. Routed through {@link selectSpawn}, so the
+   * pick is recorded and replays identically on every replica. No-op outside
+   * the start phase or for a seat that already holds ground.
+   */
+  public autoPickSpawn(clientId: string): void {
+    const subscriber = this.subscribers.get(clientId);
+    if (!subscriber || this.phase !== "spawn" || this.grid.hasPlayer(subscriber.playerId)) return;
+    const spawn = this.spawnTiles[subscriber.playerId - 1] ?? this.firstFreeSpawn();
+    if (spawn === undefined) return;
+    this.selectSpawn(clientId, this.map.x(spawn), this.map.y(spawn));
+  }
+
+  /** Whether the match has ended (winner decided or time limit hit). */
+  public isEnded(): boolean {
+    return this.matchEndedBroadcast;
+  }
+
+  /**
+   * Deterministic fingerprint of the simulation state: the full ownership
+   * raster, every player's pool/treasury/structures, the match clock and
+   * fallout. Folded with portable integer math only (see `Core/lockstep`), so
+   * referee (Node) and replica (browser worker) agree bit-for-bit whenever
+   * their sims do — and disagree fast when they don't.
+   */
+  public stateHash(): number {
+    let h = fnv1aInit();
+    h = fnv1aMix(h, this.conflict.tick);
+    h = fnv1aMix(h, this.phase === "spawn" ? 1 : 2);
+    h = fnv1aMix(h, this.spawnTicksElapsed);
+    const owner = this.grid.owner;
+    for (let i = 0; i < owner.length; i += 1) h = fnv1aMix(h, owner[i]);
+    for (const id of this.grid.players()) {
+      h = fnv1aMix(h, id);
+      h = fnv1aMix(h, Math.floor(this.grid.troopsOf(id)));
+      h = fnv1aMix(h, Math.floor(this.grid.goldOf(id)));
+    }
+    for (const [ref, type] of this.grid.buildingEntries()) {
+      h = fnv1aMix(h, ref);
+      h = fnv1aMix(h, type.charCodeAt(0) * 32 + type.length); // stable stand-in for the type string
+      h = fnv1aMix(h, this.grid.buildingLevelOf(ref));
+    }
+    const fallout = this.grid.falloutTiles();
+    for (let i = 0; i < fallout.length; i += 1) h = fnv1aMix(h, fallout[i]);
+    return h;
   }
 
   /**
@@ -647,13 +876,15 @@ export class RasterGameSession {
   public selectSpawn(clientId: string, x: number, y: number): void {
     const subscriber = this.subscribers.get(clientId);
     if (!subscriber || this.matchEndedBroadcast) return;
+    this.record(subscriber.playerId, { type: "CLIENT_RASTER_SELECT_SPAWN", payload: { x, y } });
     const playerId = subscriber.playerId;
     const alreadySpawned = this.grid.hasPlayer(playerId);
     // Re-picking is only allowed while the start phase runs; once territory is
     // live a player keeps the ground they hold.
     if (alreadySpawned && this.phase !== "spawn") return;
 
-    const reject = (message: string): void =>
+    const reject = (message: string): void => {
+      if (subscriber.lockstep) return; // the replica raises the identical rejection
       subscriber.send({
         type: "SERVER_RASTER_ACTION_REJECTED",
         payload: {
@@ -662,6 +893,7 @@ export class RasterGameSession {
           intent: { targetX: Math.max(0, x | 0), targetY: Math.max(0, y | 0), percent: 50 },
         },
       });
+    };
 
     if (!Number.isInteger(x) || !Number.isInteger(y) || !this.map.inBounds(x, y)) {
       reject("Pick a tile on the map to start on.");
@@ -678,14 +910,24 @@ export class RasterGameSession {
     else this.seatPlayer(playerId, ref, subscriber.kind);
     // OpenFront singleplayer: "spawn ends when player selects a spawn location"
     // (its `SpawnExecution` calls `endSpawnPhase()` for a human pick in a
-    // singleplayer game). Every session here hosts exactly one human against an
-    // AI field, so a human's pick starts the battle at once — no dead wait for
-    // the countdown. The countdown remains only as the fallback for a human who
-    // never clicks (they are auto-seated when it elapses).
-    if (this.phase === "spawn" && subscriber.kind === "human") this.beginPlayingPhase();
+    // singleplayer game). Generalised for shared lobbies: the battle starts
+    // early only once **every** human seat has picked — with one human that is
+    // the classic pick-and-go, with several nobody's countdown is stolen by the
+    // fastest clicker. The countdown remains as the fallback for no-shows.
+    if (this.phase === "spawn" && subscriber.kind === "human" && this.allHumansPicked()) {
+      this.beginPlayingPhase();
+    }
     // Push the seated state straight away so the client can zoom to the spawn
     // without waiting for the next tick.
     this.sendSnapshotTo(subscriber);
+  }
+
+  /** Whether every human seat has founded its nation (picked a spawn). */
+  private allHumansPicked(): boolean {
+    for (const subscriber of this.subscribers.values()) {
+      if (subscriber.kind === "human" && !this.grid.hasPlayer(subscriber.playerId)) return false;
+    }
+    return true;
   }
 
   /**
@@ -711,23 +953,29 @@ export class RasterGameSession {
   }
 
   public queueExpand(clientId: string, intent: RasterExpandIntent): void {
-    if (!this.subscribers.has(clientId)) return;
+    const subscriber = this.subscribers.get(clientId);
+    if (!subscriber) return;
     const pending = this.pendingExpands.reduce((n, p) => (p.clientId === clientId ? n + 1 : n), 0);
     if (pending >= MAX_PENDING_PER_CLIENT) return;
+    this.record(subscriber.playerId, { type: "CLIENT_RASTER_EXPAND", payload: intent });
     this.pendingExpands.push({ clientId, intent });
   }
 
   public queueBuild(clientId: string, intent: RasterBuildIntent): void {
-    if (!this.subscribers.has(clientId)) return;
+    const subscriber = this.subscribers.get(clientId);
+    if (!subscriber) return;
     const pending = this.pendingBuilds.reduce((n, p) => (p.clientId === clientId ? n + 1 : n), 0);
     if (pending >= MAX_PENDING_PER_CLIENT) return;
+    this.record(subscriber.playerId, { type: "CLIENT_RASTER_BUILD", payload: intent });
     this.pendingBuilds.push({ clientId, intent });
   }
 
   public queueNuke(clientId: string, intent: RasterNukeIntent): void {
-    if (!this.subscribers.has(clientId)) return;
+    const subscriber = this.subscribers.get(clientId);
+    if (!subscriber) return;
     const pending = this.pendingNukes.reduce((n, p) => (p.clientId === clientId ? n + 1 : n), 0);
     if (pending >= MAX_PENDING_PER_CLIENT) return;
+    this.record(subscriber.playerId, { type: "CLIENT_RASTER_NUKE", payload: intent });
     this.pendingNukes.push({ clientId, intent });
   }
 
@@ -743,6 +991,16 @@ export class RasterGameSession {
    * Diplomacy is settled the instant it is issued (unlike expand/build, which
    * queue for the next tick), so this runs synchronously off the message.
    */
+  /**
+   * Record a command for the player behind `clientId` (no-op for unknown
+   * clients, which every entry point drops anyway). The diplomacy entry points
+   * call this before their own validation, mirroring {@link record}'s contract.
+   */
+  private recordFor(clientId: string, command: RasterClientMessage): void {
+    const subscriber = this.subscribers.get(clientId);
+    if (subscriber) this.record(subscriber.playerId, command);
+  }
+
   private resolveDiplomacy(clientId: string, targetId: PlayerId): PlayerId | null {
     if (this.matchEndedBroadcast) return null;
     const subscriber = this.subscribers.get(clientId);
@@ -761,6 +1019,7 @@ export class RasterGameSession {
    * existing pact.
    */
   public proposeAlliance(clientId: string, targetId: PlayerId): void {
+    this.recordFor(clientId, { type: "CLIENT_RASTER_ALLY_PROPOSE", payload: { targetId } });
     const me = this.resolveDiplomacy(clientId, targetId);
     if (me === null) return;
     const outcome = this.alliances.propose(me, targetId, this.conflict.tick);
@@ -773,6 +1032,7 @@ export class RasterGameSession {
 
   /** Accept (`accept: true`) or decline a pending alliance offer from `targetId`. */
   public respondAlliance(clientId: string, targetId: PlayerId, accept: boolean): void {
+    this.recordFor(clientId, { type: "CLIENT_RASTER_ALLY_RESPOND", payload: { targetId, accept } });
     const me = this.resolveDiplomacy(clientId, targetId);
     if (me === null) return;
     if (accept) {
@@ -790,6 +1050,7 @@ export class RasterGameSession {
    * shortly before an alliance lapses).
    */
   public renewAlliance(clientId: string, targetId: PlayerId): void {
+    this.recordFor(clientId, { type: "CLIENT_RASTER_ALLY_RENEW", payload: { targetId } });
     const me = this.resolveDiplomacy(clientId, targetId);
     if (me === null) return;
     const outcome = this.alliances.voteRenew(me, targetId, this.conflict.tick);
@@ -802,6 +1063,7 @@ export class RasterGameSession {
 
   /** Break an existing alliance with `targetId` — a betrayal, effective at once. */
   public breakAlliance(clientId: string, targetId: PlayerId): void {
+    this.recordFor(clientId, { type: "CLIENT_RASTER_ALLY_BREAK", payload: { targetId } });
     const me = this.resolveDiplomacy(clientId, targetId);
     if (me === null) return;
     if (this.alliances.breakAlliance(me, targetId)) {
@@ -820,6 +1082,7 @@ export class RasterGameSession {
    * rises by the same integer amount.
    */
   public donate(clientId: string, targetId: PlayerId, resource: "troops" | "gold", percent: number): void {
+    this.recordFor(clientId, { type: "CLIENT_RASTER_DONATE", payload: { targetId, resource, percent } });
     const me = this.resolveDiplomacy(clientId, targetId);
     if (me === null) return;
     if (!this.alliances.areAllied(me, targetId)) return;
@@ -849,6 +1112,7 @@ export class RasterGameSession {
     if (this.matchEndedBroadcast) return;
     const subscriber = this.subscribers.get(clientId);
     if (!subscriber) return;
+    this.record(subscriber.playerId, { type: "CLIENT_RASTER_RETREAT", payload: { targetId } });
     const me = subscriber.playerId;
     if (targetId === me) return;
     if (!this.grid.hasPlayer(me) || this.eliminated.has(me)) return;
@@ -860,6 +1124,7 @@ export class RasterGameSession {
 
   /** Set (`on: true`) or lift a trade embargo against `targetId`. */
   public setEmbargo(clientId: string, targetId: PlayerId, on: boolean): void {
+    this.recordFor(clientId, { type: "CLIENT_RASTER_EMBARGO", payload: { targetId, on } });
     const me = this.resolveDiplomacy(clientId, targetId);
     if (me === null) return;
     if (on) {
@@ -873,6 +1138,7 @@ export class RasterGameSession {
 
   /** Ask ally `allyId` to attack `targetId` — recorded and announced to the ally. */
   public requestTarget(clientId: string, allyId: PlayerId, targetId: PlayerId): void {
+    this.recordFor(clientId, { type: "CLIENT_RASTER_TARGET_REQUEST", payload: { allyId, targetId } });
     const me = this.resolveDiplomacy(clientId, allyId);
     if (me === null) return;
     if (!this.grid.hasPlayer(targetId) || this.eliminated.has(targetId)) return;
@@ -890,6 +1156,7 @@ export class RasterGameSession {
   public sendEmoji(clientId: string, targetId: PlayerId, emoji: number): void {
     const subscriber = this.subscribers.get(clientId);
     if (!subscriber || this.matchEndedBroadcast) return;
+    this.record(subscriber.playerId, { type: "CLIENT_RASTER_EMOJI", payload: { targetId, emoji } });
     const me = subscriber.playerId;
     if (!this.grid.hasPlayer(me) || this.eliminated.has(me)) return;
     if (!this.grid.hasPlayer(targetId) || this.eliminated.has(targetId)) return;
@@ -916,8 +1183,13 @@ export class RasterGameSession {
    */
   public tick(): void {
     // Once the match has ended (conquest or time limit) the simulation freezes:
-    // no further state changes or broadcasts.
+    // no further state changes, broadcasts or relay turns.
     if (this.matchEndedBroadcast) return;
+
+    // Relay the commands applied since the previous tick to the lockstep
+    // subscribers, *before* this tick simulates — see {@link flushTurn} for why
+    // this is the only correct hash/ordering point.
+    this.flushTurn();
 
     // Start phase: players are still choosing where to found their nations. The
     // world is frozen — no expansion, combat, income or match clock — until the
@@ -1134,7 +1406,11 @@ export class RasterGameSession {
     }
 
     for (const { clientId, rejection } of rejections) {
-      this.subscribers.get(clientId)?.send({
+      const subscriber = this.subscribers.get(clientId);
+      // A lockstep client's replica re-validates the command and produces the
+      // identical rejection locally.
+      if (!subscriber || subscriber.lockstep) continue;
+      subscriber.send({
         type: "SERVER_RASTER_ACTION_REJECTED",
         payload: rejection,
       });
@@ -1162,6 +1438,7 @@ export class RasterGameSession {
       for (const subscriber of this.subscribers.values()) {
         if (!justEliminated.includes(subscriber.playerId) || this.endedSent.has(subscriber.playerId)) continue;
         this.endedSent.add(subscriber.playerId);
+        if (subscriber.lockstep) continue; // the replica raises its own defeat screen
         subscriber.send({
           type: "SERVER_RASTER_MATCH_ENDED",
           payload: {
@@ -1195,6 +1472,7 @@ export class RasterGameSession {
         // Players eliminated mid-match already got their summary; don't send a second.
         if (this.endedSent.has(subscriber.playerId)) continue;
         this.endedSent.add(subscriber.playerId);
+        if (subscriber.lockstep) continue; // the replica ends its own match identically
         subscriber.send({
           type: "SERVER_RASTER_MATCH_ENDED",
           payload: {
@@ -1812,6 +2090,9 @@ export class RasterGameSession {
     shared: RasterSnapshot = this.buildSharedBody(),
     fullOwner: () => string = () => encodeOwners(this.grid.owner),
   ): void {
+    // Lockstep subscribers render from their own replica — the referee ships
+    // them turns only, never snapshots.
+    if (subscriber.lockstep) return;
     if (!subscriber.wantsRaster) {
       // Bots only read tick/phase/winner off the body — share it as-is.
       subscriber.send({ type: "SERVER_RASTER_SNAPSHOT", payload: shared });

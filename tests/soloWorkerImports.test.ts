@@ -11,9 +11,15 @@ import { fileURLToPath } from "node:url";
  * invariant at the source level so a stray import is caught in CI, not in a
  * browser.
  */
-test("the solo worker import graph is free of Node built-ins", () => {
+const workerEntries = [
+  "src/Client/solo/soloWorker.ts",
+  // The lockstep replica worker hosts the same sim off the relay-turn stream —
+  // same browser constraints, same invariant.
+  "src/Client/lockstep/lockstepWorker.ts",
+];
+
+test("the sim worker import graphs are free of Node built-ins", () => {
   const root = fileURLToPath(new URL("../", import.meta.url));
-  const entry = resolve(root, "src/Client/solo/soloWorker.ts");
 
   const seen = new Set<string>();
   const nodeHits: string[] = [];
@@ -39,13 +45,13 @@ test("the solo worker import graph is free of Node built-ins", () => {
     }
   };
 
-  scan(entry);
+  for (const entry of workerEntries) scan(resolve(root, entry));
 
-  assert.ok(seen.size > 1, "scanned the worker's transitive imports");
+  assert.ok(seen.size > 1, "scanned the workers' transitive imports");
   assert.deepEqual(
     nodeHits,
     [],
-    `solo worker reaches Node built-ins (breaks in the browser):\n${nodeHits.join("\n")}`,
+    `a sim worker reaches Node built-ins (breaks in the browser):\n${nodeHits.join("\n")}`,
   );
 });
 
@@ -56,29 +62,48 @@ test("the solo worker import graph is free of Node built-ins", () => {
  * worker path drifting: extract the message-type literals from the
  * `RasterClientMessage` union and assert the worker has a `case` for each.
  */
-test("the solo worker handles every client message type", () => {
+test("the shared command dispatcher handles every client message type", () => {
   const root = fileURLToPath(new URL("../", import.meta.url));
   // Client message types live across types.ts (inline union members) and
   // messages.ts (the JOIN/SPAWN/ALLY payload messages).
   const declared =
     readFileSync(resolve(root, "src/Core/types.ts"), "utf8") +
     readFileSync(resolve(root, "src/Core/messages.ts"), "utf8");
+  // Both sim hosts (solo worker, lockstep replica) route through the shared
+  // dispatcher, so the dispatcher's switch is the single surface to check —
+  // plus proof that each host actually uses it.
+  const dispatcher = readFileSync(resolve(root, "src/Core/applySessionCommand.ts"), "utf8");
   const worker = readFileSync(resolve(root, "src/Client/solo/soloWorker.ts"), "utf8");
+  const replica = readFileSync(resolve(root, "src/Client/lockstep/replica.ts"), "utf8");
+  assert.ok(worker.includes("applySessionCommand("), "the solo worker routes through the shared dispatcher");
+  assert.ok(replica.includes("applySessionCommand("), "the lockstep replica routes through the shared dispatcher");
 
   const wanted = new Set<string>();
   const re = /"(CLIENT_RASTER_[A-Z_]+)"/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(declared)) !== null) wanted.add(m[1]);
+  // Connection-level messages (lobby membership, seat resume) address the
+  // server's registry, not a running simulation — an offline solo worker has
+  // no lobby and nothing to resume, so they are exempt from the handler check.
+  for (const networkOnly of [
+    "CLIENT_RASTER_LOBBY_CREATE",
+    "CLIENT_RASTER_LOBBY_JOIN",
+    "CLIENT_RASTER_LOBBY_START",
+    "CLIENT_RASTER_LOBBY_LEAVE",
+    "CLIENT_RASTER_RESUME",
+  ]) {
+    wanted.delete(networkOnly);
+  }
   assert.ok(wanted.size >= 6, "found the client message types to check");
 
-  // The worker either dispatches a type in its action `switch` (`case "X"`) or
-  // handles it inline at connection time (`message.type === "X"`, e.g. JOIN).
+  // A type is covered when the dispatcher switches on it, or when it is a
+  // connection-time message the worker handles inline (JOIN).
   const missing = [...wanted].filter(
-    (t) => !worker.includes(`case "${t}"`) && !worker.includes(`=== "${t}"`),
+    (t) => !dispatcher.includes(`case "${t}"`) && !worker.includes(`=== "${t}"`),
   );
   assert.deepEqual(
     missing,
     [],
-    `solo worker is missing a handler for: ${missing.join(", ")} — these actions no-op offline.`,
+    `the shared dispatcher is missing a handler for: ${missing.join(", ")} — these actions no-op (and desync lockstep replicas).`,
   );
 });

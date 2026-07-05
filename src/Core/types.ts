@@ -22,12 +22,25 @@ import type {
   RasterEmbargoClientMessage,
   RasterEmojiClientMessage,
   RasterJoinClientMessage,
+  RasterLobbyCreateClientMessage,
+  RasterLobbyErrorServerMessage,
+  RasterLobbyJoinClientMessage,
+  RasterLobbyLeaveClientMessage,
+  RasterLobbyStartClientMessage,
+  RasterLobbyStateServerMessage,
+  RasterResumeClientMessage,
   RasterRetreatClientMessage,
   RasterSpawnClientMessage,
   RasterTargetRequestClientMessage,
 } from "./messages.js";
 import type { BuildingType } from "./buildings.js";
 import type { NukeKind } from "./nukes.js";
+import type {
+  RasterDesyncServerMessage,
+  RasterLockstepStartServerMessage,
+  RasterTurnBacklogServerMessage,
+  RasterTurnServerMessage,
+} from "./lockstep.js";
 
 /**
  * An active alliance in the snapshot: the canonical low/high player-id pair,
@@ -571,7 +584,12 @@ export type RasterClientMessage =
   | RasterDonateClientMessage
   | RasterEmbargoClientMessage
   | RasterTargetRequestClientMessage
-  | RasterEmojiClientMessage;
+  | RasterEmojiClientMessage
+  | RasterLobbyCreateClientMessage
+  | RasterLobbyJoinClientMessage
+  | RasterLobbyStartClientMessage
+  | RasterLobbyLeaveClientMessage
+  | RasterResumeClientMessage;
 
 /** Messages the server can send to the client. */
 export type RasterServerMessage =
@@ -579,4 +597,10 @@ export type RasterServerMessage =
   | { type: "SERVER_RASTER_PLAYER_ASSIGNED"; payload: RasterPlayerAssignedPayload }
   | { type: "SERVER_RASTER_SNAPSHOT"; payload: RasterSnapshot }
   | { type: "SERVER_RASTER_ACTION_REJECTED"; payload: RasterActionRejectedEvent }
-  | { type: "SERVER_RASTER_MATCH_ENDED"; payload: RasterMatchEndedPayload };
+  | { type: "SERVER_RASTER_MATCH_ENDED"; payload: RasterMatchEndedPayload }
+  | RasterLockstepStartServerMessage
+  | RasterTurnServerMessage
+  | RasterTurnBacklogServerMessage
+  | RasterDesyncServerMessage
+  | RasterLobbyStateServerMessage
+  | RasterLobbyErrorServerMessage;
