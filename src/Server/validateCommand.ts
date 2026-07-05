@@ -185,16 +185,24 @@ const parseRasterJoin = (payload: unknown): RasterJoinPayload => {
   if (typeof payload !== "object" || payload === null) {
     throw new Error("CLIENT_RASTER_JOIN.payload must be an object.");
   }
-  const { mapId, difficulty } = payload as Record<string, unknown>;
+  const { mapId, difficulty, fieldSize, lockstep } = payload as Record<string, unknown>;
   if (mapId !== undefined && !isMapChoiceId(mapId)) {
     throw new Error("mapId must be a known map id.");
   }
   if (difficulty !== undefined && !isRasterDifficulty(difficulty)) {
     throw new Error("difficulty must be a known difficulty id.");
   }
+  if (fieldSize !== undefined && (typeof fieldSize !== "number" || !Number.isInteger(fieldSize) || fieldSize < 0)) {
+    throw new Error("fieldSize must be a non-negative integer.");
+  }
+  if (lockstep !== undefined && typeof lockstep !== "boolean") {
+    throw new Error("lockstep must be a boolean.");
+  }
   const out: RasterJoinPayload = {};
   if (mapId !== undefined) out.mapId = mapId;
   if (difficulty !== undefined) out.difficulty = difficulty;
+  if (fieldSize !== undefined) out.fieldSize = fieldSize as number;
+  if (lockstep !== undefined) out.lockstep = lockstep;
   return out;
 };
 

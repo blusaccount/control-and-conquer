@@ -120,9 +120,18 @@ renderFieldSize();
 
 // Start the run on the currently selected map + difficulty + field size.
 const startButton = document.querySelector<HTMLButtonElement>("#startButton");
+// Wire-mode override, mainly for testing the multiplayer paths against a real
+// server: `?net=lockstep` joins in server-refereed lockstep (intents up, relay
+// turns down, local replica sim — see `Core/lockstep.ts`); `?net=ws` uses the
+// snapshot-streaming thin client. Default remains the local solo Web Worker.
+const netParam = new URLSearchParams(window.location.search).get("net");
+const transport = netParam === "lockstep" ? "lockstep" as const
+  : netParam === "ws" ? "websocket" as const
+  : undefined;
+
 startButton?.addEventListener("click", () => {
   const raw = fieldSizeInput ? Number(fieldSizeInput.value) : 0;
   // 0 is the "Auto" sentinel → omit so the server auto-scales to the map.
   const fieldSize = raw > 0 ? raw : undefined;
-  startRasterClient(ui, { mapId: selectedMapId, difficulty: selectedDifficulty, fieldSize });
+  startRasterClient(ui, { mapId: selectedMapId, difficulty: selectedDifficulty, fieldSize, ...(transport ? { transport } : {}) });
 });

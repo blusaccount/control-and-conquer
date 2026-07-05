@@ -41,6 +41,13 @@ export interface RasterJoinPayload {
    * bot-heavy by `splitField`. 0 seats an empty world (sandbox).
    */
   fieldSize?: number;
+  /**
+   * Join in lockstep mode: instead of streaming snapshots/owner rasters, the
+   * server sends a `SERVER_RASTER_LOCKSTEP_START` setup followed by one
+   * `SERVER_RASTER_TURN` per tick, and the client simulates locally (see
+   * `Core/lockstep.ts`). The server still simulates as the referee.
+   */
+  lockstep?: boolean;
 }
 
 export type RasterJoinClientMessage = { type: "CLIENT_RASTER_JOIN"; payload: RasterJoinPayload };

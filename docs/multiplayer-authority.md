@@ -91,6 +91,46 @@ Client                              Server
 
 ---
 
+## Server-Refereed Lockstep (the scalable multiplayer wire mode)
+
+Alongside the snapshot-streaming path above, the server supports a **lockstep
+relay mode** (`Core/lockstep.ts`) designed for large lobbies, where streaming
+owner-deltas to every client would dominate egress:
+
+- A client joins with `lockstep: true`. The server seats it as usual but sends
+  it no snapshots — only a one-time `SERVER_RASTER_LOCKSTEP_START` (map id,
+  terrain hash, session options, the full seat list) and then one
+  `SERVER_RASTER_TURN` per tick.
+- Every command entering the session — human intents *and* server-side bot
+  decisions — is recorded at the session's public entry points, before
+  validation, and relayed in the next turn in exact application order.
+- The client runs the identical deterministic sim in a Web Worker
+  (`Client/lockstep/lockstepWorker.ts` + `replica.ts`): per received turn it
+  applies the commands through the same session entry points, then ticks. The
+  server's cadence paces the replica; the rendering client consumes the
+  replica's locally generated message stream unchanged.
+- **The server still simulates** — it is the referee, not a relay. Every
+  `HASH_INTERVAL_TICKS` turns it embeds its state hash (portable FNV-1a over
+  ownership, pools, structures, fallout, clock); a replica that disagrees
+  surfaces `SERVER_RASTER_DESYNC`. Server-side state remains authoritative for
+  anti-cheat and is the basis for future reconnect snapshots.
+- Ordering guarantee: turns are flushed at the top of `tick()`, so a turn
+  holds exactly the commands applied since the previous tick, and the hash is
+  taken at the one instant referee and replica agree by construction (all of
+  the turn's commands applied, tick not yet simulated). Commands bots issue
+  *during* a tick's snapshot broadcast land in the next turn — which is also
+  when the sim first reads them on both sides.
+
+Wire cost per lockstep client is a few KB/s of intents instead of the
+owner-delta stream — the property that makes ~100-player lobbies affordable.
+Try it against a running server with `?net=lockstep` in the client URL
+(`?net=ws` selects the snapshot-streaming thin client).
+
+Determinism replay coverage: `tests/lockstepReplica.test.ts` replays a full
+bot-field match from the recorded turn stream and asserts bit-identical state.
+
+---
+
 ## Known Limitations (MVP)
 
 | # | Limitation | Impact |

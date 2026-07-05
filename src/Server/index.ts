@@ -223,6 +223,9 @@ wss.on("connection", (socket) => {
             { ...choice.options },
             difficulty,
             botOverride ?? clientField,
+            // Lockstep joins carry the resolved catalogue id so the client's
+            // replica fetches the exact map this session was built from.
+            message.payload.lockstep ? choice.id : undefined,
           );
         }
       } else if (message.type === "CLIENT_RASTER_SELECT_SPAWN") {

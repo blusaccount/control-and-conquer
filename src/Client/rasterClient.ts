@@ -30,7 +30,7 @@ import { hideMenu, setStatus, type UiElements } from "./dom.js";
 import { formatCount, formatDuration, formatRate, formatTroopRate, formatTroops } from "./format.js";
 import { readBoolSetting } from "./settings.js";
 import { digitAction } from "./hotkeys.js";
-import { createWebSocketTransport, createWorkerTransport, type RasterTransport } from "./transport.js";
+import { createLockstepTransport, createWebSocketTransport, createWorkerTransport, type RasterTransport } from "./transport.js";
 import { paintRaster, paintTileInto } from "./rasterPaint.js";
 import { borderColor, playerColor, playerEmoji } from "./rasterPalette.js";
 import { drawIcon, iconSvgMarkup } from "./icons.js";
@@ -65,9 +65,12 @@ export interface RasterClientOptions {
   /**
    * How the match is hosted. `"worker"` (default) runs the whole solo sim in a
    * browser Web Worker with no network round-trip (OpenFront-style client-side
-   * lockstep); `"websocket"` connects to the authoritative server instead.
+   * lockstep); `"websocket"` connects to the authoritative server and streams
+   * snapshots (thin client); `"lockstep"` connects to the server but simulates
+   * locally off its relayed turn stream — intents-only traffic, the scalable
+   * multiplayer wire mode (see `Core/lockstep.ts`).
    */
-  transport?: "worker" | "websocket";
+  transport?: "worker" | "websocket" | "lockstep";
 }
 
 /**
@@ -564,7 +567,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   const transport: RasterTransport =
-    options.transport === "websocket" ? createWebSocketTransport() : createWorkerTransport();
+    options.transport === "websocket"
+      ? createWebSocketTransport()
+      : options.transport === "lockstep"
+        ? createLockstepTransport()
+        : createWorkerTransport();
 
   const sendExpand = (targetX: number, targetY: number, percent: number, mode: RasterExpandMode = "auto"): void => {
     const message: RasterClientMessage = {
@@ -882,6 +889,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       setStatus(ui, message.payload.message, "error");
     } else if (message.type === "SERVER_RASTER_MATCH_ENDED") {
       onMatchEnded(message.payload);
+    } else if (message.type === "SERVER_RASTER_DESYNC") {
+      // The local replica drifted from the referee sim (lockstep mode). Keep
+      // playing — the server remains authoritative — but tell the player their
+      // view may be off until they rejoin.
+      setStatus(ui, `Out of sync with the server (turn ${message.payload.turn}) — your view may be inaccurate.`, "error");
     }
   };
 

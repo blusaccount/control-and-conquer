@@ -40,7 +40,12 @@ export class MatchRegistry {
     options: RasterGameSessionOptions = {},
     difficulty: RasterDifficulty = "medium",
     fieldOverride?: number,
+    lockstepMapId?: string,
   ): () => void {
+    // A lockstep join (see `Core/lockstep.ts`): the client simulates locally
+    // off relayed turns while this server sim referees. `lockstepMapId` names
+    // the catalogue map the client must fetch to mirror the session.
+    const lockstep = lockstepMapId !== undefined;
     this.matchSequence += 1;
     const matchId = `match-${this.matchSequence}-raster-solo`;
     // Heightmap maps (e.g. "earth") are built here, server-side, and injected as
@@ -58,7 +63,9 @@ export class MatchRegistry {
     this.activeMatches.set(matchId, session);
 
     // The human is seated only once they pick a start position (autoSpawn=false).
-    const unsubHuman = session.subscribe(clientId, send, false);
+    // A lockstep client renders from its own replica, so it wants neither the
+    // owner raster nor any snapshot at all — just the relay turns.
+    const unsubHuman = session.subscribe(clientId, send, false, !lockstep, undefined, "human", lockstep);
     if (!unsubHuman) {
       // A brand-new session always has a free seat for its first subscriber, so
       // this is unreachable today — guarded defensively rather than trusting it.
@@ -76,6 +83,25 @@ export class MatchRegistry {
     const unsubBots: Array<() => void> = [];
     for (const cfg of buildFieldConfigs(total, difficulty, matchId)) {
       unsubBots.push(new RasterBotController(cfg).attach(session));
+    }
+
+    // With the whole match seated, hand the lockstep client its setup — the
+    // seat list must be complete here, or the replica couldn't mirror it.
+    if (lockstep) {
+      send({
+        type: "SERVER_RASTER_LOCKSTEP_START",
+        payload: {
+          mapId: lockstepMapId,
+          mapName: session.peekMapName(),
+          terrainHash: session.peekTerrainHash(),
+          difficulty,
+          spawnPhaseTicks: session.peekSpawnPhaseTicks(),
+          startingTroops: session.peekStartingTroops(),
+          tickRate: SIMULATION_TICK_RATE,
+          yourPlayerId: session.playerIdOf(clientId) ?? 1,
+          seats: session.seatList(),
+        },
+      });
     }
 
     return () => {

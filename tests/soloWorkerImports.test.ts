@@ -11,9 +11,15 @@ import { fileURLToPath } from "node:url";
  * invariant at the source level so a stray import is caught in CI, not in a
  * browser.
  */
-test("the solo worker import graph is free of Node built-ins", () => {
+const workerEntries = [
+  "src/Client/solo/soloWorker.ts",
+  // The lockstep replica worker hosts the same sim off the relay-turn stream —
+  // same browser constraints, same invariant.
+  "src/Client/lockstep/lockstepWorker.ts",
+];
+
+test("the sim worker import graphs are free of Node built-ins", () => {
   const root = fileURLToPath(new URL("../", import.meta.url));
-  const entry = resolve(root, "src/Client/solo/soloWorker.ts");
 
   const seen = new Set<string>();
   const nodeHits: string[] = [];
@@ -39,13 +45,13 @@ test("the solo worker import graph is free of Node built-ins", () => {
     }
   };
 
-  scan(entry);
+  for (const entry of workerEntries) scan(resolve(root, entry));
 
-  assert.ok(seen.size > 1, "scanned the worker's transitive imports");
+  assert.ok(seen.size > 1, "scanned the workers' transitive imports");
   assert.deepEqual(
     nodeHits,
     [],
-    `solo worker reaches Node built-ins (breaks in the browser):\n${nodeHits.join("\n")}`,
+    `a sim worker reaches Node built-ins (breaks in the browser):\n${nodeHits.join("\n")}`,
   );
 });
 
@@ -80,5 +86,18 @@ test("the solo worker handles every client message type", () => {
     missing,
     [],
     `solo worker is missing a handler for: ${missing.join(", ")} — these actions no-op offline.`,
+  );
+
+  // The lockstep replica must re-apply every relayable command the same way,
+  // or a relayed action silently no-ops locally and the replica desyncs. JOIN
+  // is exempt: it never enters a live session's command stream.
+  const replica = readFileSync(resolve(root, "src/Client/lockstep/replica.ts"), "utf8");
+  const missingInReplica = [...wanted].filter(
+    (t) => t !== "CLIENT_RASTER_JOIN" && !replica.includes(`case "${t}"`),
+  );
+  assert.deepEqual(
+    missingInReplica,
+    [],
+    `lockstep replica is missing a handler for: ${missingInReplica.join(", ")} — these commands would desync it.`,
   );
 });
