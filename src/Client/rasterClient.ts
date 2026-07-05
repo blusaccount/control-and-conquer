@@ -90,6 +90,10 @@ interface ShipDot {
   tx: number;
   ty: number;
   color: string;
+  /** Troops aboard, shown as a small count label next to the hull. */
+  troops: number;
+  /** Remaining water route to the landing tile, as world-space waypoints. */
+  route: Array<{ x: number; y: number }>;
   /** Whether `rx`/`ry` have been seeded yet (false until the first snapshot). */
   placed: boolean;
   /** Snapshot generation this ship was last seen in, for cleanup. */
@@ -111,6 +115,14 @@ interface WarshipDot {
   hp: number;
   maxHp: number;
   retreating: boolean;
+  /** Owner of the unit, to key "is this mine" affordances (patrol ring). */
+  playerId: number;
+  /** Centre of the unit's assigned patrol sector. */
+  patrolX: number;
+  patrolY: number;
+  /** Current steering objective (chase/retreat target or patrol waypoint). */
+  destX: number;
+  destY: number;
   seen: number;
 }
 
@@ -246,6 +258,10 @@ interface RasterRuntime {
   players: RasterPlayerInfo[];
   /** Which leaderboard column the standings are sorted by, and the direction. */
   leaderboardSort: { key: LeaderboardSortKey; dir: 1 | -1 };
+  /** Whether the leaderboard shows every player or just the top few + you. */
+  leaderboardExpanded: boolean;
+  /** Allies whose expiring-pact reminder card was dismissed ("Ignore"). */
+  renewDismissed: Set<number>;
   recentEvents: string[];
   matchEnded: boolean;
   /**
@@ -347,6 +363,9 @@ const BORDER_OVERLAY_TILE_BUDGET = 90000;
 
 /** Per-frame easing fraction the drawn ship position moves toward its target. */
 const SHIP_EASE = 0.25;
+
+/** Rows the collapsed leaderboard shows before the "+N more" toggle (OpenFront shows a top-5). */
+const LEADERBOARD_COLLAPSED_ROWS = 5;
 
 /** Hard zoom-in ceiling, in screen pixels per tile. */
 const MAX_TILE_SCALE = 16;
@@ -495,6 +514,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     trains: [],
     tradeShips: [],
     leaderboardSort: { key: "owned", dir: -1 },
+    leaderboardExpanded: false,
+    renewDismissed: new Set(),
     capturableTotal: 0,
     players: [],
     recentEvents: [],
@@ -970,10 +991,13 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     for (const s of ships) {
       const tx = s.x + 0.5;
       const ty = s.y + 0.5;
+      const route = (s.route ?? []).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
       const existing = runtime.ships.get(s.shipId);
       if (existing) {
         existing.tx = tx;
         existing.ty = ty;
+        existing.troops = s.troops;
+        existing.route = route;
         existing.seen = generation;
       } else {
         runtime.ships.set(s.shipId, {
@@ -982,6 +1006,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
           tx,
           ty,
           color: rgbaToCss(playerColor(s.playerId)),
+          troops: s.troops,
+          route,
           placed: true,
           seen: generation,
         });
@@ -1007,6 +1033,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         existing.hp = w.hp;
         existing.maxHp = w.maxHp;
         existing.retreating = w.retreating;
+        existing.patrolX = w.patrolX ?? w.x;
+        existing.patrolY = w.patrolY ?? w.y;
+        existing.destX = w.destX ?? w.x;
+        existing.destY = w.destY ?? w.y;
         existing.seen = generation;
       } else {
         runtime.warships.set(w.warshipId, {
@@ -1018,6 +1048,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
           hp: w.hp,
           maxHp: w.maxHp,
           retreating: w.retreating,
+          playerId: w.playerId,
+          patrolX: w.patrolX ?? w.x,
+          patrolY: w.patrolY ?? w.y,
+          destX: w.destX ?? w.x,
+          destY: w.destY ?? w.y,
           seen: generation,
         });
       }
@@ -1100,7 +1135,14 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       if (gainedMine) sfx.allyAccepted();
     }
     runtime.alliances = nextAlliances;
-    runtime.allianceRequests = snapshot.allianceRequests ?? [];
+    // A *new* incoming offer pings once — diffed against the previous snapshot
+    // so a card sitting unanswered doesn't re-chime every tick.
+    const nextRequests = snapshot.allianceRequests ?? [];
+    if (runtime.myPlayerId !== null) {
+      const hadIncoming = new Set(runtime.allianceRequests.filter((r) => r.to === runtime.myPlayerId).map((r) => r.from));
+      if (nextRequests.some((r) => r.to === runtime.myPlayerId && !hadIncoming.has(r.from))) sfx.allyRequested();
+    }
+    runtime.allianceRequests = nextRequests;
     runtime.embargoes = snapshot.embargoes ?? [];
     runtime.targetRequests = snapshot.targetRequests ?? [];
     runtime.emojis = snapshot.emojis ?? [];
@@ -1527,6 +1569,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ctx.fillText(text, sx, cy);
     };
 
+    // Relationship badges ride above each name (OpenFront's status icons):
+    // crown for the territory leader, handshake for the local player's
+    // allies, dagger for anyone with betrayals on record.
+    const rel = diplomacyState();
+
     ctx.save();
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -1541,16 +1588,20 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       if (sx < -cw || sy < -ch || sx > cw * 2 || sy > ch * 2) continue;
 
       // Once the label is big enough, stack the troop count beneath the name and
-      // (for the leader) a crown above it — the OpenFront map readout.
+      // a badge row above it — the OpenFront map readout.
       const showDetail = fontPx >= 14;
       const nameY = showDetail ? sy - fontPx * 0.26 : sy;
       label(`${playerEmoji(player.playerId)} ${player.name}`, sx, nameY, fontPx, "600");
       if (showDetail) {
         label(formatTroops(player.troops), sx, sy + fontPx * 0.52, fontPx * 0.62, "500");
-        if (player.playerId === leaderId) {
-          const crownPx = Math.max(13, fontPx * 0.7);
-          ctx.font = `${crownPx}px serif`;
-          ctx.fillText("\u{1F451}", sx, nameY - fontPx * 0.66); // 👑
+        const badges: string[] = [];
+        if (player.playerId === leaderId) badges.push("\u{1F451}"); // 👑
+        if (rel.allies.has(player.playerId)) badges.push("\u{1F91D}"); // 🤝
+        if (player.betrayals > 0) badges.push("\u{1F5E1}"); // 🗡
+        if (badges.length > 0) {
+          const badgePx = Math.max(13, fontPx * 0.7);
+          ctx.font = `${badgePx}px serif`;
+          ctx.fillText(badges.join(" "), sx, nameY - fontPx * 0.66);
         }
       }
     }
@@ -1739,7 +1790,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     if (runtime.tradeShips.length === 0 || scale < 2) return;
     const cw = ui.mapCanvas.width;
     const ch = ui.mapCanvas.height;
-    const radius = Math.max(1.6, scale * 0.28);
+    // Commerce stays world-scaled and hides at full-map zoom (unlike combat
+    // vessels): dozens of trade dots at whole-map view would be pure clutter.
+    // The floor just keeps them legible on high-DPI screens once they show.
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const radius = Math.max(2.2 * dpr, scale * 0.28);
     ctx.save();
     for (const ship of runtime.tradeShips) {
       const p = worldToScreen(ship.x + 0.5, ship.y + 0.5);
@@ -1761,9 +1816,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
    * rather than floating a bare emoji over the terrain — makes structures read
    * as *owned* and legible against any ground, at a deliberately generous size.
    *
-   * Zoom LOD keeps a crowded map tidy: below a readable size the marker collapses
-   * to a small owner-coloured dot (no icon), and when fully zoomed out it is
-   * hidden entirely — detail is *removed*, not shrunk into mush.
+   * Zoom LOD keeps a crowded map tidy: below a readable size the marker drops
+   * its 3-D treatment (shadow, gradient, badge) and becomes a compact flat
+   * token — but it keeps the per-type silhouette and white glyph at a firm
+   * minimum screen size, so even at full-map zoom you can still tell *what*
+   * stands *where* (OpenFront keeps structure icons readable at every zoom).
    */
   const drawBuildings = (ctx: CanvasRenderingContext2D, scale: number): void => {
     if (runtime.buildings.length === 0) return;
@@ -1776,11 +1833,12 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     // below scale 2 — which is the *fit* zoom for the default Large/Huge maps,
     // so at full-map view no structures showed at all.
     const dpr = Math.max(1, window.devicePixelRatio || 1);
-    // Below this zoom the shaped icon tokens are too big/cluttered, so we draw
-    // plain owner dots — but with a firm minimum screen size so they always read.
-    const dotMode = scale < 6;
-    const radius = dotMode
-      ? Math.max(3.2 * dpr, Math.min(scale * 0.7, 6 * dpr))
+    // Below this zoom the full 3-D token treatment is too big/cluttered, so we
+    // draw compact flat markers — still shaped + glyphed per type, with a firm
+    // minimum screen size so they always read.
+    const compactMode = scale < 6;
+    const radius = compactMode
+      ? Math.max(6.5 * dpr, Math.min(scale * 1.1, 9 * dpr))
       : Math.max(12, Math.min(scale * 0.72, 30));
     // Monochrome glyphs read clearly even when large, so the icon fills most of
     // the disc (OpenFront's white-on-colour markers).
@@ -1825,20 +1883,26 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       if (sx < -radius * 2 || sy < -radius * 2 || sx > cw + radius * 2 || sy > ch + radius * 2) continue;
       const col = playerColor(b.playerId);
 
-      if (dotMode) {
-        // Zoomed out: a small owner-coloured dot with a dark halo — shows where
-        // structures stand without drawing unreadable icons. Cities (the anchor
-        // of an empire) get a slightly fatter dot so they stand out from ports,
-        // forts and the rest at a glance.
-        const r = b.type === "city" ? radius * 1.35 : radius;
+      if (compactMode) {
+        // Zoomed out: a compact flat token — dark halo, owner-coloured per-type
+        // silhouette, white glyph. No gradient/shadow/badge at this size, but
+        // the *kind* of structure stays identifiable from the whole-map view.
+        // Cities (the anchor of an empire) get a slightly fatter token.
+        const r = b.type === "city" ? radius * 1.15 : radius;
+        if (b.underConstruction) ctx.globalAlpha = 0.55;
         ctx.beginPath();
         ctx.arc(sx, sy, r + dpr, 0, Math.PI * 2);
         ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
         ctx.fill();
-        ctx.beginPath();
-        ctx.arc(sx, sy, r, 0, Math.PI * 2);
+        tracePath(sx, sy, r, b.type);
         ctx.fillStyle = rgbaToCss(col);
         ctx.fill();
+        ctx.lineWidth = Math.max(1, r * 0.14);
+        ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
+        ctx.stroke();
+        ctx.fillStyle = "rgba(255, 255, 255, 0.97)";
+        drawIcon(ctx, b.type, sx, sy, r * 0.72);
+        ctx.globalAlpha = 1;
         continue;
       }
 
@@ -2174,48 +2238,139 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     ctx.restore();
   };
 
-  // Ease each ship's drawn position toward its latest server position, then draw
-  // it as a haloed dot. Smoothing between snapshots is what makes a ship appear
-  // to glide continuously along the shortest water route it was assigned.
+  /**
+   * Trace a vessel's remaining water course: a dashed line from the hull
+   * through the rest of its route, capped with a small hollow ring on the
+   * final waypoint. Dashed in screen-space (not world-space) so the pattern
+   * stays legible at any zoom; a dark under-stroke keeps the owner-coloured
+   * dashes readable over bright shallows and dark open water alike.
+   */
+  const drawCourseLine = (
+    ctx: CanvasRenderingContext2D,
+    color: string,
+    from: { x: number; y: number },
+    waypoints: ReadonlyArray<{ x: number; y: number }>,
+    dpr: number,
+  ): void => {
+    if (waypoints.length === 0) return;
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(from.x, from.y);
+    for (const wp of waypoints) {
+      const q = worldToScreen(wp.x, wp.y);
+      ctx.lineTo(q.x, q.y);
+    }
+    ctx.setLineDash([5 * dpr, 4 * dpr]);
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.45)";
+    ctx.lineWidth = Math.max(2.4, 2.2 * dpr);
+    ctx.stroke();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(1.2, 1.1 * dpr);
+    ctx.stroke();
+    // Hollow ring on the destination, so where the course *ends* is explicit.
+    const last = waypoints[waypoints.length - 1];
+    const dest = worldToScreen(last.x, last.y);
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.arc(dest.x, dest.y, 3 * dpr, 0, Math.PI * 2);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(1.4, 1.4 * dpr);
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  /** Small dark-plated count label centred just below a unit. */
+  const drawUnitLabel = (
+    ctx: CanvasRenderingContext2D,
+    text: string,
+    cx: number,
+    topY: number,
+    dpr: number,
+  ): void => {
+    const fontPx = Math.round(9 * dpr);
+    ctx.font = `600 ${fontPx}px system-ui, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    const w = ctx.measureText(text).width;
+    const padX = 3 * dpr;
+    const y = topY + 2 * dpr;
+    ctx.fillStyle = "rgba(10, 12, 18, 0.72)";
+    ctx.fillRect(cx - w / 2 - padX, y - dpr, w + padX * 2, fontPx + 2 * dpr);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+    ctx.fillText(text, cx, y);
+  };
+
+  // Ease each ship's drawn position toward its latest server position, then
+  // draw it as a haloed hull icon with a troop-count label (OpenFront labels
+  // its boats) and its remaining course line ahead of the bow. A firm
+  // DPR-aware minimum size keeps every transport identifiable even at
+  // full-map zoom instead of shrinking into an unreadable speck.
   const drawShips = (ctx: CanvasRenderingContext2D, scale: number): void => {
     if (runtime.ships.size === 0) return;
-    const radius = Math.max(2.5, scale * 0.45);
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const radius = Math.max(4.5 * dpr, scale * 0.45);
     for (const ship of runtime.ships.values()) {
       ship.rx += (ship.tx - ship.rx) * SHIP_EASE;
       ship.ry += (ship.ty - ship.ry) * SHIP_EASE;
       const p = worldToScreen(ship.rx, ship.ry);
 
       ctx.save();
+      drawCourseLine(ctx, ship.color, p, ship.route, dpr);
       ctx.beginPath();
-      ctx.arc(p.x, p.y, radius + 1.5, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, radius + Math.max(1.5, radius * 0.2), 0, Math.PI * 2);
       ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
       ctx.fill();
       // The ship has no owner-coloured badge behind it (unlike buildings), so
       // the icon itself is tinted directly to the owner's colour.
       ctx.fillStyle = ship.color;
       drawIcon(ctx, "ship", p.x, p.y, radius);
+      drawUnitLabel(ctx, formatTroops(ship.troops), p.x, p.y + radius, dpr);
       ctx.restore();
     }
   };
 
   /**
    * Ease and draw every mobile warship: the hull icon (owner-tinted, like a
-   * transport ship), a health bar above it once damaged (OpenFront: "only
-   * warships have health bars"), and a cyan halo instead of white while
-   * retreating home to heal — a distinct "fleeing" cue from its normal/
-   * engaging look.
+   * transport ship, with a firm minimum screen size so the fleet stays
+   * identifiable at full-map zoom), a health bar above it once damaged
+   * (OpenFront: "only warships have health bars"), and a cyan halo instead of
+   * white while retreating home to heal — a distinct "fleeing" cue from its
+   * normal/engaging look. Each hull also shows its current course as a dashed
+   * line to its steering objective (chase, retreat haven, or patrol waypoint),
+   * and your own warships mark their assigned patrol sector with a faint ring,
+   * so a wandering hull reads as "on station" rather than drifting aimlessly.
    */
   const drawWarships = (ctx: CanvasRenderingContext2D, scale: number): void => {
     if (runtime.warships.size === 0) return;
-    const radius = Math.max(3, scale * 0.5);
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const radius = Math.max(5 * dpr, scale * 0.5);
     for (const w of runtime.warships.values()) {
       w.rx += (w.tx - w.rx) * SHIP_EASE;
       w.ry += (w.ty - w.ry) * SHIP_EASE;
       const p = worldToScreen(w.rx, w.ry);
 
       ctx.save();
+      // Course to the current steering objective (skipped for sub-tile hops,
+      // which would draw as a jittering stub under the hull).
+      if (Math.max(Math.abs(w.destX - w.rx), Math.abs(w.destY - w.ry)) > 1.5) {
+        drawCourseLine(ctx, w.color, p, [{ x: w.destX, y: w.destY }], dpr);
+      }
+      // Patrol-sector ring, own fleet only — where this hull will hold station.
+      if (w.playerId === runtime.myPlayerId) {
+        const anchor = worldToScreen(w.patrolX, w.patrolY);
+        ctx.beginPath();
+        ctx.arc(anchor.x, anchor.y, Math.max(6 * dpr, scale * 1.2), 0, Math.PI * 2);
+        ctx.setLineDash([3 * dpr, 3 * dpr]);
+        ctx.strokeStyle = w.color;
+        ctx.globalAlpha = 0.45;
+        ctx.lineWidth = Math.max(1, dpr);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+      }
       ctx.beginPath();
-      ctx.arc(p.x, p.y, radius + 1.5, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, radius + Math.max(1.5, radius * 0.2), 0, Math.PI * 2);
       ctx.fillStyle = w.retreating ? "rgba(56, 189, 248, 0.9)" : "rgba(255, 255, 255, 0.85)";
       ctx.fill();
       ctx.fillStyle = w.color;
@@ -2223,7 +2378,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
 
       if (w.hp < w.maxHp) {
         const barW = Math.max(14, radius * 2.2);
-        const barH = Math.max(2, scale * 0.12);
+        const barH = Math.max(2 * dpr, scale * 0.12);
         const barX = p.x - barW / 2;
         const barY = p.y - radius - barH - 3;
         const frac = Math.max(0, Math.min(1, w.hp / w.maxHp));
@@ -2286,7 +2441,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     if (runtime.nukeExplosions.length === 0) return;
     const survivors: NukeExplosion[] = [];
     for (const exp of runtime.nukeExplosions) {
-      const t = (now - exp.start) / NUKE_EXPLOSION_DURATION_MS;
+      // Clamped at 0: `now` is the rAF frame timestamp, which can sit a hair
+      // *before* the performance.now() taken when the explosion was recorded —
+      // unclamped, that sliver of negative t flips `ease` negative and a
+      // negative arc radius throws mid-frame.
+      const t = Math.max(0, (now - exp.start) / NUKE_EXPLOSION_DURATION_MS);
       if (t >= 1) continue;
       survivors.push(exp);
       const { inner, outer } = nukeBlast(exp.kind);
@@ -2559,6 +2718,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ui.eventsPanel.innerHTML = runtime.recentEvents
         .map((ev) => `<div class="event">${escapeHtml(ev)}</div>`)
         .join("");
+      renderActionCards();
       renderLeaderboard();
       return;
     }
@@ -2566,7 +2726,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const rel = diplomacyState();
     const diplomacyLine =
       rel.incoming.size > 0
-        ? `<strong>🤝 ${rel.incoming.size} alliance offer${rel.incoming.size === 1 ? "" : "s"}</strong> — accept or decline in the leaderboard.<br/>`
+        ? `<strong>🤝 ${rel.incoming.size} alliance offer${rel.incoming.size === 1 ? "" : "s"}</strong> — respond in the cards by the event log.<br/>`
         : rel.allies.size > 0
           ? `<strong>🤝 Allied with ${rel.allies.size} nation${rel.allies.size === 1 ? "" : "s"}.</strong> Allies can't attack each other.<br/>`
           : "";
@@ -2577,13 +2737,14 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       `<strong>Ships at sea:</strong> ${runtime.myShips} / 3<br/>` +
       `<em>Click adjacent land to expand. Click any landmass across water to send a transport ship ` +
       `to its nearest reachable shore (one per click, max 3 at sea). Drag to pan, scroll to zoom.</em><br/>` +
-      `<em>Use the leaderboard's <strong>Ally</strong> buttons to propose alliances — allied nations can't ` +
-      `attack each other until the pact is broken.</em>`;
+      `<em>Propose alliances on the map: right-click a rival's land (or press <strong>K</strong> over it) — ` +
+      `allied nations can't attack each other until the pact is broken.</em>`;
 
     ui.eventsPanel.innerHTML = runtime.recentEvents
       .map((ev) => `<div class="event">${escapeHtml(ev)}</div>`)
       .join("");
 
+    renderActionCards();
     renderLeaderboard();
   };
 
@@ -2635,46 +2796,103 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   /**
-   * The diplomacy action button(s) for a rival row: an ally row shows the
-   * pact's countdown, a renew vote near expiry, and break; otherwise
-   * accept/decline an incoming offer, mark an outgoing offer as sent, or
-   * propose a fresh alliance. Empty while we can't act (pre-game, match over,
-   * our own row).
+   * Centre the camera on `playerId`'s territory — the "Focus" affordance on
+   * leaderboard rows and actionable event cards (OpenFront's click-to-focus).
+   * Scans the ownership raster for any tile of theirs; the scan is O(map) but
+   * only runs on an explicit click.
    */
-  const diplomacyActions = (id: number, rel: DiplomacyState, canDiplo: boolean): string => {
-    if (!canDiplo) return "";
-    if (rel.allies.has(id)) {
-      const pact = rel.pacts.get(id);
-      const ticksLeft = pact?.ticksLeft ?? 0;
-      const clock = formatDuration(Math.ceil(ticksLeft / SIMULATION_TICK_RATE));
-      const timer = `<span class="lb-pact" title="Alliance expires in ${clock} unless both sides renew">${clock}</span>`;
-      const voted = runtime.myPlayerId !== null && (pact?.renewVotes.includes(runtime.myPlayerId) ?? false);
-      const renew =
-        ticksLeft > ALLIANCE_RENEWAL_WINDOW_TICKS
-          ? ""
-          : voted
-            ? `<button class="lb-act pending" disabled title="Waiting for your ally's renewal vote">⏳</button>`
-            : `<button class="lb-act renew" data-ally-renew="${id}" title="Vote to renew the alliance">Renew</button>`;
-      return timer + renew + `<button class="lb-act break" data-ally-break="${id}" title="Break alliance">Break</button>`;
+  const focusPlayer = (playerId: number): void => {
+    const map = runtime.map;
+    const owner = runtime.owner;
+    if (!map || !owner) return;
+    for (let ref = 0; ref < owner.length; ref += 1) {
+      if (owner[ref] === playerId) {
+        // Pan only — keep the player's current zoom rather than yanking it.
+        runtime.view.x = map.x(ref) + 0.5 - ui.mapCanvas.width / runtime.view.scale / 2;
+        runtime.view.y = map.y(ref) + 0.5 - ui.mapCanvas.height / runtime.view.scale / 2;
+        clampView();
+        return;
+      }
     }
-    if (rel.incoming.has(id)) {
-      return (
-        `<button class="lb-act accept" data-ally-accept="${id}" title="Accept alliance">✓</button>` +
-        `<button class="lb-act decline" data-ally-decline="${id}" title="Decline alliance">✕</button>`
-      );
-    }
-    if (rel.outgoing.has(id)) {
-      return `<button class="lb-act pending" disabled title="Offer pending">Sent</button>`;
-    }
-    return `<button class="lb-act ally" data-ally-propose="${id}" title="Propose alliance">Ally</button>`;
   };
 
   /**
-   * Live standings: every active (non-eliminated) player, sorted by tiles held
-   * descending. Each row shows a colour dot, name, tile count and pool with its
-   * growth rate, plus a diplomacy action against each rival. Your own row is
-   * highlighted, and turns green while you hold the lead ("du gewinnst"); allies
-   * are flagged with a 🤝.
+   * The bottom-corner stack of *actionable* event cards — OpenFront's model:
+   * decisions never live in the leaderboard, they pop as bordered cards next
+   * to the event log. Amber cards want an answer (an incoming alliance offer
+   * with Accept/Decline, an expiring pact with Renew/Ignore); blue cards are
+   * contextual notices (an ally asking you to strike their target). Every card
+   * gets a Focus button to jump the camera to the player concerned.
+   */
+  const renderActionCards = (): void => {
+    const rel = diplomacyState();
+    const canDiplo = runtime.spawned && runtime.phase === "playing" && !runtime.matchEnded && !runtime.myEliminated && runtime.myPlayerId !== null;
+    if (!canDiplo) {
+      ui.actionCards.innerHTML = "";
+      return;
+    }
+
+    const focusBtn = (id: number): string =>
+      `<button data-focus-player="${id}" title="Jump the camera to this nation">Focus</button>`;
+    const cards: string[] = [];
+
+    for (const from of rel.incoming) {
+      cards.push(
+        `<div class="action-card">` +
+          `<div class="ac-title">🤝 <strong>${escapeHtml(playerName(from))}</strong> requests an alliance.</div>` +
+          `<div class="ac-buttons">${focusBtn(from)}` +
+          `<button class="accept" data-ally-accept="${from}">Accept</button>` +
+          `<button class="decline" data-ally-decline="${from}">Reject</button></div>` +
+          `</div>`,
+      );
+    }
+
+    // Expiring pacts: remind inside the renewal window, unless already voted
+    // or explicitly ignored. The dismissal is remembered per partner and
+    // cleared once the pact leaves the window (renewed or expired), so the
+    // card comes back for the *next* expiry.
+    for (const [partner, pact] of rel.pacts) {
+      const inWindow = pact.ticksLeft <= ALLIANCE_RENEWAL_WINDOW_TICKS;
+      if (!inWindow) {
+        runtime.renewDismissed.delete(partner);
+        continue;
+      }
+      const voted = runtime.myPlayerId !== null && pact.renewVotes.includes(runtime.myPlayerId);
+      if (voted || runtime.renewDismissed.has(partner)) continue;
+      const clock = formatDuration(Math.ceil(pact.ticksLeft / SIMULATION_TICK_RATE));
+      cards.push(
+        `<div class="action-card">` +
+          `<div class="ac-title">⏳ Alliance with <strong>${escapeHtml(playerName(partner))}</strong> expires in ${clock}.</div>` +
+          `<div class="ac-buttons">${focusBtn(partner)}` +
+          `<button class="accept" data-ally-renew="${partner}">Renew</button>` +
+          `<button data-renew-dismiss="${partner}">Ignore</button></div>` +
+          `</div>`,
+      );
+    }
+    for (const partner of runtime.renewDismissed) {
+      if (!rel.pacts.has(partner)) runtime.renewDismissed.delete(partner);
+    }
+
+    // An ally flagged a common target — informational, with a jump-to button.
+    for (const target of rel.incomingTargetRequests) {
+      cards.push(
+        `<div class="action-card info">` +
+          `<div class="ac-title">🎯 An ally asks you to attack <strong>${escapeHtml(playerName(target))}</strong>.</div>` +
+          `<div class="ac-buttons">${focusBtn(target)}</div>` +
+          `</div>`,
+      );
+    }
+
+    ui.actionCards.innerHTML = cards.join("");
+  };
+
+  /**
+   * Live standings — a *pure* scoreboard, OpenFront-style: rank, name, and the
+   * sortable numbers, nothing else. Diplomacy never appears here (alliance
+   * offers live in the actionable-event cards; proposing happens on the map
+   * via right-click or K). Collapsed it shows the top players with your own
+   * row swapped in at its true rank if you're below the cut; a toggle expands
+   * to the full field. Clicking a row jumps the camera to that nation.
    */
   /** Sortable leaderboard columns, in OpenFront's order (rank is implicit). */
   const LEADERBOARD_COLUMNS: ReadonlyArray<{ key: LeaderboardSortKey; label: string; cls: string }> = [
@@ -2705,9 +2923,6 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       return cmp * dir;
     });
 
-    const rel = diplomacyState();
-    const canDiplo = runtime.spawned && runtime.phase === "playing" && !runtime.matchEnded && !runtime.myEliminated && runtime.myPlayerId !== null;
-
     const arrow = (colKey: LeaderboardSortKey): string => (colKey === key ? (dir < 0 ? " ▾" : " ▴") : "");
     const header =
       `<div class="lb-head">` +
@@ -2717,41 +2932,46 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ).join("") +
       `</div>`;
 
-    const rows = active
-      .map((p, i) => {
+    // Collapsed: the top rows only, with your own row swapped in (at its true
+    // rank) if you're below the cut — OpenFront's compact standings.
+    const ranked = active.map((p, i) => ({ p, rank: i + 1 }));
+    let shown = ranked;
+    if (!runtime.leaderboardExpanded && ranked.length > LEADERBOARD_COLLAPSED_ROWS) {
+      shown = ranked.slice(0, LEADERBOARD_COLLAPSED_ROWS);
+      const mine = ranked.find((r) => r.p.playerId === runtime.myPlayerId);
+      if (mine && mine.rank > LEADERBOARD_COLLAPSED_ROWS) shown[shown.length - 1] = mine;
+    }
+
+    const rows = shown
+      .map(({ p, rank }) => {
         const isMe = p.playerId === runtime.myPlayerId;
         const isLeader = p.playerId === leaderId;
-        const isAlly = rel.allies.has(p.playerId);
-        const rowClass = ["lb-row", isMe ? "me" : "", isLeader ? "leader" : "", isAlly ? "ally" : ""].filter(Boolean).join(" ");
-        const allyMark = isAlly ? "🤝 " : "";
-        const traitorMark = p.betrayals > 0
-          ? ` <span class="lb-traitor" title="Broke ${p.betrayals} alliance${p.betrayals === 1 ? "" : "s"}">🗡${p.betrayals > 1 ? `×${p.betrayals}` : ""}</span>`
-          : "";
-        const embargoMark = rel.embargoed.has(p.playerId) ? ` <span class="lb-embargo" title="You are embargoing this player">🚫</span>` : "";
-        const targetMark = rel.incomingTargetRequests.has(p.playerId) ? ` <span class="lb-target" title="An ally asked you to attack this player">🎯</span>` : "";
-        const name = `${allyMark}${playerEmoji(p.playerId)} ${escapeHtml(p.name)}` + (isMe ? " (you)" : "") + traitorMark + embargoMark + targetMark;
+        const rowClass = ["lb-row", isMe ? "me" : "", isLeader ? "leader" : ""].filter(Boolean).join(" ");
+        const name = `${playerEmoji(p.playerId)} ${escapeHtml(p.name)}` + (isMe ? " (you)" : "");
         const own = runtime.capturableTotal > 0 ? (p.tiles / runtime.capturableTotal) * 100 : 0;
         const ownStr = own >= 10 ? `${Math.round(own)}%` : `${own.toFixed(1)}%`;
-        const actions = isMe ? "" : diplomacyActions(p.playerId, rel, canDiplo);
         return (
-          `<div class="${rowClass}">` +
-          `<span class="lb-rank">${i + 1}</span>` +
+          `<div class="${rowClass}" data-focus-player="${p.playerId}" title="Click to jump the camera to this nation">` +
+          `<span class="lb-rank">${rank}</span>` +
           `<span class="lb-name"><span class="lb-dot" style="background:${escapeHtml(p.color)}"></span><span class="txt">${name}</span></span>` +
           `<span class="lb-col">${ownStr}</span>` +
           `<span class="lb-col">${formatCount(p.gold)}</span>` +
           `<span class="lb-col">${formatTroops(p.maxTroops)}</span>` +
-          (actions ? `<span class="lb-acts">${actions}</span>` : "") +
           `</div>`
         );
       })
       .join("");
+    const expander =
+      active.length > LEADERBOARD_COLLAPSED_ROWS
+        ? `<button type="button" class="lb-expand" data-lb-expand>${runtime.leaderboardExpanded ? "− show less" : `+ ${active.length - shown.length} more`}</button>`
+        : "";
     // Victory-progress footer: the domination threshold and how close the
     // current territory leader is to it, so the race's stakes stay visible.
     const leader = activeAll.find((p) => p.playerId === leaderId);
     const leaderOwn = leader && runtime.capturableTotal > 0 ? (leader.tiles / runtime.capturableTotal) * 100 : 0;
     const leaderOwnStr = leaderOwn >= 10 ? `${Math.round(leaderOwn)}%` : `${leaderOwn.toFixed(1)}%`;
     const note = `<div class="lb-note">Win at ${Math.round(WIN_TILE_FRACTION * 100)}% of land — leader holds ${leaderOwnStr}</div>`;
-    ui.leaderboard.innerHTML = header + rows + note;
+    ui.leaderboard.innerHTML = header + rows + expander + note;
   };
 
   /** Apply a header click: toggle direction when re-clicking a column, else sort by it. */
@@ -3492,42 +3712,53 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
 
   ui.attackPercentInput.addEventListener("input", updateRatioReadout);
 
-  // Diplomacy: one delegated handler for the leaderboard's per-rival alliance
-  // buttons (the rows are rebuilt every snapshot, so a delegated listener stays
-  // valid across re-renders). Each button carries the counterparty's player id.
+  // Leaderboard: one delegated handler (the rows are rebuilt every snapshot, so
+  // a delegated listener stays valid across re-renders). Headers re-sort, the
+  // footer toggle expands/collapses, and a row click focuses the camera on
+  // that nation — the leaderboard itself carries no diplomacy (OpenFront).
   ui.leaderboard.addEventListener("click", (event) => {
     const node = event.target as HTMLElement | null;
-    // Column-header clicks re-sort the standings.
     const sortBtn = node?.closest<HTMLButtonElement>("button[data-sort]");
     if (sortBtn) {
       setLeaderboardSort(sortBtn.getAttribute("data-sort") as LeaderboardSortKey);
       return;
     }
-    const btn = node?.closest<HTMLButtonElement>(
-      "button[data-ally-propose], button[data-ally-accept], button[data-ally-decline], button[data-ally-break], button[data-ally-renew]",
-    );
+    if (node?.closest("button[data-lb-expand]")) {
+      runtime.leaderboardExpanded = !runtime.leaderboardExpanded;
+      renderLeaderboard();
+      return;
+    }
+    const row = node?.closest<HTMLElement>("[data-focus-player]");
+    if (row) focusPlayer(Number(row.getAttribute("data-focus-player")));
+  });
+
+  // Actionable-event cards: alliance offers (accept/reject), expiring pacts
+  // (renew/ignore), and focus jumps — the OpenFront flow, delegated the same
+  // way since the card stack is rebuilt every snapshot.
+  ui.actionCards.addEventListener("click", (event) => {
+    const btn = (event.target as HTMLElement | null)?.closest<HTMLButtonElement>("button");
     if (!btn || btn.disabled) return;
-    const propose = btn.getAttribute("data-ally-propose");
     const accept = btn.getAttribute("data-ally-accept");
     const decline = btn.getAttribute("data-ally-decline");
-    const broke = btn.getAttribute("data-ally-break");
     const renew = btn.getAttribute("data-ally-renew");
-    if (propose !== null) {
-      sendAllyPropose(Number(propose));
-      setStatus(ui, "Alliance offer sent.");
-    } else if (accept !== null) {
+    const dismiss = btn.getAttribute("data-renew-dismiss");
+    const focus = btn.getAttribute("data-focus-player");
+    if (accept !== null) {
       sendAllyRespond(Number(accept), true);
       setStatus(ui, "Alliance accepted.");
     } else if (decline !== null) {
       sendAllyRespond(Number(decline), false);
       setStatus(ui, "Alliance offer declined.");
-    } else if (broke !== null) {
-      sendAllyBreak(Number(broke));
-      setStatus(ui, "Alliance broken.");
     } else if (renew !== null) {
       sendAllyRenew(Number(renew));
       setStatus(ui, "Renewal vote sent — the pact extends when your ally agrees.");
+    } else if (dismiss !== null) {
+      runtime.renewDismissed.add(Number(dismiss));
+    } else if (focus !== null) {
+      focusPlayer(Number(focus));
+      return; // focus does not change card state
     }
+    renderActionCards();
   });
 
   // Lay out the build menu once and seed its initial (disabled, pre-spawn) state.

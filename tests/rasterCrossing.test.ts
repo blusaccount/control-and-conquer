@@ -71,6 +71,33 @@ test("a transport ship sails the strait, lands, and captures the far bank", () =
   assert.ok(grid.map.isWater(landing!.from), "the landing sets out from open water");
 });
 
+test("a ship's snapshot carries its remaining route, thinned and ending on the landing tile", () => {
+  // owned 0,1 | a long open-water crossing | neutral far bank. The serialized
+  // route must always end on the destination, only ever shrink as the ship
+  // advances, and stay within the waypoint cap however long the crossing is.
+  const water = " ".repeat(80);
+  const grid = new TerritoryGrid(rowMap(`##${water}##`));
+  grid.addPlayer(1, 50);
+  grid.claim(0, 1);
+  grid.claim(1, 1);
+  const conflict = new RasterConflict(grid);
+
+  const dest = 82;
+  assert.equal(conflict.launchShip({ attacker: 1, dest, troops: 50 }), null);
+
+  const first = conflict.activeShips()[0];
+  assert.ok(first.route.length > 0, "a fresh ship has a route ahead of it");
+  assert.ok(first.route.length <= 32, "long crossings are thinned to the waypoint cap");
+  assert.equal(first.route[first.route.length - 1], dest, "the route ends on the landing tile");
+
+  conflict.processTick();
+  conflict.processTick();
+  const later = conflict.activeShips()[0];
+  assert.ok(later.route.length <= first.route.length, "the remaining route never grows");
+  assert.equal(later.route[later.route.length - 1], dest, "still ends on the landing tile");
+  assert.ok(later.route.every((t) => t > later.tile), "route holds only tiles still ahead of the hull");
+});
+
 test("troops left after the beachhead push inland from the landing", () => {
   // owned 0,1 | water 2,3,4 | neutral 5,6,7,8 — a generous lander should keep
   // expanding past its beachhead.

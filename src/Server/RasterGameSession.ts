@@ -1037,6 +1037,7 @@ export class RasterGameSession {
       x: this.map.x(s.tile),
       y: this.map.y(s.tile),
       troops: s.troops,
+      route: s.route.map((tile) => ({ x: this.map.x(tile), y: this.map.y(tile) })),
     }));
     this.lastWarships = this.conflict.activeWarships().map((w) => ({
       warshipId: w.id,
@@ -1046,6 +1047,10 @@ export class RasterGameSession {
       hp: w.hp,
       maxHp: w.maxHp,
       retreating: w.retreating,
+      patrolX: w.patrolX,
+      patrolY: w.patrolY,
+      destX: w.destX,
+      destY: w.destY,
     }));
     this.lastNukes = this.conflict.activeNukes().map((n) => ({
       nukeId: n.id,

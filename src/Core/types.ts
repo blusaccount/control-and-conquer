@@ -156,6 +156,12 @@ export interface RasterShip {
   x: number;
   y: number;
   troops: number;
+  /**
+   * The rest of the ship's water route as downsampled waypoints (ending on
+   * the landing tile), so the client can draw the course it will sail.
+   * Optional for wire-compat with older snapshots.
+   */
+  route?: Array<{ x: number; y: number }>;
 }
 
 /**
@@ -172,6 +178,12 @@ export interface RasterWarship {
   hp: number;
   maxHp: number;
   retreating: boolean;
+  /** Centre of the unit's assigned patrol sector (always water). */
+  patrolX?: number;
+  patrolY?: number;
+  /** Where the unit is currently steering (chase/retreat objective or patrol waypoint). */
+  destX?: number;
+  destY?: number;
 }
 
 /**

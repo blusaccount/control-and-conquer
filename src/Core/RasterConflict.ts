@@ -124,7 +124,33 @@ export interface TransportShipState {
   tile: TileRef;
   /** Troops aboard. */
   troops: number;
+  /**
+   * The rest of the ship's water route (exclusive of `tile`, ending on the
+   * landing tile), downsampled to a handful of waypoints so the client can
+   * draw the course line without shipping every tile of a long crossing.
+   */
+  route: TileRef[];
 }
+
+/** Cap on the waypoint count of a serialized ship route — keeps snapshots small on long crossings. */
+const SHIP_ROUTE_MAX_WAYPOINTS = 32;
+
+/**
+ * Thin the remaining route — from `path[progress]` (exclusive) to the landing
+ * tile — to at most {@link SHIP_ROUTE_MAX_WAYPOINTS} evenly strided waypoints,
+ * always ending on the landing tile. The client only needs enough points to
+ * trace a readable course line, not every tile of the crossing.
+ */
+const downsampleRoute = (path: readonly TileRef[], progress: number): TileRef[] => {
+  const last = path.length - 1;
+  const remaining = last - progress;
+  if (remaining <= 0) return [];
+  const stride = Math.max(1, Math.ceil(remaining / SHIP_ROUTE_MAX_WAYPOINTS));
+  const route: TileRef[] = [];
+  for (let i = progress + stride; i < last; i += stride) route.push(path[i]);
+  route.push(path[last]);
+  return route;
+};
 
 /** Public view of one nuke in flight, for snapshotting/animation. */
 export interface NukeState {
@@ -182,6 +208,16 @@ export interface WarshipState {
   hp: number;
   maxHp: number;
   retreating: boolean;
+  /** Centre of the assigned patrol sector (always water). */
+  patrolX: number;
+  patrolY: number;
+  /**
+   * Where the ship is currently steering: its chase/retreat objective while
+   * engaged or fleeing, else the patrol wander waypoint. Lets the client
+   * draw the unit's course instead of an unexplained drift.
+   */
+  destX: number;
+  destY: number;
 }
 
 /**
@@ -281,6 +317,9 @@ interface Warship {
   wanderY: number;
   x: number;
   y: number;
+  /** Where the unit is currently steering (chase/retreat objective or wander waypoint), for the client's course line. */
+  destX: number;
+  destY: number;
   hp: number;
   target: { kind: WarshipTargetKind; id: number } | null;
   /** True once hp has dropped below the retreat threshold, until it heals back past the recovery one. */
@@ -426,6 +465,10 @@ export class RasterConflict {
       hp: Math.max(0, Math.round(w.hp)),
       maxHp: WARSHIP_MAX_HP,
       retreating: w.retreating,
+      patrolX: w.patrolX,
+      patrolY: w.patrolY,
+      destX: w.destX,
+      destY: w.destY,
     }));
   }
 
@@ -455,6 +498,7 @@ export class RasterConflict {
       attacker: s.attacker,
       tile: s.path[s.progress],
       troops: s.troops,
+      route: downsampleRoute(s.path, s.progress),
     }));
   }
 
@@ -1228,6 +1272,8 @@ export class RasterConflict {
       wanderY: py,
       x: map.x(home),
       y: map.y(home),
+      destX: px,
+      destY: py,
       hp: WARSHIP_MAX_HP,
       target: null,
       retreating: false,
@@ -1304,6 +1350,8 @@ export class RasterConflict {
    * water routing, which a moving target would make far more expensive.
    */
   private moveWarshipToward(w: Warship, tx: number, ty: number, speed = WARSHIP_TILES_PER_TICK): void {
+    w.destX = tx;
+    w.destY = ty;
     const dx = tx - w.x;
     const dy = ty - w.y;
     const dist = Math.max(Math.abs(dx), Math.abs(dy));
@@ -1519,6 +1567,9 @@ export class RasterConflict {
         this.moveWarshipToward(w, target.x, target.y);
         continue;
       }
+      // Holding position in gun range: the course line still points at the foe.
+      w.destX = target.x;
+      w.destY = target.y;
       if (this.tickCount < w.shellReadyAt) continue;
       w.shellReadyAt = this.tickCount + WARSHIP_SHELL_RATE_TICKS;
       this.fireOn(w, target);

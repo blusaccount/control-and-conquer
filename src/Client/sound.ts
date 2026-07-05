@@ -58,6 +58,11 @@ export const sfx = {
     tone(523.25, 0, 0.12, 0.1);
     tone(783.99, 0.06, 0.16, 0.1);
   },
+  /** An incoming alliance request — a gentle two-note "ping" asking for attention. */
+  allyRequested: (): void => {
+    tone(659.25, 0, 0.1, 0.08);
+    tone(880, 0.09, 0.14, 0.08);
+  },
   /** The run ended in victory. */
   victory: (): void => {
     tone(523.25, 0, 0.16, 0.14);
