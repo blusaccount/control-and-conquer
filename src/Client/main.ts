@@ -240,6 +240,11 @@ lobbyEls.join?.addEventListener("click", () => {
   openLobby((client) => client.join(code, playerName()));
 });
 
+lobbyEls.start?.addEventListener("click", () => {
+  lobby?.start();
+  lobbyStatus("Starting…");
+});
+
 lobbyEls.leave?.addEventListener("click", () => {
   lobby?.leave();
   resetLobbyUi();

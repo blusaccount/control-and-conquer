@@ -299,6 +299,13 @@ wss.on("connection", (socket) => {
     // match (via its registered cleanup).
     registry.handleSocketClose(clientId);
   });
+
+  // A socket-level error (abrupt TCP reset, or a protocol-violating frame like
+  // an unexpected RSV bit) makes `ws` emit `error` on the connection. Without a
+  // listener Node re-raises it as an uncaught exception, crashing the whole
+  // process and every live match. Swallow it — `ws` always fires `close` right
+  // after, which runs the real teardown above.
+  socket.on("error", () => {});
 });
 
 server.listen(port, () => {
