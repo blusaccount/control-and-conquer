@@ -758,6 +758,45 @@
       .menu-button.secondary:hover { background: #38414f; }
       .menu-overlay.hidden { display: none; }
 
+      /* ---- Multiplayer lobby ---------------------------------------------- */
+      .lobby-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: center; }
+      .lobby-input {
+        background: var(--panel-bg-solid);
+        border: 1px solid var(--panel-border);
+        border-radius: 8px;
+        color: var(--text);
+        padding: 9px 12px;
+        font-size: 14px;
+        width: 180px;
+      }
+      .lobby-input:focus-visible { outline: none; border-color: var(--accent); }
+      .lobby-code { width: 110px; text-transform: uppercase; letter-spacing: 0.15em; }
+      .lobby-panel {
+        margin-top: 14px;
+        background: var(--panel-bg-solid);
+        border: 1px solid var(--panel-border);
+        border-radius: 12px;
+        padding: 16px 20px;
+        width: 380px;
+        max-width: 92vw;
+      }
+      .lobby-panel.hidden { display: none; }
+      .lobby-head { font-weight: 700; margin-bottom: 6px; }
+      .lobby-code-badge {
+        font-family: ui-monospace, monospace;
+        letter-spacing: 0.2em;
+        color: var(--accent);
+        border: 1px solid var(--accent);
+        border-radius: 6px;
+        padding: 1px 8px;
+        margin-left: 6px;
+        user-select: all;
+      }
+      .lobby-members { list-style: none; margin: 10px 0; display: flex; flex-direction: column; gap: 4px; }
+      .lobby-members li { font-size: 13.5px; }
+      .lobby-members .host-tag { color: var(--accent); font-size: 11px; margin-left: 6px; }
+      .lobby-members .you-tag { color: var(--text-dim); font-size: 11px; margin-left: 6px; }
+
       .perk-cards {
         display: flex;
         gap: 12px;
@@ -985,6 +1024,25 @@
       </div>
       <p class="hint field-hint">A bot-heavy field like OpenFront — mostly passive tribes with a few strong nations. <b>Auto</b> scales the count to the map; drag to set a fixed number (0 = empty sandbox).</p>
       <button id="startButton" class="menu-button primary" type="button">Start Run</button>
+
+      <h2 class="menu-section">Multiplayer</h2>
+      <div id="lobbyForm" class="lobby-row">
+        <input id="playerNameInput" class="lobby-input" type="text" maxlength="24" placeholder="Your name" autocomplete="nickname" />
+        <button id="createLobbyButton" class="menu-button secondary" type="button">Create lobby</button>
+        <input id="lobbyCodeInput" class="lobby-input lobby-code" type="text" maxlength="8" placeholder="Code" autocomplete="off" spellcheck="false" />
+        <button id="joinLobbyButton" class="menu-button secondary" type="button">Join</button>
+      </div>
+      <p class="hint field-hint">Play the selected map and difficulty against friends: create a lobby and share the code. The room's settings are the host's menu selection.</p>
+      <div id="lobbyPanel" class="lobby-panel hidden">
+        <div class="lobby-head">Lobby <span id="lobbyCode" class="lobby-code-badge"></span></div>
+        <div id="lobbyMeta" class="hint"></div>
+        <ul id="lobbyMembers" class="lobby-members"></ul>
+        <div class="lobby-row">
+          <button id="lobbyStartButton" class="menu-button primary hidden" type="button">Start match</button>
+          <button id="lobbyLeaveButton" class="menu-button secondary" type="button">Leave lobby</button>
+        </div>
+        <p id="lobbyStatus" class="hint" aria-live="polite"></p>
+      </div>
     </div>
 
     <div id="startBanner" class="hidden"></div>

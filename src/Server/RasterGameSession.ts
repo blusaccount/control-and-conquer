@@ -346,6 +346,13 @@ export class RasterGameSession {
   private turnCounter = 0;
   /** Optional tap on the relay-turn stream (tests, future replay recording). */
   private turnListener: ((turn: RasterTurn) => void) | null = null;
+  /**
+   * Every relay turn flushed so far — the match's full command history. Kept
+   * only while recording is active (lockstep matches). A resuming client's
+   * fresh replica replays it to fast-forward to the live state; it is also,
+   * by construction, a complete replay of the match.
+   */
+  private readonly turnLog: RasterTurn[] = [];
   private matchEndedBroadcast = false;
   /**
    * The match's winner once decided, including a timeLimit finish (where
@@ -670,10 +677,34 @@ export class RasterGameSession {
     };
     this.recordedCommands = [];
     this.turnCounter += 1;
+    this.turnLog.push(turn);
     listener?.(turn);
     for (const sub of this.subscribers.values()) {
       if (sub.lockstep) sub.send({ type: "SERVER_RASTER_TURN", payload: turn });
     }
+  }
+
+  /** The full relay-turn history (resume backlog / replay source). */
+  public turnBacklog(): readonly RasterTurn[] {
+    return this.turnLog;
+  }
+
+  /**
+   * Re-bind a seat to a new connection id and message sink — the resume path
+   * after a dropped socket. The seat itself (player id, kind, meta) is
+   * untouched, so nothing about the simulation changes; only where its
+   * messages go and under which client id its commands arrive. No-ops if the
+   * old id is unknown or the new id is already taken.
+   */
+  public rebindSubscriber(oldClientId: string, newClientId: string, send: RasterMessageHandler): boolean {
+    const subscriber = this.subscribers.get(oldClientId);
+    if (!subscriber) return false;
+    if (newClientId !== oldClientId && this.subscribers.has(newClientId)) return false;
+    this.subscribers.delete(oldClientId);
+    subscriber.clientId = newClientId;
+    subscriber.send = send;
+    this.subscribers.set(newClientId, subscriber);
+    return true;
   }
 
   /**
@@ -847,14 +878,24 @@ export class RasterGameSession {
     else this.seatPlayer(playerId, ref, subscriber.kind);
     // OpenFront singleplayer: "spawn ends when player selects a spawn location"
     // (its `SpawnExecution` calls `endSpawnPhase()` for a human pick in a
-    // singleplayer game). Every session here hosts exactly one human against an
-    // AI field, so a human's pick starts the battle at once — no dead wait for
-    // the countdown. The countdown remains only as the fallback for a human who
-    // never clicks (they are auto-seated when it elapses).
-    if (this.phase === "spawn" && subscriber.kind === "human") this.beginPlayingPhase();
+    // singleplayer game). Generalised for shared lobbies: the battle starts
+    // early only once **every** human seat has picked — with one human that is
+    // the classic pick-and-go, with several nobody's countdown is stolen by the
+    // fastest clicker. The countdown remains as the fallback for no-shows.
+    if (this.phase === "spawn" && subscriber.kind === "human" && this.allHumansPicked()) {
+      this.beginPlayingPhase();
+    }
     // Push the seated state straight away so the client can zoom to the spawn
     // without waiting for the next tick.
     this.sendSnapshotTo(subscriber);
+  }
+
+  /** Whether every human seat has founded its nation (picked a spawn). */
+  private allHumansPicked(): boolean {
+    for (const subscriber of this.subscribers.values()) {
+      if (subscriber.kind === "human" && !this.grid.hasPlayer(subscriber.playerId)) return false;
+    }
+    return true;
   }
 
   /**

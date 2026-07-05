@@ -87,6 +87,12 @@ export interface RasterLockstepStartPayload {
   yourPlayerId: number;
   /** Every seat in ascending playerId order, exactly as the referee subscribed them. */
   seats: LockstepSeat[];
+  /**
+   * Secret per-seat token for `CLIENT_RASTER_RESUME`: after a dropped socket,
+   * presenting it re-binds this seat to the new connection and replays the
+   * turn backlog. Never shared with other players.
+   */
+  resumeToken: string;
 }
 
 /** Referee → lockstep client: the match is seated; build your replica. */
@@ -99,6 +105,17 @@ export type RasterLockstepStartServerMessage = {
 export type RasterTurnServerMessage = {
   type: "SERVER_RASTER_TURN";
   payload: RasterTurn;
+};
+
+/**
+ * Referee → resuming client: the full turn history of the match so far, in
+ * one message (one deflate frame instead of thousands of tiny sends). A fresh
+ * replica applies it turn by turn — deterministic fast-forward to the live
+ * state — then the normal per-tick turn stream continues.
+ */
+export type RasterTurnBacklogServerMessage = {
+  type: "SERVER_RASTER_TURN_BACKLOG";
+  payload: { turns: RasterTurn[] };
 };
 
 /**

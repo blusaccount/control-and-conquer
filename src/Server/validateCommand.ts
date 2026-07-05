@@ -1,6 +1,7 @@
 import { RasterBuildIntent, RasterClientMessage, RasterExpandIntent, RasterExpandMode, RasterNukeIntent } from "../Core/types.js";
 import {
   isRasterDifficulty,
+  PLAYER_NAME_PATTERN,
   RASTER_EMOJIS,
   RasterAllyBreakPayload,
   RasterAllyRenewPayload,
@@ -10,6 +11,9 @@ import {
   RasterEmbargoPayload,
   RasterEmojiPayload,
   RasterJoinPayload,
+  RasterLobbyCreatePayload,
+  RasterLobbyJoinPayload,
+  RasterResumePayload,
   RasterRetreatPayload,
   RasterSpawnPayload,
   RasterTargetRequestPayload,
@@ -206,6 +210,65 @@ const parseRasterJoin = (payload: unknown): RasterJoinPayload => {
   return out;
 };
 
+/** Validate an optional display name: trimmed, printable, ≤24 chars. */
+const parseName = (name: unknown): string | undefined => {
+  if (name === undefined) return undefined;
+  if (typeof name !== "string") throw new Error("name must be a string.");
+  const trimmed = name.trim();
+  if (!PLAYER_NAME_PATTERN.test(trimmed)) {
+    throw new Error("name must be 1–24 letters, digits, spaces or _.'-");
+  }
+  return trimmed;
+};
+
+const parseLobbyCreate = (payload: unknown): RasterLobbyCreatePayload => {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("CLIENT_RASTER_LOBBY_CREATE.payload must be an object.");
+  }
+  const { mapId, difficulty, fieldSize, name } = payload as Record<string, unknown>;
+  if (mapId !== undefined && !isMapChoiceId(mapId)) {
+    throw new Error("mapId must be a known map id.");
+  }
+  if (difficulty !== undefined && !isRasterDifficulty(difficulty)) {
+    throw new Error("difficulty must be a known difficulty id.");
+  }
+  if (fieldSize !== undefined && (typeof fieldSize !== "number" || !Number.isInteger(fieldSize) || fieldSize < 0)) {
+    throw new Error("fieldSize must be a non-negative integer.");
+  }
+  const out: RasterLobbyCreatePayload = {};
+  if (mapId !== undefined) out.mapId = mapId;
+  if (difficulty !== undefined) out.difficulty = difficulty;
+  if (fieldSize !== undefined) out.fieldSize = fieldSize as number;
+  const parsedName = parseName(name);
+  if (parsedName !== undefined) out.name = parsedName;
+  return out;
+};
+
+const parseLobbyJoin = (payload: unknown): RasterLobbyJoinPayload => {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("CLIENT_RASTER_LOBBY_JOIN.payload must be an object.");
+  }
+  const { code, name } = payload as Record<string, unknown>;
+  if (typeof code !== "string" || !/^[a-zA-Z0-9]{4,8}$/.test(code)) {
+    throw new Error("code must be a 4–8 character lobby code.");
+  }
+  const out: RasterLobbyJoinPayload = { code: code.toUpperCase() };
+  const parsedName = parseName(name);
+  if (parsedName !== undefined) out.name = parsedName;
+  return out;
+};
+
+const parseResume = (payload: unknown): RasterResumePayload => {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("CLIENT_RASTER_RESUME.payload must be an object.");
+  }
+  const { token } = payload as Record<string, unknown>;
+  if (typeof token !== "string" || token.length < 8 || token.length > 128) {
+    throw new Error("token must be a resume token string.");
+  }
+  return { token };
+};
+
 export const validateCommand = (raw: unknown): RasterClientMessage => {
   if (typeof raw !== "object" || raw === null) {
     throw new Error("Message must be a JSON object.");
@@ -254,6 +317,21 @@ export const validateCommand = (raw: unknown): RasterClientMessage => {
   }
   if (message.type === "CLIENT_RASTER_EMOJI") {
     return { type: "CLIENT_RASTER_EMOJI", payload: parseEmoji(message.payload) };
+  }
+  if (message.type === "CLIENT_RASTER_LOBBY_CREATE") {
+    return { type: "CLIENT_RASTER_LOBBY_CREATE", payload: parseLobbyCreate(message.payload) };
+  }
+  if (message.type === "CLIENT_RASTER_LOBBY_JOIN") {
+    return { type: "CLIENT_RASTER_LOBBY_JOIN", payload: parseLobbyJoin(message.payload) };
+  }
+  if (message.type === "CLIENT_RASTER_LOBBY_START") {
+    return { type: "CLIENT_RASTER_LOBBY_START" };
+  }
+  if (message.type === "CLIENT_RASTER_LOBBY_LEAVE") {
+    return { type: "CLIENT_RASTER_LOBBY_LEAVE" };
+  }
+  if (message.type === "CLIENT_RASTER_RESUME") {
+    return { type: "CLIENT_RASTER_RESUME", payload: parseResume(message.payload) };
   }
   throw new Error(`Unknown message type: ${String(message.type)}.`);
 };

@@ -22,6 +22,13 @@ import type {
   RasterEmbargoClientMessage,
   RasterEmojiClientMessage,
   RasterJoinClientMessage,
+  RasterLobbyCreateClientMessage,
+  RasterLobbyErrorServerMessage,
+  RasterLobbyJoinClientMessage,
+  RasterLobbyLeaveClientMessage,
+  RasterLobbyStartClientMessage,
+  RasterLobbyStateServerMessage,
+  RasterResumeClientMessage,
   RasterRetreatClientMessage,
   RasterSpawnClientMessage,
   RasterTargetRequestClientMessage,
@@ -31,6 +38,7 @@ import type { NukeKind } from "./nukes.js";
 import type {
   RasterDesyncServerMessage,
   RasterLockstepStartServerMessage,
+  RasterTurnBacklogServerMessage,
   RasterTurnServerMessage,
 } from "./lockstep.js";
 
@@ -576,7 +584,12 @@ export type RasterClientMessage =
   | RasterDonateClientMessage
   | RasterEmbargoClientMessage
   | RasterTargetRequestClientMessage
-  | RasterEmojiClientMessage;
+  | RasterEmojiClientMessage
+  | RasterLobbyCreateClientMessage
+  | RasterLobbyJoinClientMessage
+  | RasterLobbyStartClientMessage
+  | RasterLobbyLeaveClientMessage
+  | RasterResumeClientMessage;
 
 /** Messages the server can send to the client. */
 export type RasterServerMessage =
@@ -587,4 +600,7 @@ export type RasterServerMessage =
   | { type: "SERVER_RASTER_MATCH_ENDED"; payload: RasterMatchEndedPayload }
   | RasterLockstepStartServerMessage
   | RasterTurnServerMessage
-  | RasterDesyncServerMessage;
+  | RasterTurnBacklogServerMessage
+  | RasterDesyncServerMessage
+  | RasterLobbyStateServerMessage
+  | RasterLobbyErrorServerMessage;

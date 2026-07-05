@@ -86,6 +86,16 @@ export const createWorkerTransport = (): RasterTransport => {
 };
 
 /**
+ * A lockstep transport can start from a socket that already lives — a lobby
+ * flow keeps one WebSocket through create → wait → start, and hands it over
+ * (plus the already-received setup) when the match begins.
+ */
+export interface LockstepAttachOptions {
+  socket: WebSocket;
+  setup: import("../Core/lockstep.js").RasterLockstepStartPayload;
+}
+
+/**
  * Transport for a server-refereed lockstep match: intents go up the WebSocket
  * (the JOIN is stamped `lockstep: true` so the server relays turns instead of
  * streaming snapshots), and the down-stream is routed by kind —
@@ -94,47 +104,98 @@ export const createWorkerTransport = (): RasterTransport => {
  * `RasterServerMessage` stream (snapshots, rejections, match end, desync
  * warnings) is what the client actually renders. Everything else the server
  * sends (e.g. a parse-error rejection) passes straight through.
+ *
+ * Reconnect: `SERVER_RASTER_LOCKSTEP_START` carries a private resume token.
+ * When the socket drops mid-match, the transport dials back (with backoff),
+ * presents the token, and rebuilds the replica from the server's turn
+ * backlog — the fast-forward is deterministic, so play resumes seamlessly.
+ * Only after the retries are exhausted does `onClose` fire.
  */
-export const createLockstepTransport = (): RasterTransport => {
+export const createLockstepTransport = (attach?: LockstepAttachOptions): RasterTransport => {
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
   let socket: WebSocket | null = null;
   let worker: Worker | null = null;
   let onOpenCb: () => void = () => {};
   let onMessageCb: (m: RasterServerMessage) => void = () => {};
   let onCloseCb: () => void = () => {};
+  let resumeToken: string | null = null;
+  let matchOver = false;
+  let reconnectAttempt = 0;
 
   const bootWorker = (): Worker => {
     const w = new Worker(new URL("./lockstep/lockstepWorker.js", import.meta.url), { type: "module" });
     w.onmessage = (event: MessageEvent<WorkerOutbound>) => {
       const data = event.data;
-      if (data.type === "SERVER") onMessageCb(data.message);
+      if (data.type !== "SERVER") return;
+      // A decided match must not trigger reconnects after the socket winds down.
+      if (data.message.type === "SERVER_RASTER_MATCH_ENDED" && data.message.payload.winnerPlayerId !== null) {
+        matchOver = true;
+      }
+      onMessageCb(data.message);
     };
     w.onerror = () => onCloseCb();
     return w;
   };
 
-  return {
-    start() {
-      socket = new WebSocket(`${protocol}://${window.location.host}/`);
-      socket.addEventListener("open", () => onOpenCb());
-      socket.addEventListener("message", (event) => {
-        const message = JSON.parse(String(event.data)) as RasterServerMessage;
-        if (message.type === "SERVER_RASTER_LOCKSTEP_START") {
-          worker ??= bootWorker();
-          worker.postMessage({ type: "SETUP", payload: message.payload });
-        } else if (message.type === "SERVER_RASTER_TURN") {
-          worker?.postMessage({ type: "TURN", payload: message.payload });
-        } else {
-          onMessageCb(message);
-        }
-      });
-      socket.addEventListener("close", () => {
+  const handleServerMessage = (message: RasterServerMessage): void => {
+    if (message.type === "SERVER_RASTER_LOCKSTEP_START") {
+      resumeToken = message.payload.resumeToken;
+      // A resume always starts a fresh replica — the old one is stale history.
+      if (worker) worker.terminate();
+      worker = bootWorker();
+      worker.postMessage({ type: "SETUP", payload: message.payload });
+    } else if (message.type === "SERVER_RASTER_TURN") {
+      reconnectAttempt = 0; // live turns flowing — the link is healthy
+      worker?.postMessage({ type: "TURN", payload: message.payload });
+    } else if (message.type === "SERVER_RASTER_TURN_BACKLOG") {
+      worker?.postMessage({ type: "BACKLOG", payload: message.payload });
+    } else {
+      onMessageCb(message);
+    }
+  };
+
+  const wireSocket = (ws: WebSocket): void => {
+    ws.addEventListener("message", (event) => {
+      handleServerMessage(JSON.parse(String(event.data)) as RasterServerMessage);
+    });
+    ws.addEventListener("close", () => {
+      if (matchOver || resumeToken === null || reconnectAttempt >= 3) {
         worker?.terminate();
         worker = null;
         onCloseCb();
-      });
+        return;
+      }
+      reconnectAttempt += 1;
+      setTimeout(dialResume, 1000 * 2 ** (reconnectAttempt - 1));
+    });
+  };
+
+  const dialResume = (): void => {
+    const ws = new WebSocket(`${protocol}://${window.location.host}/`);
+    socket = ws;
+    ws.addEventListener("open", () => {
+      ws.send(JSON.stringify({ type: "CLIENT_RASTER_RESUME", payload: { token: resumeToken } }));
+    });
+    wireSocket(ws);
+  };
+
+  return {
+    start() {
+      if (attach) {
+        // Lobby handover: socket already open, setup already received.
+        socket = attach.socket;
+        wireSocket(socket);
+        handleServerMessage({ type: "SERVER_RASTER_LOCKSTEP_START", payload: attach.setup });
+        onOpenCb();
+        return;
+      }
+      socket = new WebSocket(`${protocol}://${window.location.host}/`);
+      socket.addEventListener("open", () => onOpenCb());
+      wireSocket(socket);
     },
     send(message) {
+      // A lobby handover already seated us — swallow the client's routine JOIN.
+      if (attach && message.type === "CLIENT_RASTER_JOIN") return;
       // Stamp the JOIN so the server seats us as a lockstep subscriber; every
       // other intent goes up verbatim — the server records it and it comes
       // back to our replica inside a relay turn (input latency = RTT + ≤1 tick).

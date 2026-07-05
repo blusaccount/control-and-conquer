@@ -24,7 +24,9 @@ import type { RasterServerMessage } from "../../Core/types.js";
 /** Main → worker envelope. */
 type Inbound =
   | { type: "SETUP"; payload: RasterLockstepStartPayload }
-  | { type: "TURN"; payload: RasterTurn };
+  | { type: "TURN"; payload: RasterTurn }
+  /** A resume backlog: the match's full turn history, applied as fast-forward. */
+  | { type: "BACKLOG"; payload: { turns: RasterTurn[] } };
 
 /** Minimal typing for the dedicated-worker global (avoids the WebWorker lib
  * alongside DOM, which would clash on shared globals). */
@@ -109,6 +111,14 @@ ctx.onmessage = (event): void => {
   if (data.type === "TURN") {
     if (replica) applyTurn(data.payload);
     else pendingTurns.push(data.payload);
+    return;
+  }
+  if (data.type === "BACKLOG") {
+    // Fast-forward history — same path as live turns, just many at once.
+    for (const turn of data.payload.turns) {
+      if (replica) applyTurn(turn);
+      else pendingTurns.push(turn);
+    }
   }
 };
 

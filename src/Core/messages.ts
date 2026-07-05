@@ -52,6 +52,92 @@ export interface RasterJoinPayload {
 
 export type RasterJoinClientMessage = { type: "CLIENT_RASTER_JOIN"; payload: RasterJoinPayload };
 
+// ---------------------------------------------------------------------------
+// Private lobbies (PvP).
+//
+// A lobby is a pre-match waiting room identified by a short share code: the
+// host creates it with the match settings, friends join with the code, and the
+// host starts the match — at which point every member is seated into ONE
+// shared lockstep session and receives its `SERVER_RASTER_LOCKSTEP_START`.
+// Seats are fixed at start (the replica protocol needs a complete seat list),
+// which is why joining is only possible while the lobby is still waiting.
+// ---------------------------------------------------------------------------
+
+/** Characters a player display name may use (letters, digits, space, _.'-). */
+export const PLAYER_NAME_PATTERN = /^[\p{L}\p{N} _.'-]{1,24}$/u;
+
+/** Client → server: open a new lobby with these match settings (sender = host). */
+export interface RasterLobbyCreatePayload {
+  mapId?: string;
+  difficulty?: RasterDifficulty;
+  fieldSize?: number;
+  /** The host's display name, shown to other members and in-game. */
+  name?: string;
+}
+
+export type RasterLobbyCreateClientMessage = {
+  type: "CLIENT_RASTER_LOBBY_CREATE";
+  payload: RasterLobbyCreatePayload;
+};
+
+/** Client → server: join the lobby with this share code. */
+export interface RasterLobbyJoinPayload {
+  code: string;
+  name?: string;
+}
+
+export type RasterLobbyJoinClientMessage = {
+  type: "CLIENT_RASTER_LOBBY_JOIN";
+  payload: RasterLobbyJoinPayload;
+};
+
+/** Client → server: start the match (host only). */
+export type RasterLobbyStartClientMessage = { type: "CLIENT_RASTER_LOBBY_START" };
+
+/** Client → server: leave the lobby before it starts. */
+export type RasterLobbyLeaveClientMessage = { type: "CLIENT_RASTER_LOBBY_LEAVE" };
+
+/**
+ * Client → server: resume a seat in a running lockstep match after a dropped
+ * connection, using the secret token issued in `SERVER_RASTER_LOCKSTEP_START`.
+ * The server re-binds the seat to the new socket and replays the full turn
+ * backlog so a fresh replica can fast-forward to the live state.
+ */
+export interface RasterResumePayload {
+  token: string;
+}
+
+export type RasterResumeClientMessage = { type: "CLIENT_RASTER_RESUME"; payload: RasterResumePayload };
+
+/** One member as shown in the lobby waiting room. */
+export interface RasterLobbyMember {
+  name: string;
+  isHost: boolean;
+  /** True on the copy sent to this member (so the client can mark "you"). */
+  you: boolean;
+}
+
+/** Server → client: the lobby's current waiting-room state (sent on every change). */
+export interface RasterLobbyStatePayload {
+  code: string;
+  mapName: string;
+  difficulty: RasterDifficulty;
+  members: RasterLobbyMember[];
+  /** True on the host's copy — only the host sees the start button. */
+  youAreHost: boolean;
+}
+
+export type RasterLobbyStateServerMessage = {
+  type: "SERVER_RASTER_LOBBY_STATE";
+  payload: RasterLobbyStatePayload;
+};
+
+/** Server → client: a lobby command failed (unknown code, not host, started…). */
+export type RasterLobbyErrorServerMessage = {
+  type: "SERVER_RASTER_LOBBY_ERROR";
+  payload: { message: string };
+};
+
 /**
  * Client → server: the tile a player picked as their start position during the
  * spawn phase. Sent on the first map click of a run, before they hold any land.

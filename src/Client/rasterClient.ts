@@ -30,7 +30,7 @@ import { hideMenu, setStatus, type UiElements } from "./dom.js";
 import { formatCount, formatDuration, formatRate, formatTroopRate, formatTroops } from "./format.js";
 import { readBoolSetting } from "./settings.js";
 import { digitAction } from "./hotkeys.js";
-import { createLockstepTransport, createWebSocketTransport, createWorkerTransport, type RasterTransport } from "./transport.js";
+import { createLockstepTransport, createWebSocketTransport, createWorkerTransport, type LockstepAttachOptions, type RasterTransport } from "./transport.js";
 import { paintRaster, paintTileInto } from "./rasterPaint.js";
 import { borderColor, playerColor, playerEmoji } from "./rasterPalette.js";
 import { drawIcon, iconSvgMarkup } from "./icons.js";
@@ -71,6 +71,11 @@ export interface RasterClientOptions {
    * multiplayer wire mode (see `Core/lockstep.ts`).
    */
   transport?: "worker" | "websocket" | "lockstep";
+  /**
+   * Lobby handover: an already-open WebSocket plus the received lockstep
+   * setup. Implies lockstep transport; the client sends no JOIN of its own.
+   */
+  attach?: LockstepAttachOptions;
 }
 
 /**
@@ -566,8 +571,9 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       runtime.pool > 0 ? `${percent}% (${formatTroops(runtime.pool * (percent / 100))})` : `${percent}%`;
   };
 
-  const transport: RasterTransport =
-    options.transport === "websocket"
+  const transport: RasterTransport = options.attach
+    ? createLockstepTransport(options.attach)
+    : options.transport === "websocket"
       ? createWebSocketTransport()
       : options.transport === "lockstep"
         ? createLockstepTransport()

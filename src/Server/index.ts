@@ -254,6 +254,31 @@ wss.on("connection", (socket) => {
         registry.requestRasterTarget(clientId, message.payload.allyId, message.payload.targetId);
       } else if (message.type === "CLIENT_RASTER_EMOJI") {
         registry.sendRasterEmoji(clientId, message.payload.targetId, message.payload.emoji);
+      } else if (message.type === "CLIENT_RASTER_LOBBY_CREATE") {
+        const choice = resolveMapChoice(message.payload.mapId);
+        const difficulty = isRasterDifficulty(message.payload.difficulty) ? message.payload.difficulty : "medium";
+        const rawField = message.payload.fieldSize;
+        const clientField = typeof rawField === "number" && Number.isFinite(rawField)
+          ? Math.max(0, Math.min(Math.floor(rawField), MAX_FIELD))
+          : undefined;
+        registry.createLobby(
+          clientId,
+          send,
+          choice.id,
+          choice.name,
+          { ...choice.options },
+          difficulty,
+          botOverride ?? clientField,
+          message.payload.name,
+        );
+      } else if (message.type === "CLIENT_RASTER_LOBBY_JOIN") {
+        registry.joinLobby(clientId, send, message.payload.code, message.payload.name);
+      } else if (message.type === "CLIENT_RASTER_LOBBY_START") {
+        registry.startLobby(clientId);
+      } else if (message.type === "CLIENT_RASTER_LOBBY_LEAVE") {
+        registry.leaveLobby(clientId);
+      } else if (message.type === "CLIENT_RASTER_RESUME") {
+        registry.resumeLockstep(clientId, send, message.payload.token);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown command error.";
@@ -269,7 +294,9 @@ wss.on("connection", (socket) => {
   });
 
   socket.on("close", () => {
-    unsubscribe?.();
+    // Lobby members and lockstep seats are handled by the registry (the seat
+    // stays alive for a resume); only plain snapshot matches tear down here.
+    if (!registry.handleSocketClose(clientId)) unsubscribe?.();
   });
 });
 

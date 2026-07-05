@@ -75,6 +75,18 @@ test("the solo worker handles every client message type", () => {
   const re = /"(CLIENT_RASTER_[A-Z_]+)"/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(declared)) !== null) wanted.add(m[1]);
+  // Connection-level messages (lobby membership, seat resume) address the
+  // server's registry, not a running simulation — an offline solo worker has
+  // no lobby and nothing to resume, so they are exempt from the handler check.
+  for (const networkOnly of [
+    "CLIENT_RASTER_LOBBY_CREATE",
+    "CLIENT_RASTER_LOBBY_JOIN",
+    "CLIENT_RASTER_LOBBY_START",
+    "CLIENT_RASTER_LOBBY_LEAVE",
+    "CLIENT_RASTER_RESUME",
+  ]) {
+    wanted.delete(networkOnly);
+  }
   assert.ok(wanted.size >= 6, "found the client message types to check");
 
   // The worker either dispatches a type in its action `switch` (`case "X"`) or
