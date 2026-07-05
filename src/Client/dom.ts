@@ -20,6 +20,8 @@ export interface UiElements {
   /** Wrapper around the Build/Weapons sections, hidden during the spawn phase. */
   buildSections: HTMLDivElement;
   eventsPanel: HTMLDivElement;
+  /** Actionable-event cards (alliance requests etc.), stacked above the event log. */
+  actionCards: HTMLDivElement;
   leaderboard: HTMLDivElement;
   menuOverlay: HTMLDivElement;
   statsOverlay: HTMLDivElement;
@@ -47,6 +49,7 @@ export const getUiElements = (): UiElements => {
   const weaponsMenu = document.querySelector<HTMLDivElement>("#weaponsMenu");
   const buildSections = document.querySelector<HTMLDivElement>("#buildSections");
   const eventsPanel = document.querySelector<HTMLDivElement>("#events");
+  const actionCards = document.querySelector<HTMLDivElement>("#actionCards");
   const leaderboard = document.querySelector<HTMLDivElement>("#leaderboard");
   const menuOverlay = document.querySelector<HTMLDivElement>("#menuOverlay");
   const statsOverlay = document.querySelector<HTMLDivElement>("#statsOverlay");
@@ -68,6 +71,7 @@ export const getUiElements = (): UiElements => {
     !weaponsMenu ||
     !buildSections ||
     !eventsPanel ||
+    !actionCards ||
     !leaderboard ||
     !menuOverlay ||
     !statsOverlay ||
@@ -100,6 +104,7 @@ export const getUiElements = (): UiElements => {
     weaponsMenu,
     buildSections,
     eventsPanel,
+    actionCards,
     leaderboard,
     menuOverlay,
     statsOverlay,
