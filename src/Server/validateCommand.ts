@@ -1,6 +1,7 @@
 import { RasterBuildIntent, RasterClientMessage, RasterExpandIntent, RasterExpandMode, RasterNukeIntent } from "../Core/types.js";
 import {
   isRasterDifficulty,
+  LOBBY_CODE_PATTERN,
   PLAYER_NAME_PATTERN,
   RASTER_EMOJIS,
   RasterAllyBreakPayload,
@@ -249,7 +250,7 @@ const parseLobbyJoin = (payload: unknown): RasterLobbyJoinPayload => {
     throw new Error("CLIENT_RASTER_LOBBY_JOIN.payload must be an object.");
   }
   const { code, name } = payload as Record<string, unknown>;
-  if (typeof code !== "string" || !/^[a-zA-Z0-9]{4,8}$/.test(code)) {
+  if (typeof code !== "string" || !LOBBY_CODE_PATTERN.test(code.toUpperCase())) {
     throw new Error("code must be a 4–8 character lobby code.");
   }
   const out: RasterLobbyJoinPayload = { code: code.toUpperCase() };

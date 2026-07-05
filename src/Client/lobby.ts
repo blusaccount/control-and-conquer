@@ -18,8 +18,12 @@ import type { RasterDifficulty } from "../Core/messages.js";
 export interface LobbyHooks {
   /** Waiting-room state changed (member joined/left, initial create). */
   onState(state: RasterLobbyStatePayload): void;
-  /** A lobby command failed, or the room closed (host left). */
-  onError(message: string): void;
+  /**
+   * A lobby command failed. `fatal` mirrors the server's flag: this
+   * connection holds no room (bad code, full room, host left) — the UI
+   * should drop back to the form. Non-fatal errors leave the room intact.
+   */
+  onError(message: string, fatal: boolean): void;
   /** The host started the match — boot the game client with this handover. */
   onMatchStart(attach: LockstepAttachOptions): void;
   /** The socket died before the match started. */
@@ -31,6 +35,8 @@ export interface LobbyClient {
   join(code: string, name?: string): void;
   start(): void;
   leave(): void;
+  /** Close the socket without a leave — after a fatal error voided the room. */
+  dispose(): void;
 }
 
 export const connectLobby = (hooks: LobbyHooks): LobbyClient => {
@@ -55,7 +61,7 @@ export const connectLobby = (hooks: LobbyHooks): LobbyClient => {
     if (message.type === "SERVER_RASTER_LOBBY_STATE") {
       hooks.onState(message.payload);
     } else if (message.type === "SERVER_RASTER_LOBBY_ERROR") {
-      hooks.onError(message.payload.message);
+      hooks.onError(message.payload.message, message.payload.fatal === true);
     } else if (message.type === "SERVER_RASTER_LOCKSTEP_START") {
       handedOver = true;
       hooks.onMatchStart({ socket, setup: message.payload as RasterLockstepStartPayload });
@@ -85,6 +91,12 @@ export const connectLobby = (hooks: LobbyHooks): LobbyClient => {
     },
     leave() {
       push({ type: "CLIENT_RASTER_LOBBY_LEAVE" });
+      socket.close();
+    },
+    dispose() {
+      // Tear the connection down without the polite leave — used when an
+      // error already voided the room, so no membership is left to give up.
+      handedOver = true; // suppress the onClosed hook; this is deliberate
       socket.close();
     },
   };

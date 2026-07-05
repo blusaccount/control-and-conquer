@@ -1,4 +1,5 @@
 import { RasterGameSession, type RasterMessageHandler } from "../../Server/RasterGameSession.js";
+import { applySessionCommand } from "../../Core/applySessionCommand.js";
 import type { LockstepSeat, RasterTurn } from "../../Core/lockstep.js";
 import type { RasterClientMessage } from "../../Core/types.js";
 
@@ -96,55 +97,13 @@ export class LockstepReplica {
   /**
    * Re-apply a relayed command through the same session entry point the
    * referee used, as the same player — validation and rejections replay
-   * identically, so only accepted effects touch the sim.
+   * identically, so only accepted effects touch the sim. Dispatch itself is
+   * the shared {@link applySessionCommand}, so referee-side and replica-side
+   * command routing can never drift apart.
    */
   private applyCommand(playerId: number, command: RasterClientMessage): void {
     const clientId = this.clientIds.get(playerId);
     if (clientId === undefined) return; // unknown seat — nothing it could have touched
-
-    switch (command.type) {
-      case "CLIENT_RASTER_SELECT_SPAWN":
-        this.session.selectSpawn(clientId, command.payload.x, command.payload.y);
-        break;
-      case "CLIENT_RASTER_EXPAND":
-        this.session.queueExpand(clientId, command.payload);
-        break;
-      case "CLIENT_RASTER_BUILD":
-        this.session.queueBuild(clientId, command.payload);
-        break;
-      case "CLIENT_RASTER_NUKE":
-        this.session.queueNuke(clientId, command.payload);
-        break;
-      case "CLIENT_RASTER_ALLY_PROPOSE":
-        this.session.proposeAlliance(clientId, command.payload.targetId);
-        break;
-      case "CLIENT_RASTER_ALLY_RESPOND":
-        this.session.respondAlliance(clientId, command.payload.targetId, command.payload.accept);
-        break;
-      case "CLIENT_RASTER_ALLY_BREAK":
-        this.session.breakAlliance(clientId, command.payload.targetId);
-        break;
-      case "CLIENT_RASTER_ALLY_RENEW":
-        this.session.renewAlliance(clientId, command.payload.targetId);
-        break;
-      case "CLIENT_RASTER_RETREAT":
-        this.session.retreat(clientId, command.payload.targetId);
-        break;
-      case "CLIENT_RASTER_DONATE":
-        this.session.donate(clientId, command.payload.targetId, command.payload.resource, command.payload.percent);
-        break;
-      case "CLIENT_RASTER_EMBARGO":
-        this.session.setEmbargo(clientId, command.payload.targetId, command.payload.on);
-        break;
-      case "CLIENT_RASTER_TARGET_REQUEST":
-        this.session.requestTarget(clientId, command.payload.allyId, command.payload.targetId);
-        break;
-      case "CLIENT_RASTER_EMOJI":
-        this.session.sendEmoji(clientId, command.payload.targetId, command.payload.emoji);
-        break;
-      // CLIENT_RASTER_JOIN never reaches a live session's command stream.
-      default:
-        break;
-    }
+    applySessionCommand(this.session, clientId, command);
   }
 }

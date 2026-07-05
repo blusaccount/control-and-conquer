@@ -50,6 +50,14 @@ interface LockstepMatch {
 /** Human cap per shared lobby (the session seats the AI field on top). */
 const MAX_LOBBY_MEMBERS = 8;
 
+/**
+ * Turns per `SERVER_RASTER_TURN_BACKLOG` message on resume. The backlog is a
+ * match's whole history; one message per slice keeps each JSON.stringify on
+ * the shared event loop bounded (~a couple hundred KB) instead of serialising
+ * an hour of turns in one multi-MB blocking call.
+ */
+const BACKLOG_CHUNK_TURNS = 2000;
+
 /** Share-code alphabet without look-alikes (no 0/O, 1/I/L). */
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
@@ -108,6 +116,10 @@ export class MatchRegistry {
     // the catalogue map the client must fetch to mirror the session. Shares
     // the whole seating path with lobby matches — a lockstep solo is simply a
     // one-member match.
+    // A connection drives at most one lobby/match at a time; a second join (or
+    // one sent while waiting in a lobby) is ignored rather than spawning a
+    // parallel session whose teardown the close handler could then miss.
+    if (this.isClientBusy(clientId)) return () => {};
     if (lockstepMapId !== undefined) {
       this.startLockstepMatch(
         [{ clientId, send }],
@@ -260,6 +272,11 @@ export class MatchRegistry {
   // Private lobbies (PvP waiting rooms).
   // -------------------------------------------------------------------------
 
+  /** Whether this connection already drives a lobby or a match of any kind. */
+  public isClientBusy(clientId: string): boolean {
+    return this.clientToLobby.has(clientId) || this.clientToSession.has(clientId) || this.clientToLockstep.has(clientId);
+  }
+
   /** Push the current waiting-room state to every member. */
   private broadcastLobbyState(lobby: RasterLobby): void {
     for (const [memberId, member] of lobby.members) {
@@ -292,8 +309,8 @@ export class MatchRegistry {
     name?: string,
   ): string {
     // One lobby per connection; a second create replaces nothing.
-    if (this.clientToLobby.has(clientId) || this.clientToSession.has(clientId)) {
-      send({ type: "SERVER_RASTER_LOBBY_ERROR", payload: { message: "You are already in a lobby or match." } });
+    if (this.isClientBusy(clientId)) {
+      send({ type: "SERVER_RASTER_LOBBY_ERROR", payload: { message: "You are already in a lobby or match.", fatal: true } });
       return "";
     }
     let code = makeLobbyCode();
@@ -316,17 +333,17 @@ export class MatchRegistry {
 
   /** Join a waiting lobby by share code. */
   public joinLobby(clientId: string, send: RasterMessageHandler, code: string, name?: string): void {
-    if (this.clientToLobby.has(clientId) || this.clientToSession.has(clientId)) {
-      send({ type: "SERVER_RASTER_LOBBY_ERROR", payload: { message: "You are already in a lobby or match." } });
+    if (this.isClientBusy(clientId)) {
+      send({ type: "SERVER_RASTER_LOBBY_ERROR", payload: { message: "You are already in a lobby or match.", fatal: true } });
       return;
     }
     const lobby = this.lobbies.get(code.toUpperCase());
     if (!lobby) {
-      send({ type: "SERVER_RASTER_LOBBY_ERROR", payload: { message: "No lobby with that code — it may have started or closed." } });
+      send({ type: "SERVER_RASTER_LOBBY_ERROR", payload: { message: "No lobby with that code — it may have started or closed.", fatal: true } });
       return;
     }
     if (lobby.members.size >= MAX_LOBBY_MEMBERS) {
-      send({ type: "SERVER_RASTER_LOBBY_ERROR", payload: { message: "That lobby is full." } });
+      send({ type: "SERVER_RASTER_LOBBY_ERROR", payload: { message: "That lobby is full.", fatal: true } });
       return;
     }
     lobby.members.set(clientId, { send, name });
@@ -343,7 +360,7 @@ export class MatchRegistry {
     if (clientId === lobby.hostClientId || lobby.members.size === 0) {
       for (const [memberId, member] of lobby.members) {
         this.clientToLobby.delete(memberId);
-        member.send({ type: "SERVER_RASTER_LOBBY_ERROR", payload: { message: "The host closed the lobby." } });
+        member.send({ type: "SERVER_RASTER_LOBBY_ERROR", payload: { message: "The host closed the lobby.", fatal: true } });
       }
       this.lobbies.delete(lobby.code);
       return;
@@ -382,13 +399,23 @@ export class MatchRegistry {
    * the live state and rejoins the per-tick stream.
    */
   public resumeLockstep(clientId: string, send: RasterMessageHandler, token: string): boolean {
+    // A connection already driving a lobby or match must not hijack a second
+    // one — the overwritten bookkeeping would orphan whichever match loses.
+    if (this.isClientBusy(clientId)) {
+      send({ type: "SERVER_RASTER_LOBBY_ERROR", payload: { message: "This connection is already in a lobby or match.", fatal: true } });
+      return false;
+    }
     const match = this.tokenToMatch.get(token);
     const oldClientId = match?.tokens.get(token);
     if (!match || oldClientId === undefined) {
-      send({ type: "SERVER_RASTER_LOBBY_ERROR", payload: { message: "That match is no longer running." } });
+      send({ type: "SERVER_RASTER_LOBBY_ERROR", payload: { message: "That match is no longer running.", fatal: true } });
       return false;
     }
-    if (!match.session.rebindSubscriber(oldClientId, clientId, send)) return false;
+    if (!match.session.rebindSubscriber(oldClientId, clientId, send)) {
+      // Never fail silently — an unanswered resume freezes the client.
+      send({ type: "SERVER_RASTER_LOBBY_ERROR", payload: { message: "Could not resume that seat.", fatal: true } });
+      return false;
+    }
     match.tokens.set(token, clientId);
     match.connected.delete(oldClientId);
     match.connected.add(clientId);
@@ -406,42 +433,66 @@ export class MatchRegistry {
         resumeToken: token,
       },
     });
-    send({ type: "SERVER_RASTER_TURN_BACKLOG", payload: { turns: [...match.session.turnBacklog()] } });
+    // The backlog is the whole match history; slice it so no single
+    // JSON.stringify on the shared event loop grows with match length.
+    const backlog = match.session.turnBacklog();
+    for (let i = 0; i < backlog.length || i === 0; i += BACKLOG_CHUNK_TURNS) {
+      send({ type: "SERVER_RASTER_TURN_BACKLOG", payload: { turns: backlog.slice(i, i + BACKLOG_CHUNK_TURNS) } });
+    }
     return true;
   }
 
   /**
-   * A socket died. Lobby members leave their room; lockstep seats go mute but
-   * stay seated (the sim must play out identically on every replica whether a
-   * human is watching or not) and wait for a resume until the grace expires.
-   * Returns true when this client was handled here; plain solo matches return
-   * false so the caller runs their own teardown.
+   * A socket died. Every membership this connection held is wound down —
+   * lobby seat, lockstep seat, plain solo match — not just the first one
+   * found, so a connection that (however it managed to) sits in several
+   * never leaks the others. Lockstep seats go mute but stay seated (the sim
+   * must play out identically on every replica whether a human is watching
+   * or not) and wait for a resume until the grace expires; an unspawned
+   * lockstep seat is auto-seated first so it stops vetoing the
+   * everyone-picked early start. Returns true when anything was handled.
    */
   public handleSocketClose(clientId: string): boolean {
+    let handled = false;
     if (this.clientToLobby.has(clientId)) {
       this.leaveLobby(clientId);
-      return true;
+      handled = true;
     }
     const match = this.clientToLockstep.get(clientId);
     if (match) {
+      match.session.autoPickSpawn(clientId);
       match.session.rebindSubscriber(clientId, clientId, () => {});
       match.connected.delete(clientId);
       match.lastConnectedAt = Date.now();
       this.clientToSession.delete(clientId);
       this.clientToLockstep.delete(clientId);
-      return true;
+      handled = true;
     }
-    return false;
+    const plain = this.plainCleanup.get(clientId);
+    if (plain) {
+      plain(); // removes itself from plainCleanup
+      handled = true;
+    }
+    return handled;
   }
 
-  /** Reap lockstep matches whose last human left longer than the grace ago. */
+  /**
+   * Reap lockstep matches nobody can come back to: ended matches at once
+   * (the sim is frozen, the backlog has no resume value, and lingering
+   * clientToSession entries would block those connections from new lobbies),
+   * abandoned ones after the reconnect grace.
+   */
   private reapLockstepMatches(): void {
     const now = Date.now();
     for (const [matchId, match] of this.lockstepMatches) {
-      if (match.connected.size > 0) continue;
-      if (now - match.lastConnectedAt <= LOCKSTEP_RECONNECT_GRACE_MS) continue;
+      const abandoned = match.connected.size === 0 && now - match.lastConnectedAt > LOCKSTEP_RECONNECT_GRACE_MS;
+      if (!match.session.isEnded() && !abandoned) continue;
       for (const unsub of match.unsubs) unsub();
       for (const token of match.tokens.keys()) this.tokenToMatch.delete(token);
+      for (const connectedId of match.connected) {
+        this.clientToSession.delete(connectedId);
+        this.clientToLockstep.delete(connectedId);
+      }
       this.lockstepMatches.delete(matchId);
       this.activeMatches.delete(matchId);
     }

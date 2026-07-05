@@ -1,5 +1,5 @@
 import { DEFAULT_MAP_CHOICE_ID, MAP_CHOICES } from "../Core/mapCatalog.js";
-import { PLAYER_NAME_PATTERN, RASTER_DIFFICULTIES, type RasterDifficulty } from "../Core/messages.js";
+import { LOBBY_CODE_PATTERN, PLAYER_NAME_PATTERN, RASTER_DIFFICULTIES, type RasterDifficulty } from "../Core/messages.js";
 import { getUiElements } from "./dom.js";
 import { connectLobby, type LobbyClient } from "./lobby.js";
 import { startRasterClient } from "./rasterClient.js";
@@ -166,6 +166,8 @@ const lobbyStatus = (text: string): void => {
 };
 
 const resetLobbyUi = (): void => {
+  // Close any dangling socket too, or every failed attempt would leak one.
+  lobby?.dispose();
   lobby = null;
   lobbyEls.panel?.classList.add("hidden");
   lobbyEls.form?.classList.remove("hidden");
@@ -198,10 +200,11 @@ const openLobby = (action: (client: LobbyClient) => void): void => {
         ? "Share the code — start when everyone is in."
         : "Waiting for the host to start…");
     },
-    onError(message) {
+    onError(message, fatal) {
       lobbyStatus(message);
-      // A closed room (host left / bad code) drops us back to the form.
-      if (lobby && message.toLowerCase().includes("closed")) resetLobbyUi();
+      // A fatal error means this connection holds no room (bad code, full
+      // room, host left) — drop back to the form so Create/Join work again.
+      if (fatal) resetLobbyUi();
     },
     onMatchStart(attach) {
       // Hand the socket to the game client; the lobby UI is done.
@@ -230,7 +233,7 @@ lobbyEls.create?.addEventListener("click", () => {
 
 lobbyEls.join?.addEventListener("click", () => {
   const code = lobbyEls.code?.value.trim().toUpperCase() ?? "";
-  if (!/^[A-Z0-9]{4,8}$/.test(code)) {
+  if (!LOBBY_CODE_PATTERN.test(code)) {
     lobbyStatus("Enter the 6-character lobby code.");
     return;
   }

@@ -205,7 +205,7 @@ wss.on("connection", (socket) => {
       parsed = JSON.parse(String(data));
       const message = validateCommand(parsed);
       if (message.type === "CLIENT_RASTER_JOIN") {
-        if (!unsubscribe) {
+        if (!unsubscribe && !registry.isClientBusy(clientId)) {
           const choice = resolveMapChoice(message.payload.mapId);
           const difficulty = isRasterDifficulty(message.payload.difficulty)
             ? message.payload.difficulty
@@ -294,9 +294,10 @@ wss.on("connection", (socket) => {
   });
 
   socket.on("close", () => {
-    // Lobby members and lockstep seats are handled by the registry (the seat
-    // stays alive for a resume); only plain snapshot matches tear down here.
-    if (!registry.handleSocketClose(clientId)) unsubscribe?.();
+    // The registry winds down every membership this connection held — lobby
+    // seat, lockstep seat (kept muted for a resume), and the plain snapshot
+    // match (via its registered cleanup).
+    registry.handleSocketClose(clientId);
   });
 });
 

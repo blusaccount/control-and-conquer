@@ -62,14 +62,21 @@ test("the sim worker import graphs are free of Node built-ins", () => {
  * worker path drifting: extract the message-type literals from the
  * `RasterClientMessage` union and assert the worker has a `case` for each.
  */
-test("the solo worker handles every client message type", () => {
+test("the shared command dispatcher handles every client message type", () => {
   const root = fileURLToPath(new URL("../", import.meta.url));
   // Client message types live across types.ts (inline union members) and
   // messages.ts (the JOIN/SPAWN/ALLY payload messages).
   const declared =
     readFileSync(resolve(root, "src/Core/types.ts"), "utf8") +
     readFileSync(resolve(root, "src/Core/messages.ts"), "utf8");
+  // Both sim hosts (solo worker, lockstep replica) route through the shared
+  // dispatcher, so the dispatcher's switch is the single surface to check —
+  // plus proof that each host actually uses it.
+  const dispatcher = readFileSync(resolve(root, "src/Core/applySessionCommand.ts"), "utf8");
   const worker = readFileSync(resolve(root, "src/Client/solo/soloWorker.ts"), "utf8");
+  const replica = readFileSync(resolve(root, "src/Client/lockstep/replica.ts"), "utf8");
+  assert.ok(worker.includes("applySessionCommand("), "the solo worker routes through the shared dispatcher");
+  assert.ok(replica.includes("applySessionCommand("), "the lockstep replica routes through the shared dispatcher");
 
   const wanted = new Set<string>();
   const re = /"(CLIENT_RASTER_[A-Z_]+)"/g;
@@ -89,27 +96,14 @@ test("the solo worker handles every client message type", () => {
   }
   assert.ok(wanted.size >= 6, "found the client message types to check");
 
-  // The worker either dispatches a type in its action `switch` (`case "X"`) or
-  // handles it inline at connection time (`message.type === "X"`, e.g. JOIN).
+  // A type is covered when the dispatcher switches on it, or when it is a
+  // connection-time message the worker handles inline (JOIN).
   const missing = [...wanted].filter(
-    (t) => !worker.includes(`case "${t}"`) && !worker.includes(`=== "${t}"`),
+    (t) => !dispatcher.includes(`case "${t}"`) && !worker.includes(`=== "${t}"`),
   );
   assert.deepEqual(
     missing,
     [],
-    `solo worker is missing a handler for: ${missing.join(", ")} — these actions no-op offline.`,
-  );
-
-  // The lockstep replica must re-apply every relayable command the same way,
-  // or a relayed action silently no-ops locally and the replica desyncs. JOIN
-  // is exempt: it never enters a live session's command stream.
-  const replica = readFileSync(resolve(root, "src/Client/lockstep/replica.ts"), "utf8");
-  const missingInReplica = [...wanted].filter(
-    (t) => t !== "CLIENT_RASTER_JOIN" && !replica.includes(`case "${t}"`),
-  );
-  assert.deepEqual(
-    missingInReplica,
-    [],
-    `lockstep replica is missing a handler for: ${missingInReplica.join(", ")} — these commands would desync it.`,
+    `the shared dispatcher is missing a handler for: ${missing.join(", ")} — these actions no-op (and desync lockstep replicas).`,
   );
 });

@@ -344,6 +344,8 @@ export class RasterGameSession {
   private recordedCommands: RasterTurnCommand[] = [];
   /** Dense relay-turn sequence number: one per tick, spawn phase included. */
   private turnCounter = 0;
+  /** Live lockstep subscribers, counted so `recordingEnabled` stays O(1). */
+  private lockstepSubscriberCount = 0;
   /** Optional tap on the relay-turn stream (tests, future replay recording). */
   private turnListener: ((turn: RasterTurn) => void) | null = null;
   /**
@@ -553,6 +555,7 @@ export class RasterGameSession {
       lockstep,
     };
     this.subscribers.set(clientId, subscriber);
+    if (lockstep) this.lockstepSubscriberCount += 1;
 
     // Bots (and any auto-spawn caller) take their precomputed spawn immediately;
     // a human is left *unspawned* until they pick a start position via
@@ -575,7 +578,12 @@ export class RasterGameSession {
     }
 
     return () => {
-      this.subscribers.delete(clientId);
+      // Look up via the subscriber's *current* id — a resume rebind may have
+      // re-keyed the seat since this closure was created. Idempotent.
+      if (this.subscribers.get(subscriber.clientId) === subscriber) {
+        this.subscribers.delete(subscriber.clientId);
+        if (subscriber.lockstep) this.lockstepSubscriberCount -= 1;
+      }
     };
   }
 
@@ -632,12 +640,11 @@ export class RasterGameSession {
   /**
    * Whether commands need to be recorded at all. False for plain
    * snapshot-streamed sessions, so the record calls in every command path stay
-   * zero-cost unless someone actually consumes turns.
+   * zero-cost unless someone actually consumes turns. O(1): a subscriber scan
+   * here would run at the top of every command with up to a 400-bot field.
    */
   private recordingEnabled(): boolean {
-    if (this.turnListener !== null) return true;
-    for (const sub of this.subscribers.values()) if (sub.lockstep) return true;
-    return false;
+    return this.turnListener !== null || this.lockstepSubscriberCount > 0;
   }
 
   /**
@@ -659,14 +666,7 @@ export class RasterGameSession {
    * tick not yet simulated).
    */
   private flushTurn(): void {
-    const listener = this.turnListener;
-    let wanted = listener !== null;
-    if (!wanted) {
-      for (const sub of this.subscribers.values()) {
-        if (sub.lockstep) { wanted = true; break; }
-      }
-    }
-    if (!wanted) {
+    if (!this.recordingEnabled()) {
       this.recordedCommands.length = 0;
       return;
     }
@@ -678,7 +678,7 @@ export class RasterGameSession {
     this.recordedCommands = [];
     this.turnCounter += 1;
     this.turnLog.push(turn);
-    listener?.(turn);
+    this.turnListener?.(turn);
     for (const sub of this.subscribers.values()) {
       if (sub.lockstep) sub.send({ type: "SERVER_RASTER_TURN", payload: turn });
     }
@@ -695,6 +695,12 @@ export class RasterGameSession {
    * untouched, so nothing about the simulation changes; only where its
    * messages go and under which client id its commands arrive. No-ops if the
    * old id is unknown or the new id is already taken.
+   *
+   * Pending intents queued under the old id are re-keyed too. They were
+   * already recorded into the relay stream at queue time, so every replica
+   * WILL apply them — if the referee dropped them at drain time (a dangling
+   * clientId misses the subscriber lookup), referee and replicas would
+   * diverge at the next hash turn.
    */
   public rebindSubscriber(oldClientId: string, newClientId: string, send: RasterMessageHandler): boolean {
     const subscriber = this.subscribers.get(oldClientId);
@@ -704,7 +710,33 @@ export class RasterGameSession {
     subscriber.clientId = newClientId;
     subscriber.send = send;
     this.subscribers.set(newClientId, subscriber);
+    if (newClientId !== oldClientId) {
+      for (const pending of this.pendingExpands) if (pending.clientId === oldClientId) pending.clientId = newClientId;
+      for (const pending of this.pendingBuilds) if (pending.clientId === oldClientId) pending.clientId = newClientId;
+      for (const pending of this.pendingNukes) if (pending.clientId === oldClientId) pending.clientId = newClientId;
+    }
     return true;
+  }
+
+  /**
+   * Seat an unspawned player at their reserved spawn tile, as the countdown
+   * fallback would. Called when a client abandons the start phase (socket
+   * gone, nothing to wait for) so their empty seat stops vetoing the
+   * everyone-picked early start. Routed through {@link selectSpawn}, so the
+   * pick is recorded and replays identically on every replica. No-op outside
+   * the start phase or for a seat that already holds ground.
+   */
+  public autoPickSpawn(clientId: string): void {
+    const subscriber = this.subscribers.get(clientId);
+    if (!subscriber || this.phase !== "spawn" || this.grid.hasPlayer(subscriber.playerId)) return;
+    const spawn = this.spawnTiles[subscriber.playerId - 1] ?? this.firstFreeSpawn();
+    if (spawn === undefined) return;
+    this.selectSpawn(clientId, this.map.x(spawn), this.map.y(spawn));
+  }
+
+  /** Whether the match has ended (winner decided or time limit hit). */
+  public isEnded(): boolean {
+    return this.matchEndedBroadcast;
   }
 
   /**

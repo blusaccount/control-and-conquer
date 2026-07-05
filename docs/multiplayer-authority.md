@@ -157,11 +157,17 @@ being simulated identically on every replica (removing it would desync the
 spawn-phase auto-seat logic, and an AFK nation should keep its territory
 anyway). Within `LOCKSTEP_RECONNECT_GRACE_MS` the client can present the
 token on a fresh connection (`CLIENT_RASTER_RESUME`): the server re-binds the
-seat and replies with the setup plus a `SERVER_RASTER_TURN_BACKLOG` — the
-match's full turn history in one message. A fresh replica replays it
-(deterministic fast-forward) and rejoins the live per-tick stream. The
-lockstep transport does this automatically with exponential backoff before
-giving up. A match whose last human stays gone past the grace is reaped.
+seat (migrating any still-pending intents, so the referee never drops a
+command the replicas already received) and replies with the setup plus the
+match's full turn history as `SERVER_RASTER_TURN_BACKLOG` messages, sliced
+into bounded chunks so no single serialization stalls the shared tick loop.
+A fresh replica replays it (deterministic fast-forward) and rejoins the live
+per-tick stream. The lockstep transport does this automatically with
+exponential backoff; a refused resume is surfaced as a fatal error and winds
+the client down instead of freezing it. Ended matches are reaped immediately;
+one whose last human stays gone past the grace is reaped too. A seat whose
+socket dies unspawned during the start phase is auto-seated via a recorded
+pick, so it cannot veto the everyone-picked early start.
 
 The turn log doubles as a complete match replay; a replay viewer only needs
 to feed it to a replica at its own pace.

@@ -53,7 +53,9 @@ export const createWebSocketTransport = (): RasterTransport => {
 /** Worker → main message envelope. */
 type WorkerOutbound =
   | { type: "OPEN" }
-  | { type: "SERVER"; message: RasterServerMessage };
+  | { type: "SERVER"; message: RasterServerMessage }
+  /** Unrecoverable replica failure (map fetch, setup mismatch, turn gap). */
+  | { type: "FATAL"; message: string };
 
 /**
  * Transport backed by a dedicated Web Worker that runs the solo match locally
@@ -121,11 +123,37 @@ export const createLockstepTransport = (attach?: LockstepAttachOptions): RasterT
   let resumeToken: string | null = null;
   let matchOver = false;
   let reconnectAttempt = 0;
+  /**
+   * Intents that arrived while no socket was OPEN (reconnect backoff, or the
+   * brief CONNECTING window after a redial). Sending on a CONNECTING socket
+   * throws per spec and on a CLOSED one is silently discarded — both wrong
+   * for a player's click — so they queue here and flush on the next open.
+   * Bounded: stale intents past a reconnect are mostly harmless (the server
+   * re-validates), but an unbounded queue would replay minutes of clicks.
+   */
+  const outbox: string[] = [];
+  const OUTBOX_LIMIT = 32;
+
+  /** Give up for good: stop reconnecting, drop the replica, tell the client. */
+  const shutdown = (): void => {
+    matchOver = true;
+    resumeToken = null;
+    worker?.terminate();
+    worker = null;
+    onCloseCb();
+  };
 
   const bootWorker = (): Worker => {
     const w = new Worker(new URL("./lockstep/lockstepWorker.js", import.meta.url), { type: "module" });
     w.onmessage = (event: MessageEvent<WorkerOutbound>) => {
       const data = event.data;
+      if (data.type === "FATAL") {
+        // The replica cannot continue (map fetch failed, setup mismatch, turn
+        // gap). Surface the reason, then wind down — never a silent freeze.
+        onMessageCb({ type: "SERVER_RASTER_LOBBY_ERROR", payload: { message: data.message, fatal: true } });
+        shutdown();
+        return;
+      }
       if (data.type !== "SERVER") return;
       // A decided match must not trigger reconnects after the socket winds down.
       if (data.message.type === "SERVER_RASTER_MATCH_ENDED" && data.message.payload.winnerPlayerId !== null) {
@@ -133,7 +161,7 @@ export const createLockstepTransport = (attach?: LockstepAttachOptions): RasterT
       }
       onMessageCb(data.message);
     };
-    w.onerror = () => onCloseCb();
+    w.onerror = () => shutdown();
     return w;
   };
 
@@ -149,9 +177,19 @@ export const createLockstepTransport = (attach?: LockstepAttachOptions): RasterT
       worker?.postMessage({ type: "TURN", payload: message.payload });
     } else if (message.type === "SERVER_RASTER_TURN_BACKLOG") {
       worker?.postMessage({ type: "BACKLOG", payload: message.payload });
+    } else if (message.type === "SERVER_RASTER_LOBBY_ERROR") {
+      // In a lockstep transport this only means a refused resume (match
+      // reaped, seat taken). The socket stays open server-side, so without
+      // an explicit shutdown the client would sit frozen forever.
+      onMessageCb(message);
+      shutdown();
     } else {
       onMessageCb(message);
     }
+  };
+
+  const flushOutbox = (ws: WebSocket): void => {
+    for (const wire of outbox.splice(0)) ws.send(wire);
   };
 
   const wireSocket = (ws: WebSocket): void => {
@@ -160,9 +198,7 @@ export const createLockstepTransport = (attach?: LockstepAttachOptions): RasterT
     });
     ws.addEventListener("close", () => {
       if (matchOver || resumeToken === null || reconnectAttempt >= 3) {
-        worker?.terminate();
-        worker = null;
-        onCloseCb();
+        shutdown();
         return;
       }
       reconnectAttempt += 1;
@@ -175,6 +211,7 @@ export const createLockstepTransport = (attach?: LockstepAttachOptions): RasterT
     socket = ws;
     ws.addEventListener("open", () => {
       ws.send(JSON.stringify({ type: "CLIENT_RASTER_RESUME", payload: { token: resumeToken } }));
+      flushOutbox(ws);
     });
     wireSocket(ws);
   };
@@ -190,7 +227,10 @@ export const createLockstepTransport = (attach?: LockstepAttachOptions): RasterT
         return;
       }
       socket = new WebSocket(`${protocol}://${window.location.host}/`);
-      socket.addEventListener("open", () => onOpenCb());
+      socket.addEventListener("open", () => {
+        flushOutbox(socket as WebSocket);
+        onOpenCb();
+      });
       wireSocket(socket);
     },
     send(message) {
@@ -199,10 +239,17 @@ export const createLockstepTransport = (attach?: LockstepAttachOptions): RasterT
       // Stamp the JOIN so the server seats us as a lockstep subscriber; every
       // other intent goes up verbatim — the server records it and it comes
       // back to our replica inside a relay turn (input latency = RTT + ≤1 tick).
-      const wire = message.type === "CLIENT_RASTER_JOIN"
-        ? { ...message, payload: { ...message.payload, lockstep: true } }
-        : message;
-      socket?.send(JSON.stringify(wire));
+      const wire = JSON.stringify(
+        message.type === "CLIENT_RASTER_JOIN"
+          ? { ...message, payload: { ...message.payload, lockstep: true } }
+          : message,
+      );
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(wire);
+      } else if (!matchOver) {
+        if (outbox.length >= OUTBOX_LIMIT) outbox.shift();
+        outbox.push(wire);
+      }
     },
     onOpen(cb) { onOpenCb = cb; },
     onMessage(cb) { onMessageCb = cb; },

@@ -1,6 +1,6 @@
-import { GameMap } from "../../Core/GameMap.js";
 import { RasterGameSession } from "../../Server/RasterGameSession.js";
 import { LockstepReplica } from "./replica.js";
+import { fetchPrebuiltMap } from "../mapFetch.js";
 import type { RasterLockstepStartPayload, RasterTurn } from "../../Core/lockstep.js";
 import type { RasterServerMessage } from "../../Core/types.js";
 
@@ -40,6 +40,17 @@ const emit = (message: RasterServerMessage): void => {
   ctx.postMessage({ type: "SERVER", message });
 };
 
+/**
+ * Report an unrecoverable boot/replay failure to the main thread. A worker's
+ * unhandled promise rejection never reaches the parent's `Worker.onerror`,
+ * so without this explicit channel a failed map fetch or setup mismatch
+ * would leave the player on a silent black screen.
+ */
+const emitFatal = (error: unknown): void => {
+  dead = true;
+  ctx.postMessage({ type: "FATAL", message: error instanceof Error ? error.message : String(error) });
+};
+
 let replica: LockstepReplica | null = null;
 let starting = false;
 /** Turns received before the replica finished booting, in arrival order. */
@@ -49,7 +60,15 @@ let dead = false;
 
 const applyTurn = (turn: RasterTurn): void => {
   if (!replica || dead) return;
-  const desync = replica.applyTurn(turn);
+  let desync: ReturnType<LockstepReplica["applyTurn"]>;
+  try {
+    desync = replica.applyTurn(turn);
+  } catch (error) {
+    // A turn gap or a replay throw is unrecoverable for this replica —
+    // surface it instead of silently freezing.
+    emitFatal(error);
+    return;
+  }
   if (desync) {
     // Surface the divergence; keep simulating so the player can finish the
     // match, exactly like OpenFront's desync notice. (A future resync will
@@ -67,12 +86,7 @@ const start = async (setup: RasterLockstepStartPayload): Promise<void> => {
 
   // The referee's map, prebuilt server-side — identical bytes to what its own
   // session was constructed from, which the terrain hash below proves.
-  const res = await fetch(`/api/solo/map?id=${encodeURIComponent(setup.mapId)}`);
-  const bytes = new Uint8Array(await res.arrayBuffer());
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const width = view.getUint32(0, true);
-  const height = view.getUint32(4, true);
-  const map = new GameMap(width, height, bytes.subarray(8));
+  const { map } = await fetchPrebuiltMap(setup.mapId);
 
   const session = new RasterGameSession({
     prebuiltMap: map,
@@ -82,7 +96,6 @@ const start = async (setup: RasterLockstepStartPayload): Promise<void> => {
     startingTroops: setup.startingTroops,
   });
   if (session.peekTerrainHash() !== setup.terrainHash) {
-    dead = true;
     throw new Error(
       `Lockstep map mismatch: referee terrain ${setup.terrainHash}, fetched ${session.peekTerrainHash()}.`,
     );
@@ -105,7 +118,9 @@ ctx.onmessage = (event): void => {
   const data = event.data;
   if (!data) return;
   if (data.type === "SETUP") {
-    void start(data.payload);
+    // Boot failures (map fetch, terrain mismatch, seat mirror) must surface —
+    // an unhandled rejection here would be invisible to the main thread.
+    start(data.payload).catch(emitFatal);
     return;
   }
   if (data.type === "TURN") {

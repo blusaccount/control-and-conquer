@@ -1,9 +1,10 @@
-import { GameMap } from "../../Core/GameMap.js";
 import { RasterGameSession } from "../../Server/RasterGameSession.js";
 import { RasterBotController } from "../../Server/RasterBotController.js";
 import { buildFieldConfigs, resolveFieldSize } from "../../Server/botField.js";
 import { SIMULATION_TICK_RATE, SPAWN_PHASE_SECONDS } from "../../Server/simulationConfig.js";
 import { isRasterDifficulty, type RasterDifficulty } from "../../Core/messages.js";
+import { applySessionCommand } from "../../Core/applySessionCommand.js";
+import { fetchPrebuiltMap } from "../mapFetch.js";
 import type { RasterClientMessage, RasterServerMessage } from "../../Core/types.js";
 
 /**
@@ -52,13 +53,7 @@ const start = async (mapId: string | undefined, rawDifficulty: unknown, rawField
   const fieldSize = typeof rawFieldSize === "number" && Number.isFinite(rawFieldSize) ? rawFieldSize : undefined;
 
   // No id → let the server pick its default map (matches the WebSocket path).
-  const res = await fetch(mapId ? `/api/solo/map?id=${encodeURIComponent(mapId)}` : "/api/solo/map");
-  const mapName = decodeURIComponent(res.headers.get("x-map-name") ?? "");
-  const bytes = new Uint8Array(await res.arrayBuffer());
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const width = view.getUint32(0, true);
-  const height = view.getUint32(4, true);
-  const map = new GameMap(width, height, bytes.subarray(8));
+  const { map, name: mapName } = await fetchPrebuiltMap(mapId);
 
   const live = new RasterGameSession({
     prebuiltMap: map,
@@ -98,47 +93,10 @@ ctx.onmessage = (event): void => {
   }
   if (!session) return;
 
-  switch (message.type) {
-    case "CLIENT_RASTER_SELECT_SPAWN":
-      session.selectSpawn(LOCAL_CLIENT_ID, message.payload.x, message.payload.y);
-      break;
-    case "CLIENT_RASTER_EXPAND":
-      session.queueExpand(LOCAL_CLIENT_ID, message.payload);
-      break;
-    case "CLIENT_RASTER_BUILD":
-      session.queueBuild(LOCAL_CLIENT_ID, message.payload);
-      break;
-    case "CLIENT_RASTER_NUKE":
-      session.queueNuke(LOCAL_CLIENT_ID, message.payload);
-      break;
-    case "CLIENT_RASTER_ALLY_PROPOSE":
-      session.proposeAlliance(LOCAL_CLIENT_ID, message.payload.targetId);
-      break;
-    case "CLIENT_RASTER_ALLY_RESPOND":
-      session.respondAlliance(LOCAL_CLIENT_ID, message.payload.targetId, message.payload.accept);
-      break;
-    case "CLIENT_RASTER_ALLY_BREAK":
-      session.breakAlliance(LOCAL_CLIENT_ID, message.payload.targetId);
-      break;
-    case "CLIENT_RASTER_ALLY_RENEW":
-      session.renewAlliance(LOCAL_CLIENT_ID, message.payload.targetId);
-      break;
-    case "CLIENT_RASTER_RETREAT":
-      session.retreat(LOCAL_CLIENT_ID, message.payload.targetId);
-      break;
-    case "CLIENT_RASTER_DONATE":
-      session.donate(LOCAL_CLIENT_ID, message.payload.targetId, message.payload.resource, message.payload.percent);
-      break;
-    case "CLIENT_RASTER_EMBARGO":
-      session.setEmbargo(LOCAL_CLIENT_ID, message.payload.targetId, message.payload.on);
-      break;
-    case "CLIENT_RASTER_TARGET_REQUEST":
-      session.requestTarget(LOCAL_CLIENT_ID, message.payload.allyId, message.payload.targetId);
-      break;
-    case "CLIENT_RASTER_EMOJI":
-      session.sendEmoji(LOCAL_CLIENT_ID, message.payload.targetId, message.payload.emoji);
-      break;
-  }
+  // Every in-match command routes through the shared dispatcher — the same
+  // one the lockstep replica uses — so the two sim hosts can't drift on
+  // which message types they understand.
+  applySessionCommand(session, LOCAL_CLIENT_ID, message);
 };
 
 // Signal readiness so the client sends its JOIN (which carries the map choice).

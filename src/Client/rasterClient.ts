@@ -900,6 +900,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       // playing — the server remains authoritative — but tell the player their
       // view may be off until they rejoin.
       setStatus(ui, `Out of sync with the server (turn ${message.payload.turn}) — your view may be inaccurate.`, "error");
+    } else if (message.type === "SERVER_RASTER_LOBBY_ERROR") {
+      // In-match this means a refused resume or a fatal replica failure — the
+      // transport winds down right after, so show the reason, not silence.
+      setStatus(ui, message.payload.message, "error");
     }
   };
 

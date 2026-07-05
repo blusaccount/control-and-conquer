@@ -66,6 +66,14 @@ export type RasterJoinClientMessage = { type: "CLIENT_RASTER_JOIN"; payload: Ras
 /** Characters a player display name may use (letters, digits, space, _.'-). */
 export const PLAYER_NAME_PATTERN = /^[\p{L}\p{N} _.'-]{1,24}$/u;
 
+/**
+ * Shape of a lobby share code on the wire — the single definition the client
+ * form, the server validator and tests all check against. (The generator
+ * emits 6 chars from a reduced look-alike-free alphabet; the pattern accepts
+ * the general shape so the alphabet can evolve without breaking validators.)
+ */
+export const LOBBY_CODE_PATTERN = /^[A-Z0-9]{4,8}$/;
+
 /** Client → server: open a new lobby with these match settings (sender = host). */
 export interface RasterLobbyCreatePayload {
   mapId?: string;
@@ -132,10 +140,16 @@ export type RasterLobbyStateServerMessage = {
   payload: RasterLobbyStatePayload;
 };
 
-/** Server → client: a lobby command failed (unknown code, not host, started…). */
+/**
+ * Server → client: a lobby/resume command failed. `fatal: true` means the
+ * client no longer has (or never got) a room or seat on this connection —
+ * the UI should drop back to the lobby form instead of string-matching the
+ * message text. Non-fatal errors (e.g. a guest pressing start) leave the
+ * membership intact.
+ */
 export type RasterLobbyErrorServerMessage = {
   type: "SERVER_RASTER_LOBBY_ERROR";
-  payload: { message: string };
+  payload: { message: string; fatal?: boolean };
 };
 
 /**
