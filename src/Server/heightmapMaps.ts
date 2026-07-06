@@ -6,6 +6,7 @@ import type { GameMap } from "../Core/GameMap.js";
 import { decodePngToGray, type DecodedGray } from "./pngDecode.js";
 import { carveRivers, riverHalfWidthFor } from "./rivers.js";
 import { loadEarthRivers } from "./riverData.js";
+import { EARTH_STRAITS } from "./straits.js";
 
 /**
  * Large, real-world maps derived from a grayscale heightmap.
@@ -45,6 +46,13 @@ export interface HeightmapMapDef {
    * own committed data layer (see `riverData.ts` / `rivers.ts`). @default false
    */
   rivers?: boolean;
+  /**
+   * Carve the strategic straits and canals (`straits.ts`) into this map as
+   * water. Narrow real-world chokepoints (Gibraltar, Bosporus, Suez, …) are
+   * squeezed shut by downsampling, which would turn the Mediterranean, Black
+   * Sea, Baltic and Persian Gulf into landlocked lakes. @default false
+   */
+  straits?: boolean;
 }
 
 /** Catalogue of available heightmap maps, keyed by id. */
@@ -57,6 +65,7 @@ const EARTH: HeightmapMapDef = {
   latMin: -58,
   mountainGray: 200,
   rivers: true,
+  straits: true,
 };
 
 const HEIGHTMAP_MAPS: ReadonlyMap<string, HeightmapMapDef> = new Map([[EARTH.id, EARTH]]);
@@ -187,10 +196,13 @@ export const buildHeightmapGameMap = (def: HeightmapMapDef, requestedWidth?: num
   const { minIslandTiles, minLakeTiles } = speckleThresholds(width, height);
   cleanupMask(width, height, land, minIslandTiles, minLakeTiles);
 
-  // Overlay rivers as water before the finishing pass. The topography source
-  // carries no hydrography, so this is the only step that puts rivers on the
-  // map; it is a hard override of the land/water classification above.
-  if (def.rivers) {
+  // Overlay rivers and strait/canal channels as water before the finishing
+  // pass. The topography source carries no hydrography (and downsampling
+  // squeezes narrow real straits shut), so this is the only step that puts
+  // them on the map; it is a hard override of the land/water classification
+  // above. Both layers share one carve pass — they are the same operation on
+  // different curated data.
+  if (def.rivers || def.straits) {
     carveRivers({
       width,
       height,
@@ -198,7 +210,7 @@ export const buildHeightmapGameMap = (def: HeightmapMapDef, requestedWidth?: num
       elevation,
       latMax: def.latMax,
       latMin: def.latMin,
-      rivers: loadEarthRivers(),
+      rivers: [...(def.rivers ? loadEarthRivers() : []), ...(def.straits ? EARTH_STRAITS : [])],
       halfWidth: riverHalfWidthFor(width),
     });
 

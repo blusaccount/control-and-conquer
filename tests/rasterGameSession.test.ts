@@ -229,9 +229,13 @@ test("a far coast across water on the SAME continent dispatches a boat, not a si
   const map = session.peekMap();
   const grid = session.peekGrid();
 
-  const seat = map.ref(673, 149); // a coast on Earth's largest landmass
-  const clickX = 598;
-  const clickY = 139; // a far coast of the SAME landmass, across the water
+  // West African coast (Senegal) and the South African coast: two far shores
+  // of the one African landmass. (The pair used to be Oman → Egypt, but the
+  // strategic-waterway carve cut the Suez Canal, which splits Africa from
+  // Eurasia — so those two coasts are no longer the same landmass.)
+  const seat = map.ref(464, 179);
+  const clickX = 569;
+  const clickY = 319; // a far coast of the SAME landmass, across the water
   const clickRef = map.ref(clickX, clickY);
   assert.ok(grid.isCapturable(seat), "seat is land");
   assert.ok(grid.isCapturable(clickRef), "click target is land");

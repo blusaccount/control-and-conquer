@@ -53,6 +53,27 @@ heightmap source with the build tool:
 tsx scripts/buildMap.ts --in <source-heightmap.png> --out earth-topo.png --max-width 2048
 ```
 
+### Strategic waterways
+
+The topography source has no hydrography, so the Earth maps overlay two curated
+water layers, both carved into the land mask at build time:
+
+- **Rivers** (`assets/maps/earth-rivers.json`, built by `scripts/buildRivers.ts`):
+  a whitelist of ~21 strategically relevant river systems (Mississippi, Amazon,
+  Nile, Rhine, Danube, Volga, Yangtze, Ganges, …) from Natural Earth
+  centerlines, plus hand-authored mouth channels so every system connects to
+  the sea and a Great Lakes → St. Lawrence chain. The full Natural Earth dump
+  (~900 rivers) made rivers read as noise; the curated set keeps only corridors
+  and borders worth fighting over. Regenerate with
+  `tsx scripts/buildRivers.ts --in <ne_50m_rivers_lake_centerlines.geojson>`
+  (pass `--all` to skip the whitelist).
+- **Straits & canals** (`src/Server/straits.ts`): Gibraltar, the Turkish
+  Straits, Hormuz, Bab-el-Mandeb, Malacca, Dover, the Danish Straits, Suez,
+  Panama, … Real chokepoints are narrower than a tile and get squeezed shut by
+  downsampling — without the carve the Mediterranean, Black Sea and Baltic
+  become landlocked lakes. The carve guarantees each chokepoint is an open,
+  ocean-connected channel at every grid size.
+
 The AI field is **packed**, like OpenFront (whose default is a flat 400 bots).
 It scales with the map to keep OpenFront's density (~1 player per ~1300 tiles):
 the Standard map seats ~130 opponents, the larger Earth maps up to the **400**

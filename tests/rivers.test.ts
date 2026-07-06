@@ -81,11 +81,32 @@ test("carveRivers extends mouths to the sea when asked", () => {
   assert.ok(added > 1 && added < 20, `mouth bridged to coast, got ${added} new tiles`);
 });
 
-test("the committed earth river asset loads as many polylines", () => {
+test("the committed earth river asset is the curated strategic set", () => {
   const rivers = loadEarthRivers();
-  assert.ok(rivers.length > 100, "real-world data has hundreds of river polylines");
-  for (const r of rivers.slice(0, 50)) {
+  // A curated whitelist of strategic river systems — not the full Natural
+  // Earth dump (~900 polylines), which made rivers read as noise.
+  assert.ok(
+    rivers.length >= 100 && rivers.length <= 400,
+    `curated polyline count, got ${rivers.length}`,
+  );
+  for (const r of rivers) {
+    assert.ok(r.name && r.name.length > 0, "every polyline carries its system name");
     assert.ok(r.points.length >= 2, "every river has at least two points");
+  }
+  const systems = new Set(rivers.map((r) => r.name));
+  assert.ok(systems.size >= 15 && systems.size <= 40, `strategic system count, got ${systems.size}`);
+  for (const expected of [
+    "Nile",
+    "Rhine",
+    "Danube",
+    "Volga",
+    "Mississippi",
+    "Amazon",
+    "Yangtze",
+    "Ganges",
+    "Great Lakes",
+  ]) {
+    assert.ok(systems.has(expected), `curated set should include the ${expected}`);
   }
 });
 
