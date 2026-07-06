@@ -60,14 +60,16 @@ const PEAK: Rgba = { r: 60, g: 60, b: 60, a: 255 };
 /** Map a single encoded terrain byte to its natural (unowned) colour. */
 export const terrainColor = (byte: number): Rgba => {
   if (!isLand(byte)) {
-    // Shoreline water: 70% ocean + 30% white — OpenFront's dynamic coastline,
-    // a light band one tile wide. A 1-tile river is entirely shoreline water,
-    // so this is the colour rivers read as.
+    // Shoreline water: ocean nudged 12% toward white — a subtle coastal band
+    // one tile wide. A 1-tile river is entirely shoreline water, so this is
+    // the colour rivers read as. The nudge is deliberately small: shoreline
+    // water (and with it every river and lake rim) should stay recognisably
+    // *the same water* as the open sea, not a separate pale colour.
     if (isShore(byte)) {
       return {
-        r: Math.round(0.7 * OCEAN.r + 76.5),
-        g: Math.round(0.7 * OCEAN.g + 76.5),
-        b: Math.round(0.7 * OCEAN.b + 76.5),
+        r: Math.round(0.88 * OCEAN.r + 30.6),
+        g: Math.round(0.88 * OCEAN.g + 30.6),
+        b: Math.round(0.88 * OCEAN.b + 30.6),
         a: 255,
       };
     }
