@@ -76,6 +76,13 @@ export interface RasterClientOptions {
    * setup. Implies lockstep transport; the client sends no JOIN of its own.
    */
   attach?: LockstepAttachOptions;
+  /**
+   * A player-made map from the in-browser editor: the serialized `.ccmap`
+   * file (see `Core/customMap.ts`). When set it wins over `mapId` — the solo
+   * worker builds the terrain locally, the websocket path carries it in the
+   * join payload. Not supported on the lockstep transport.
+   */
+  customMap?: string;
 }
 
 /**
@@ -876,6 +883,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         mapId: options.mapId,
         difficulty: options.difficulty,
         ...(options.fieldSize !== undefined ? { fieldSize: options.fieldSize } : {}),
+        ...(options.customMap !== undefined ? { customMap: options.customMap } : {}),
       },
     };
     transport.send(join);

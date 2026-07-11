@@ -2,6 +2,7 @@ import { DEFAULT_MAP_CHOICE_ID, MAP_CHOICES } from "../Core/mapCatalog.js";
 import { LOBBY_CODE_PATTERN, PLAYER_NAME_PATTERN, RASTER_DIFFICULTIES, type RasterDifficulty } from "../Core/messages.js";
 import { getUiElements } from "./dom.js";
 import { connectLobby, type LobbyClient } from "./lobby.js";
+import { initMapEditor } from "./mapEditor.js";
 import { startRasterClient } from "./rasterClient.js";
 import { initSettings, initFrameControls } from "./settings.js";
 
@@ -135,6 +136,24 @@ startButton?.addEventListener("click", () => {
   // 0 is the "Auto" sentinel → omit so the server auto-scales to the map.
   const fieldSize = raw > 0 ? raw : undefined;
   startRasterClient(ui, { mapId: selectedMapId, difficulty: selectedDifficulty, fieldSize, ...(transport ? { transport } : {}) });
+});
+
+// The in-browser map editor: paint a world, download it as a .ccmap file, or
+// play it right away. A played custom map uses the menu's current difficulty
+// and AI-opponents settings; the map itself never touches the server in the
+// default (worker-hosted) solo mode.
+initMapEditor({
+  onPlay(customMap) {
+    const raw = fieldSizeInput ? Number(fieldSizeInput.value) : 0;
+    const fieldSize = raw > 0 ? raw : undefined;
+    startRasterClient(ui, {
+      mapId: selectedMapId,
+      difficulty: selectedDifficulty,
+      fieldSize,
+      customMap,
+      ...(transport ? { transport } : {}),
+    });
+  },
 });
 
 // ---------------------------------------------------------------------------

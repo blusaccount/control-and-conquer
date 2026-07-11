@@ -797,6 +797,76 @@
       .lobby-members .host-tag { color: var(--accent); font-size: 11px; margin-left: 6px; }
       .lobby-members .you-tag { color: var(--text-dim); font-size: 11px; margin-left: 6px; }
 
+      /* ---- In-browser map editor ----------------------------------------- */
+      .editor-panel {
+        margin-top: 14px;
+        background: var(--panel-bg-solid);
+        border: 1px solid var(--panel-border);
+        border-radius: 12px;
+        padding: 16px 20px;
+        width: 640px;
+        max-width: 92vw;
+        text-align: left;
+      }
+      .editor-panel.hidden { display: none; }
+      .editor-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+      .editor-select {
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid var(--panel-border);
+        border-radius: 8px;
+        color: inherit;
+        padding: 8px 10px;
+        font: inherit;
+      }
+      .editor-select option { background: var(--panel-bg-solid); }
+      .editor-tools { display: flex; flex-wrap: wrap; gap: 6px; }
+      .editor-tool {
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid var(--panel-border);
+        border-radius: 8px;
+        color: inherit;
+        padding: 7px 10px;
+        font: inherit;
+        font-size: 13.5px;
+        cursor: pointer;
+      }
+      .editor-tool:hover { border-color: rgba(255, 255, 255, 0.3); }
+      .editor-tool.selected {
+        border-color: var(--accent);
+        color: var(--accent);
+        background: rgba(255, 255, 255, 0.08);
+      }
+      .editor-brush {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-left: auto;
+        font-size: 13.5px;
+        color: var(--text-dim);
+      }
+      .editor-brush input { width: 110px; }
+      .editor-canvas-wrap {
+        border: 1px solid var(--panel-border);
+        border-radius: 8px;
+        overflow: hidden;
+        margin-bottom: 10px;
+        line-height: 0;
+      }
+      #editorCanvas {
+        width: 100%;
+        image-rendering: pixelated;
+        cursor: crosshair;
+        touch-action: none;
+        display: block;
+      }
+      #editorImportFile { display: none; }
+
       .perk-cards {
         display: flex;
         gap: 12px;
@@ -1024,6 +1094,35 @@
       </div>
       <p class="hint field-hint">A bot-heavy field like OpenFront — mostly passive tribes with a few strong nations. <b>Auto</b> scales the count to the map; drag to set a fixed number (0 = empty sandbox).</p>
       <button id="startButton" class="menu-button primary" type="button">Start Run</button>
+
+      <h2 class="menu-section">Map editor</h2>
+      <p class="hint field-hint">Paint your own world with classic paint tools — land, highlands, rock, rivers. Download it as a <b>.ccmap</b> file (nothing is stored on the server) and import that file any time to edit or play it again. Custom maps use the difficulty and AI settings above.</p>
+      <button id="editorToggleButton" class="menu-button secondary" type="button">Open map editor</button>
+      <div id="editorPanel" class="editor-panel hidden">
+        <div class="editor-row">
+          <input id="editorNameInput" class="lobby-input" type="text" maxlength="40" placeholder="Map name" autocomplete="off" spellcheck="false" />
+          <select id="editorSizeSelect" class="editor-select" title="Canvas size in tiles"></select>
+          <button id="editorFillLandButton" class="menu-button secondary" type="button" title="Fill the whole canvas with plains">Fill land</button>
+          <button id="editorFillOceanButton" class="menu-button secondary" type="button" title="Clear the whole canvas to water">Clear</button>
+        </div>
+        <div class="editor-row">
+          <div id="editorTools" class="editor-tools"></div>
+          <label class="editor-brush">Brush
+            <input id="editorBrushInput" type="range" min="1" max="12" step="1" value="4" />
+            <output id="editorBrushOutput">4</output>
+          </label>
+        </div>
+        <div class="editor-canvas-wrap">
+          <canvas id="editorCanvas" width="288" height="180"></canvas>
+        </div>
+        <div class="editor-row">
+          <button id="editorPlayButton" class="menu-button primary" type="button">Play this map</button>
+          <button id="editorExportButton" class="menu-button secondary" type="button">Download .ccmap</button>
+          <button id="editorImportButton" class="menu-button secondary" type="button">Import…</button>
+          <input id="editorImportFile" type="file" accept=".ccmap,application/json" class="hidden" />
+        </div>
+        <p id="editorStatus" class="hint" aria-live="polite"></p>
+      </div>
 
       <h2 class="menu-section">Multiplayer</h2>
       <div id="lobbyForm" class="lobby-row">

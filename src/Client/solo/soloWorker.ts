@@ -5,6 +5,7 @@ import { SIMULATION_TICK_RATE, SPAWN_PHASE_SECONDS } from "../../Server/simulati
 import { isRasterDifficulty, type RasterDifficulty } from "../../Core/messages.js";
 import { applySessionCommand } from "../../Core/applySessionCommand.js";
 import { fetchPrebuiltMap } from "../mapFetch.js";
+import { buildCustomGameMap, decodeCustomMapFile } from "../../Core/customMap.js";
 import type { RasterClientMessage, RasterServerMessage } from "../../Core/types.js";
 
 /**
@@ -45,15 +46,28 @@ const emit = (message: RasterServerMessage): void => {
   ctx.postMessage({ type: "SERVER", message });
 };
 
-/** Fetch the prebuilt terrain plane and seat the match (human + bot field). */
-const start = async (mapId: string | undefined, rawDifficulty: unknown, rawFieldSize: unknown): Promise<void> => {
+/** Resolve the match terrain and seat the match (human + bot field). */
+const start = async (
+  mapId: string | undefined,
+  rawDifficulty: unknown,
+  rawFieldSize: unknown,
+  customMap: string | undefined,
+): Promise<void> => {
   if (starting || session) return;
   starting = true;
   const difficulty: RasterDifficulty = isRasterDifficulty(rawDifficulty) ? rawDifficulty : "medium";
   const fieldSize = typeof rawFieldSize === "number" && Number.isFinite(rawFieldSize) ? rawFieldSize : undefined;
 
-  // No id → let the server pick its default map (matches the WebSocket path).
-  const { map, name: mapName } = await fetchPrebuiltMap(mapId);
+  // A player-made map (the editor's .ccmap file) is built right here in the
+  // worker — the map never leaves the browser in solo play. Otherwise fetch
+  // the prebuilt catalogue terrain (no id → the server's default map, matching
+  // the WebSocket path).
+  const { map, name: mapName } = customMap
+    ? (() => {
+        const data = decodeCustomMapFile(customMap);
+        return { map: buildCustomGameMap(data), name: data.name };
+      })()
+    : await fetchPrebuiltMap(mapId);
 
   const live = new RasterGameSession({
     prebuiltMap: map,
@@ -88,7 +102,25 @@ ctx.onmessage = (event): void => {
   const message = data.message;
 
   if (message.type === "CLIENT_RASTER_JOIN") {
-    void start(message.payload.mapId, message.payload.difficulty, message.payload.fieldSize);
+    start(
+      message.payload.mapId,
+      message.payload.difficulty,
+      message.payload.fieldSize,
+      message.payload.customMap,
+    ).catch((error: unknown) => {
+      // Surface a failed start (bad custom map file, map download error) as a
+      // rejection so the client shows the reason instead of hanging on
+      // "Connecting…" with an unhandled worker rejection.
+      starting = false;
+      emit({
+        type: "SERVER_RASTER_ACTION_REJECTED",
+        payload: {
+          reason: "INVALID_MESSAGE_FORMAT",
+          message: error instanceof Error ? error.message : "Failed to start the match.",
+          intent: { targetX: 0, targetY: 0, percent: 50 },
+        },
+      });
+    });
     return;
   }
   if (!session) return;

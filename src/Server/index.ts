@@ -10,6 +10,7 @@ import { resolveCatalogSessionMap } from "./sessionMap.js";
 import { MatchRegistry, DIFFICULTY_BOT_COUNT, MAX_FIELD } from "./MatchRegistry.js";
 import { isRasterDifficulty } from "../Core/messages.js";
 import { validateCommand } from "./validateCommand.js";
+import { buildCustomGameMap, decodeCustomMapFile } from "../Core/customMap.js";
 import { buildHeightmapGameMap, getHeightmapMap } from "./heightmapMaps.js";
 import {
   DEFAULT_MAP_CHOICE_ID,
@@ -217,10 +218,19 @@ wss.on("connection", (socket) => {
           const clientField = typeof rawField === "number" && Number.isFinite(rawField)
             ? Math.max(0, Math.min(Math.floor(rawField), MAX_FIELD))
             : undefined;
+          // A player-made map rides in with the join and lives only for this
+          // match — decode + build here (never persisted), and let a bad file
+          // throw into the shared rejection path below with its reason.
+          // (validateCommand already refused customMap+lockstep.)
+          const custom = message.payload.customMap
+            ? decodeCustomMapFile(message.payload.customMap)
+            : undefined;
           unsubscribe = registry.joinRasterSolo(
             clientId,
             send,
-            { ...choice.options },
+            custom
+              ? { prebuiltMap: buildCustomGameMap(custom), mapName: custom.name }
+              : { ...choice.options },
             difficulty,
             botOverride ?? clientField,
             // Lockstep joins carry the resolved catalogue id so the client's

@@ -20,6 +20,7 @@ import {
   RasterTargetRequestPayload,
 } from "../Core/messages.js";
 import { isMapChoiceId } from "../Core/mapCatalog.js";
+import { CUSTOM_MAP_MAX_FILE_CHARS } from "../Core/customMap.js";
 import { isBuildingType } from "../Core/buildings.js";
 import { isNukeKind } from "../Core/nukes.js";
 
@@ -190,7 +191,7 @@ const parseRasterJoin = (payload: unknown): RasterJoinPayload => {
   if (typeof payload !== "object" || payload === null) {
     throw new Error("CLIENT_RASTER_JOIN.payload must be an object.");
   }
-  const { mapId, difficulty, fieldSize, lockstep } = payload as Record<string, unknown>;
+  const { mapId, difficulty, fieldSize, lockstep, customMap } = payload as Record<string, unknown>;
   if (mapId !== undefined && !isMapChoiceId(mapId)) {
     throw new Error("mapId must be a known map id.");
   }
@@ -203,11 +204,27 @@ const parseRasterJoin = (payload: unknown): RasterJoinPayload => {
   if (lockstep !== undefined && typeof lockstep !== "boolean") {
     throw new Error("lockstep must be a boolean.");
   }
+  if (customMap !== undefined) {
+    // Cheap shape/size gate only — the full decode (dimensions, cell values,
+    // land floor) runs once in the join handler, inside the same try/catch,
+    // so a bad file becomes a descriptive rejection rather than being parsed
+    // twice here.
+    if (typeof customMap !== "string" || customMap.length === 0) {
+      throw new Error("customMap must be a serialized .ccmap string.");
+    }
+    if (customMap.length > CUSTOM_MAP_MAX_FILE_CHARS) {
+      throw new Error(`customMap too large (max ${CUSTOM_MAP_MAX_FILE_CHARS} chars).`);
+    }
+    if (lockstep === true) {
+      throw new Error("customMap cannot be combined with lockstep (replicas mirror maps by catalogue id).");
+    }
+  }
   const out: RasterJoinPayload = {};
   if (mapId !== undefined) out.mapId = mapId;
   if (difficulty !== undefined) out.difficulty = difficulty;
   if (fieldSize !== undefined) out.fieldSize = fieldSize as number;
   if (lockstep !== undefined) out.lockstep = lockstep;
+  if (customMap !== undefined) out.customMap = customMap;
   return out;
 };
 

@@ -48,6 +48,15 @@ export interface RasterJoinPayload {
    * `Core/lockstep.ts`). The server still simulates as the referee.
    */
   lockstep?: boolean;
+  /**
+   * A player-made map to play instead of a catalogue choice: the serialized
+   * `.ccmap` file from the in-browser editor (see `Core/customMap.ts`). The
+   * map lives only for this one match — nothing is stored server-side; the
+   * downloadable file is the persistence. Wins over `mapId` when present.
+   * Mutually exclusive with `lockstep` (a lockstep replica mirrors its map
+   * from the catalogue by id, which a custom map does not have).
+   */
+  customMap?: string;
 }
 
 export type RasterJoinClientMessage = { type: "CLIENT_RASTER_JOIN"; payload: RasterJoinPayload };

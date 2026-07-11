@@ -74,6 +74,21 @@ water layers, both carved into the land mask at build time:
   become landlocked lakes. The carve guarantees each chokepoint is an open,
   ocean-connected channel at every grid size.
 
+### Map editor (custom maps)
+
+The main menu ships an in-browser map editor: paint water, plains, highlands,
+impassable rock and 1-tile rivers with classic paint tools, then hit **Play
+this map** or **Download .ccmap**. Custom maps are deliberately never stored on
+the server — the downloaded `.ccmap` file *is* the persistence, and **Import…**
+loads it back any time to keep editing or replay it. In the default
+worker-hosted solo mode the painted terrain never even leaves the browser; on
+the WebSocket transport it rides inside the join payload for that one match.
+The shared format module (`src/Core/customMap.ts`) validates every file (size
+caps, cell values, a minimum-land floor) identically in the editor, the solo
+worker and the server, and finishes the painted mask through the same
+`buildTerrainFromMask` pass as every other map source. Custom maps are not
+available in lockstep/lobby matches yet (replicas mirror maps by catalogue id).
+
 The AI field is **packed**, like OpenFront (whose default is a flat 400 bots).
 It scales with the map to keep OpenFront's density (~1 player per ~1300 tiles):
 the Standard map seats ~130 opponents, the larger Earth maps up to the **400**
