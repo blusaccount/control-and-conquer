@@ -10,6 +10,8 @@ import { resolveCatalogSessionMap } from "./sessionMap.js";
 import { MatchRegistry, DIFFICULTY_BOT_COUNT, MAX_FIELD } from "./MatchRegistry.js";
 import { isRasterDifficulty } from "../Core/messages.js";
 import { validateCommand } from "./validateCommand.js";
+import { buildCustomGameMap, decodeCustomMapFile } from "../Core/customMap.js";
+import { withCrest } from "../Core/identity.js";
 import { buildHeightmapGameMap, getHeightmapMap } from "./heightmapMaps.js";
 import {
   DEFAULT_MAP_CHOICE_ID,
@@ -127,13 +129,45 @@ const server = createServer(async (request, response) => {
       if (handled) return;
     }
 
+    // Public lobby directory + liveness for the multiplayer homepage. Clients
+    // poll this; the payload is small (a handful of waiting rooms).
+    if (requestUrl.pathname === "/api/lobbies") {
+      response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+      response.end(
+        JSON.stringify({
+          lobbies: registry.listOpenLobbies(),
+          playersOnline: wss.clients.size,
+          matchesRunning: registry.runningMatchCount(),
+        }),
+      );
+      return;
+    }
+
     // Solo map asset: prebuilt terrain for a catalogue map, so a browser Web
     // Worker can host a solo match locally (OpenFront-style client-side sim)
     // without decoding the PNG itself. Body: [width u32 LE][height u32 LE][terrain
     // bytes], gzip-encoded (the fetch API transparently inflates it).
+    // `?token=` serves a running lockstep match's player-made map instead —
+    // valid only while that match lives, never cached.
     if (requestUrl.pathname === "/api/solo/map") {
-      const choice = resolveMapChoice(requestUrl.searchParams.get("id") ?? undefined);
-      const { map, name } = resolveCatalogSessionMap(choice.options, choice.name);
+      const token = requestUrl.searchParams.get("token");
+      let map;
+      let name;
+      if (token) {
+        const custom = registry.getMapByToken(token);
+        if (!custom) {
+          response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+          response.end("Unknown or expired map token.");
+          return;
+        }
+        map = custom;
+        name = "Custom map";
+      } else {
+        const choice = resolveMapChoice(requestUrl.searchParams.get("id") ?? undefined);
+        const resolved = resolveCatalogSessionMap(choice.options, choice.name);
+        map = resolved.map;
+        name = resolved.name;
+      }
       const header = Buffer.alloc(8);
       header.writeUInt32LE(map.width, 0);
       header.writeUInt32LE(map.height, 4);
@@ -141,7 +175,7 @@ const server = createServer(async (request, response) => {
       response.writeHead(200, {
         "content-type": "application/octet-stream",
         "content-encoding": "gzip",
-        "cache-control": "public, max-age=86400",
+        "cache-control": token ? "no-store" : "public, max-age=86400",
         "x-map-name": encodeURIComponent(name),
       });
       response.end(body);
@@ -217,15 +251,30 @@ wss.on("connection", (socket) => {
           const clientField = typeof rawField === "number" && Number.isFinite(rawField)
             ? Math.max(0, Math.min(Math.floor(rawField), MAX_FIELD))
             : undefined;
+          // A player-made map rides in with the join and lives only for this
+          // match — decode + build here (never persisted), and let a bad file
+          // throw into the shared rejection path below with its reason.
+          // (validateCommand already refused customMap+lockstep.)
+          const custom = message.payload.customMap
+            ? decodeCustomMapFile(message.payload.customMap)
+            : undefined;
+          // The chosen crest rides as a prefix on the display name, so it
+          // shows on nameplates/leaderboards without extra protocol fields.
+          const playerName = message.payload.name || message.payload.crest
+            ? withCrest(message.payload.name ?? "Anonymous", message.payload.crest)
+            : undefined;
           unsubscribe = registry.joinRasterSolo(
             clientId,
             send,
-            { ...choice.options },
+            custom
+              ? { prebuiltMap: buildCustomGameMap(custom), mapName: custom.name }
+              : { ...choice.options },
             difficulty,
             botOverride ?? clientField,
             // Lockstep joins carry the resolved catalogue id so the client's
             // replica fetches the exact map this session was built from.
             message.payload.lockstep ? choice.id : undefined,
+            playerName,
           );
         }
       } else if (message.type === "CLIENT_RASTER_SELECT_SPAWN") {
@@ -261,6 +310,11 @@ wss.on("connection", (socket) => {
         const clientField = typeof rawField === "number" && Number.isFinite(rawField)
           ? Math.max(0, Math.min(Math.floor(rawField), MAX_FIELD))
           : undefined;
+        // A player-made lobby map is decoded/built once here; a bad file throws
+        // into the shared rejection path with its reason.
+        const custom = message.payload.customMap
+          ? decodeCustomMapFile(message.payload.customMap)
+          : undefined;
         registry.createLobby(
           clientId,
           send,
@@ -270,9 +324,12 @@ wss.on("connection", (socket) => {
           difficulty,
           botOverride ?? clientField,
           message.payload.name,
+          message.payload.crest,
+          message.payload.lobbyName,
+          custom ? { map: buildCustomGameMap(custom), name: custom.name } : undefined,
         );
       } else if (message.type === "CLIENT_RASTER_LOBBY_JOIN") {
-        registry.joinLobby(clientId, send, message.payload.code, message.payload.name);
+        registry.joinLobby(clientId, send, message.payload.code, message.payload.name, message.payload.crest);
       } else if (message.type === "CLIENT_RASTER_LOBBY_START") {
         registry.startLobby(clientId);
       } else if (message.type === "CLIENT_RASTER_LOBBY_LEAVE") {

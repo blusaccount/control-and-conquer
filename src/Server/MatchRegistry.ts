@@ -2,8 +2,10 @@ import { RasterBotController } from "./RasterBotController.js";
 import { RasterGameSession, type RasterMessageHandler, type RasterGameSessionOptions } from "./RasterGameSession.js";
 import { resolveHeightmapSessionMap } from "./sessionMap.js";
 import { RasterBuildIntent, RasterExpandIntent, RasterNukeIntent } from "../Core/types.js";
-import type { RasterDifficulty } from "../Core/messages.js";
+import type { LobbyDirectoryEntry, RasterDifficulty } from "../Core/messages.js";
 import type { RasterLockstepStartPayload } from "../Core/lockstep.js";
+import type { GameMap } from "../Core/GameMap.js";
+import { withCrest } from "../Core/identity.js";
 import {
   LOBBY_SPAWN_PHASE_SECONDS,
   LOCKSTEP_RECONNECT_GRACE_MS,
@@ -17,6 +19,8 @@ import { buildFieldConfigs, DIFFICULTY_BOT_COUNT, MAX_FIELD, resolveFieldSize, s
 interface LobbyMember {
   send: RasterMessageHandler;
   name?: string;
+  /** Curated crest emoji, when the member picked one. */
+  crest?: string;
 }
 
 /** A private waiting room: match settings + members, until the host starts. */
@@ -25,10 +29,20 @@ interface RasterLobby {
   hostClientId: string;
   mapChoiceId: string;
   mapName: string;
+  /** Room title shown in the public lobby directory. */
+  lobbyName: string;
   options: RasterGameSessionOptions;
   difficulty: RasterDifficulty;
   fieldOverride?: number;
   members: Map<string, LobbyMember>;
+  /**
+   * A player-made map for this room, already validated and built. Held only
+   * for the lobby/match lifetime — the player's downloaded .ccmap file is the
+   * persistence, never the server.
+   */
+  customMap?: GameMap;
+  /** Epoch ms when the room opened (directory ordering). */
+  createdAt: number;
 }
 
 /** A running lockstep match: the shared session plus per-seat resume state. */
@@ -45,6 +59,8 @@ interface LockstepMatch {
   lastConnectedAt: number;
   /** Teardown hooks (bot detach + seat unsubscribes) for the reaper. */
   unsubs: Array<() => void>;
+  /** Transient token replicas use to fetch this match's player-made map. */
+  mapToken?: string;
 }
 
 /** Human cap per shared lobby (the session seats the AI field on top). */
@@ -94,6 +110,12 @@ export class MatchRegistry {
   private readonly clientToLockstep = new Map<string, LockstepMatch>();
   /** Plain (snapshot-streamed) matches: per-client teardown for socket close. */
   private readonly plainCleanup = new Map<string, () => void>();
+  /**
+   * Transient map tokens → player-made maps of running lockstep matches, so
+   * replicas can fetch the terrain via `/api/solo/map?token=...`. Entries live
+   * exactly as long as their match and are dropped by the reaper.
+   */
+  private readonly mapTokens = new Map<string, GameMap>();
 
   /**
    * Start a SOLO raster match immediately: the human versus a field of
@@ -110,6 +132,7 @@ export class MatchRegistry {
     difficulty: RasterDifficulty = "medium",
     fieldOverride?: number,
     lockstepMapId?: string,
+    playerName?: string,
   ): () => void {
     // A lockstep join (see `Core/lockstep.ts`): the client simulates locally
     // off relayed turns while this server sim referees. `lockstepMapId` names
@@ -122,7 +145,7 @@ export class MatchRegistry {
     if (this.isClientBusy(clientId)) return () => {};
     if (lockstepMapId !== undefined) {
       this.startLockstepMatch(
-        [{ clientId, send }],
+        [{ clientId, send, name: playerName }],
         lockstepMapId,
         options,
         difficulty,
@@ -137,7 +160,7 @@ export class MatchRegistry {
     this.activeMatches.set(matchId, session);
 
     // The human is seated only once they pick a start position (autoSpawn=false).
-    const unsubHuman = session.subscribe(clientId, send, false);
+    const unsubHuman = session.subscribe(clientId, send, false, true, playerName);
     if (!unsubHuman) {
       // A brand-new session always has a free seat for its first subscriber, so
       // this is unreachable today — guarded defensively rather than trusting it.
@@ -170,7 +193,12 @@ export class MatchRegistry {
     difficulty: RasterDifficulty,
     spawnPhaseSeconds: number,
   ): RasterGameSession {
-    const heightmap = resolveHeightmapSessionMap(options.realMapId, options.mapSize);
+    // An explicitly prebuilt map (e.g. a lobby's player-made map) always wins;
+    // only resolve the heightmap catalogue when no map was handed in, so a
+    // leftover realMapId in the options can't silently swap the terrain back.
+    const heightmap = options.prebuiltMap
+      ? null
+      : resolveHeightmapSessionMap(options.realMapId, options.mapSize);
     return new RasterGameSession({
       spawnPhaseTicks: spawnPhaseSeconds * SIMULATION_TICK_RATE,
       difficulty,
@@ -212,17 +240,26 @@ export class MatchRegistry {
     difficulty: RasterDifficulty,
     fieldOverride: number | undefined,
     spawnPhaseSeconds: number,
+    customMap?: GameMap,
   ): void {
     this.matchSequence += 1;
     const matchId = `match-${this.matchSequence}-raster-lockstep`;
     const session = this.createSession(options, difficulty, spawnPhaseSeconds);
     this.activeMatches.set(matchId, session);
 
+    // A player-made map has no catalogue id for replicas to fetch by, so it is
+    // published under a transient token for exactly this match's lifetime.
+    const mapToken = customMap
+      ? (globalThis.crypto as { randomUUID(): string }).randomUUID()
+      : undefined;
+    if (mapToken && customMap) this.mapTokens.set(mapToken, customMap);
+
     const match: LockstepMatch = {
       matchId,
       session,
       setupBase: {
         mapId: mapChoiceId,
+        ...(mapToken ? { mapToken } : {}),
         mapName: session.peekMapName(),
         terrainHash: session.peekTerrainHash(),
         difficulty,
@@ -235,6 +272,7 @@ export class MatchRegistry {
       connected: new Set(),
       lastConnectedAt: Date.now(),
       unsubs: [],
+      ...(mapToken ? { mapToken } : {}),
     };
 
     for (const member of members) {
@@ -277,6 +315,43 @@ export class MatchRegistry {
     return this.clientToLobby.has(clientId) || this.clientToSession.has(clientId) || this.clientToLockstep.has(clientId);
   }
 
+  /** Resolve a transient map token to its match's player-made map. */
+  public getMapByToken(token: string): GameMap | undefined {
+    return this.mapTokens.get(token);
+  }
+
+  /** Server-hosted matches currently ticking (websocket solo + lockstep). */
+  public runningMatchCount(): number {
+    return this.activeMatches.size;
+  }
+
+  /**
+   * The public lobby directory: every waiting room, newest first. The share
+   * code doubles as the join handle — lobbies are open rooms, not secrets
+   * (friends-only play works by simply not filling the room from the list
+   * before the host starts).
+   */
+  public listOpenLobbies(): LobbyDirectoryEntry[] {
+    const entries: LobbyDirectoryEntry[] = [];
+    for (const lobby of this.lobbies.values()) {
+      const host = lobby.members.get(lobby.hostClientId);
+      entries.push({
+        code: lobby.code,
+        lobbyName: lobby.lobbyName,
+        hostName: host?.name ?? "Anonymous",
+        ...(host?.crest ? { hostCrest: host.crest } : {}),
+        mapName: lobby.mapName,
+        customMap: lobby.customMap !== undefined,
+        difficulty: lobby.difficulty,
+        members: lobby.members.size,
+        maxMembers: MAX_LOBBY_MEMBERS,
+        ...(lobby.fieldOverride !== undefined ? { fieldSize: lobby.fieldOverride } : {}),
+        createdAt: lobby.createdAt,
+      });
+    }
+    return entries.sort((a, b) => b.createdAt - a.createdAt);
+  }
+
   /** Push the current waiting-room state to every member. */
   private broadcastLobbyState(lobby: RasterLobby): void {
     for (const [memberId, member] of lobby.members) {
@@ -284,11 +359,13 @@ export class MatchRegistry {
         type: "SERVER_RASTER_LOBBY_STATE",
         payload: {
           code: lobby.code,
+          lobbyName: lobby.lobbyName,
           mapName: lobby.mapName,
           difficulty: lobby.difficulty,
           youAreHost: memberId === lobby.hostClientId,
           members: [...lobby.members.entries()].map(([id, m]) => ({
             name: m.name ?? "Anonymous",
+            ...(m.crest ? { crest: m.crest } : {}),
             isHost: id === lobby.hostClientId,
             you: id === memberId,
           })),
@@ -307,6 +384,9 @@ export class MatchRegistry {
     difficulty: RasterDifficulty,
     fieldOverride?: number,
     name?: string,
+    crest?: string,
+    lobbyName?: string,
+    customMap?: { map: GameMap; name: string },
   ): string {
     // One lobby per connection; a second create replaces nothing.
     if (this.isClientBusy(clientId)) {
@@ -319,11 +399,14 @@ export class MatchRegistry {
       code,
       hostClientId: clientId,
       mapChoiceId,
-      mapName,
+      mapName: customMap ? customMap.name : mapName,
+      lobbyName: lobbyName ?? `${name ?? "Anonymous"}'s lobby`,
       options,
       difficulty,
       fieldOverride,
-      members: new Map([[clientId, { send, name }]]),
+      members: new Map([[clientId, { send, name, crest }]]),
+      ...(customMap ? { customMap: customMap.map } : {}),
+      createdAt: Date.now(),
     };
     this.lobbies.set(code, lobby);
     this.clientToLobby.set(clientId, lobby);
@@ -332,7 +415,7 @@ export class MatchRegistry {
   }
 
   /** Join a waiting lobby by share code. */
-  public joinLobby(clientId: string, send: RasterMessageHandler, code: string, name?: string): void {
+  public joinLobby(clientId: string, send: RasterMessageHandler, code: string, name?: string, crest?: string): void {
     if (this.isClientBusy(clientId)) {
       send({ type: "SERVER_RASTER_LOBBY_ERROR", payload: { message: "You are already in a lobby or match.", fatal: true } });
       return;
@@ -346,7 +429,7 @@ export class MatchRegistry {
       send({ type: "SERVER_RASTER_LOBBY_ERROR", payload: { message: "That lobby is full.", fatal: true } });
       return;
     }
-    lobby.members.set(clientId, { send, name });
+    lobby.members.set(clientId, { send, name, crest });
     this.clientToLobby.set(clientId, lobby);
     this.broadcastLobbyState(lobby);
   }
@@ -380,16 +463,25 @@ export class MatchRegistry {
       });
       return;
     }
-    const members = [...lobby.members.entries()].map(([id, m]) => ({ clientId: id, send: m.send, name: m.name }));
+    // In-game display names carry the member's crest (validated at the wire),
+    // so nameplates and the leaderboard show the identity picked in the menu.
+    const members = [...lobby.members.entries()].map(([id, m]) => ({
+      clientId: id,
+      send: m.send,
+      name: m.name || m.crest ? withCrest(m.name ?? "Anonymous", m.crest) : undefined,
+    }));
     for (const [memberId] of lobby.members) this.clientToLobby.delete(memberId);
     this.lobbies.delete(lobby.code);
     this.startLockstepMatch(
       members,
       lobby.mapChoiceId,
-      { ...lobby.options },
+      lobby.customMap
+        ? { ...lobby.options, prebuiltMap: lobby.customMap, mapName: lobby.mapName }
+        : { ...lobby.options },
       lobby.difficulty,
       lobby.fieldOverride,
       LOBBY_SPAWN_PHASE_SECONDS,
+      lobby.customMap,
     );
   }
 
@@ -489,6 +581,7 @@ export class MatchRegistry {
       if (!match.session.isEnded() && !abandoned) continue;
       for (const unsub of match.unsubs) unsub();
       for (const token of match.tokens.keys()) this.tokenToMatch.delete(token);
+      if (match.mapToken) this.mapTokens.delete(match.mapToken);
       for (const connectedId of match.connected) {
         this.clientToSession.delete(connectedId);
         this.clientToLockstep.delete(connectedId);

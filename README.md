@@ -21,8 +21,14 @@ npm install
 npm run dev      # tsx watch — serves http://localhost:3000
 ```
 
-Then open <http://localhost:3000>, **pick a map and a starter class** in the
-menu, and drop into a free-for-all against a field of AI opponents.
+Then open <http://localhost:3000>. The homepage is **multiplayer-first**: set
+your name and crest (persisted locally), browse the live list of **open
+lobbies** and join one, or create your own — a two-step wizard picks the
+settings and the battlefield (a catalogue Earth, a freshly painted editor map,
+or an imported `.ccmap`). Lobbies are joinable by share code, by invite link
+(`/?join=CODE`), or straight from the public list; **Quick play** joins the
+fullest open room or opens one for you. A solo **Practice vs. AI** run against
+a field of AI opponents is one click away in the rail.
 
 ## Maps
 
@@ -73,6 +79,22 @@ water layers, both carved into the land mask at build time:
   downsampling — without the carve the Mediterranean, Black Sea and Baltic
   become landlocked lakes. The carve guarantees each chokepoint is an open,
   ocean-connected channel at every grid size.
+
+### Map editor (custom maps)
+
+The battlefield step of the lobby/practice wizard opens an in-browser map
+editor: paint water, plains, highlands, impassable rock and 1-tile rivers with
+classic paint tools, then use the map right away or **Download .ccmap**.
+Custom maps are deliberately never stored on the server — the downloaded
+`.ccmap` file *is* the persistence, and **Import…** loads it back any time to
+keep editing or replay it. In the worker-hosted solo mode the painted terrain
+never even leaves the browser; in a multiplayer lobby the server builds it
+once for the match and lockstep replicas fetch the terrain via a transient
+map token (`/api/solo/map?token=…`) that dies with the match. The shared
+format module (`src/Core/customMap.ts`) validates every file (size caps, cell
+values, a minimum-land floor) identically in the editor, the workers and the
+server, and finishes the painted mask through the same `buildTerrainFromMask`
+pass as every other map source.
 
 The AI field is **packed**, like OpenFront (whose default is a flat 400 bots).
 It scales with the map to keep OpenFront's density (~1 player per ~1300 tiles):

@@ -11,8 +11,14 @@ import { GameMap } from "../Core/GameMap.js";
  */
 export const fetchPrebuiltMap = async (
   mapId?: string,
+  mapToken?: string,
 ): Promise<{ map: GameMap; name: string }> => {
-  const url = mapId ? `/api/solo/map?id=${encodeURIComponent(mapId)}` : "/api/solo/map";
+  // A map token (a running match's player-made map) wins over the catalogue id.
+  const url = mapToken
+    ? `/api/solo/map?token=${encodeURIComponent(mapToken)}`
+    : mapId
+      ? `/api/solo/map?id=${encodeURIComponent(mapId)}`
+      : "/api/solo/map";
   const res = await fetch(url);
   if (!res.ok) {
     throw new Error(`Map download failed: ${res.status} ${res.statusText} for ${url}.`);

@@ -48,6 +48,19 @@ export interface RasterJoinPayload {
    * `Core/lockstep.ts`). The server still simulates as the referee.
    */
   lockstep?: boolean;
+  /**
+   * A player-made map to play instead of a catalogue choice: the serialized
+   * `.ccmap` file from the in-browser editor (see `Core/customMap.ts`). The
+   * map lives only for this one match — nothing is stored server-side; the
+   * downloadable file is the persistence. Wins over `mapId` when present.
+   * Mutually exclusive with `lockstep` (a lockstep replica mirrors its map
+   * from the catalogue by id, which a custom map does not have).
+   */
+  customMap?: string;
+  /** The player's display name, shown on nameplates and the leaderboard. */
+  name?: string;
+  /** The player's chosen crest emoji (validated against `Core/identity.ts`). */
+  crest?: string;
 }
 
 export type RasterJoinClientMessage = { type: "CLIENT_RASTER_JOIN"; payload: RasterJoinPayload };
@@ -81,6 +94,17 @@ export interface RasterLobbyCreatePayload {
   fieldSize?: number;
   /** The host's display name, shown to other members and in-game. */
   name?: string;
+  /** The host's crest emoji (validated against `Core/identity.ts`). */
+  crest?: string;
+  /** Room title shown in the public lobby list (defaults to "<host>'s lobby"). */
+  lobbyName?: string;
+  /**
+   * A player-made map for this lobby: the serialized `.ccmap` file. Wins over
+   * `mapId`. The server builds it once, keeps it for the lobby's lifetime and
+   * serves the terrain to lockstep replicas via a transient map token —
+   * nothing is persisted beyond the match.
+   */
+  customMap?: string;
 }
 
 export type RasterLobbyCreateClientMessage = {
@@ -92,6 +116,8 @@ export type RasterLobbyCreateClientMessage = {
 export interface RasterLobbyJoinPayload {
   code: string;
   name?: string;
+  /** The joiner's crest emoji (validated against `Core/identity.ts`). */
+  crest?: string;
 }
 
 export type RasterLobbyJoinClientMessage = {
@@ -120,6 +146,8 @@ export type RasterResumeClientMessage = { type: "CLIENT_RASTER_RESUME"; payload:
 /** One member as shown in the lobby waiting room. */
 export interface RasterLobbyMember {
   name: string;
+  /** The member's crest emoji, when they picked one. */
+  crest?: string;
   isHost: boolean;
   /** True on the copy sent to this member (so the client can mark "you"). */
   you: boolean;
@@ -128,11 +156,44 @@ export interface RasterLobbyMember {
 /** Server → client: the lobby's current waiting-room state (sent on every change). */
 export interface RasterLobbyStatePayload {
   code: string;
+  /** Room title as shown in the public lobby list. */
+  lobbyName: string;
   mapName: string;
   difficulty: RasterDifficulty;
   members: RasterLobbyMember[];
   /** True on the host's copy — only the host sees the start button. */
   youAreHost: boolean;
+}
+
+/**
+ * One row of the public lobby directory (`GET /api/lobbies`): everything the
+ * homepage needs to render a joinable room. Derived server-side from the
+ * waiting lobbies; contains no secrets (the share code *is* the join handle).
+ */
+export interface LobbyDirectoryEntry {
+  code: string;
+  lobbyName: string;
+  hostName: string;
+  hostCrest?: string;
+  mapName: string;
+  /** True when the room plays a player-made (editor) map. */
+  customMap: boolean;
+  difficulty: RasterDifficulty;
+  members: number;
+  maxMembers: number;
+  /** Requested AI field size; absent = auto-scaled to the map. */
+  fieldSize?: number;
+  /** Epoch ms when the room opened (for "newest first" ordering). */
+  createdAt: number;
+}
+
+/** Response shape of `GET /api/lobbies`. */
+export interface LobbyDirectoryResponse {
+  lobbies: LobbyDirectoryEntry[];
+  /** Live connections to this server (humans on the homepage or in matches). */
+  playersOnline: number;
+  /** Server-hosted matches currently running. */
+  matchesRunning: number;
 }
 
 export type RasterLobbyStateServerMessage = {
