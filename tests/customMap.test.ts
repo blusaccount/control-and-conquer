@@ -85,6 +85,15 @@ test("decode rejects malformed or oversized files with descriptive errors", () =
     () => decodeCustomMapFile("x".repeat(CUSTOM_MAP_MAX_FILE_CHARS + 1)),
     /too large/,
   );
+  // Garbage in the cells string must be rejected in every environment. Node's
+  // Buffer.from silently skips invalid base64 characters, so without an
+  // up-front charset check the server would accept a file that every browser
+  // (atob throws) rejects — the same .ccmap must validate identically on both.
+  const file = JSON.parse(encodeCustomMapFile(valid)) as Record<string, unknown>;
+  assert.throws(
+    () => decodeCustomMapFile(JSON.stringify({ ...file, cells: `!!!${file.cells as string}` })),
+    /not valid base64/,
+  );
 });
 
 test("buildCustomGameMap classifies painted water exactly as painted", () => {

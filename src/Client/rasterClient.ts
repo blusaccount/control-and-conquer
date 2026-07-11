@@ -50,6 +50,7 @@ import {
   buildingCost,
   costCounterTypes,
   UPGRADABLE_BUILDING_TYPES,
+  WARSHIP_PATROL_WANDER_RADIUS,
   type BuildingType,
 } from "../Core/buildings.js";
 import { RASTER_EMOJIS, type RasterDifficulty } from "../Core/messages.js";
@@ -1167,6 +1168,13 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       return;
     }
 
+    // The palette must be current before any raster paint below: a full-raster
+    // repaint on the very first snapshot (join mid-game, reconnect, spectate)
+    // would otherwise run against an empty palette and fall back to the cycling
+    // 6-color default — and since later snapshots repaint only delta tiles,
+    // those wrong colors would stick indefinitely.
+    rebuildColorPalette(snapshot.players);
+
     // Ownership arrives either as a full raster (first snapshot / high churn) or
     // as a delta against what we already hold. A full raster repaints the whole
     // base; a delta repaints only the touched tiles.
@@ -1180,7 +1188,6 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.capturableTotal = snapshot.capturableCount;
     runtime.recentEvents = snapshot.recentEvents;
     runtime.players = snapshot.players;
-    rebuildColorPalette(snapshot.players);
     const nextAlliances = snapshot.alliances ?? [];
     // A new pact involving us — whichever side accepted — gets the chime. Diffed
     // against the snapshot (rather than fired from the accept click) so both "I
@@ -2450,10 +2457,12 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         drawCourseLine(ctx, w.color, p, [{ x: w.destX, y: w.destY }], dpr);
       }
       // Patrol-sector ring, own fleet only — where this hull will hold station.
+      // The radius is the actual wander area in world tiles, so the hull always
+      // stays inside its ring; a fixed pixel floor keeps it visible zoomed out.
       if (w.playerId === runtime.myPlayerId) {
         const anchor = worldToScreen(w.patrolX, w.patrolY);
         ctx.beginPath();
-        ctx.arc(anchor.x, anchor.y, Math.max(6 * dpr, scale * 1.2), 0, Math.PI * 2);
+        ctx.arc(anchor.x, anchor.y, Math.max(6 * dpr, scale * WARSHIP_PATROL_WANDER_RADIUS), 0, Math.PI * 2);
         ctx.setLineDash([3 * dpr, 3 * dpr]);
         ctx.strokeStyle = w.color;
         ctx.globalAlpha = 0.45;

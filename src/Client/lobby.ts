@@ -71,6 +71,13 @@ export const connectLobby = (hooks: LobbyHooks): LobbyClient => {
       hooks.onState(message.payload);
     } else if (message.type === "SERVER_RASTER_LOBBY_ERROR") {
       hooks.onError(message.payload.message, message.payload.fatal === true);
+    } else if (message.type === "SERVER_RASTER_ACTION_REJECTED") {
+      // A command failed server-side validation before reaching the lobby
+      // registry (e.g. a lobby name the server's charset rules reject). No
+      // room was created or joined, so treat it like a fatal lobby error —
+      // otherwise the rejection would be silently ignored and the menu would
+      // stay locked behind a lobby client that never gets a room.
+      hooks.onError(message.payload.message, true);
     } else if (message.type === "SERVER_RASTER_LOCKSTEP_START") {
       handedOver = true;
       hooks.onMatchStart({ socket, setup: message.payload as RasterLockstepStartPayload });

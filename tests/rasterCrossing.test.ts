@@ -73,8 +73,11 @@ test("a transport ship sails the strait, lands, and captures the far bank", () =
 
 test("a ship's snapshot carries its remaining route, thinned and ending on the landing tile", () => {
   // owned 0,1 | a long open-water crossing | neutral far bank. The serialized
-  // route must always end on the destination, only ever shrink as the ship
-  // advances, and stay within the waypoint cap however long the crossing is.
+  // route must always end on the destination and stay within the waypoint cap
+  // however long the crossing is. (Waypoint *count* is not monotonic while the
+  // ship advances — the thinning stride shrinks at bracket boundaries, e.g.
+  // 65 remaining tiles → stride 3 → 22 waypoints but 64 → stride 2 → 32 — so
+  // the invariants are the cap and the endpoints, not "never grows".)
   const water = " ".repeat(80);
   const grid = new TerritoryGrid(rowMap(`##${water}##`));
   grid.addPlayer(1, 50);
@@ -93,7 +96,7 @@ test("a ship's snapshot carries its remaining route, thinned and ending on the l
   conflict.processTick();
   conflict.processTick();
   const later = conflict.activeShips()[0];
-  assert.ok(later.route.length <= first.route.length, "the remaining route never grows");
+  assert.ok(later.route.length <= 32, "the remaining route stays within the waypoint cap");
   assert.equal(later.route[later.route.length - 1], dest, "still ends on the landing tile");
   assert.ok(later.route.every((t) => t > later.tile), "route holds only tiles still ahead of the hull");
 });

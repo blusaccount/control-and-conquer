@@ -67,6 +67,12 @@ interface LockstepMatch {
 const MAX_LOBBY_MEMBERS = 8;
 
 /**
+ * How long a reaped match's custom-map token stays fetchable, covering a
+ * replica whose terrain fetch was in flight when the match ended.
+ */
+const MAP_TOKEN_LINGER_MS = 30 * 1000;
+
+/**
  * Turns per `SERVER_RASTER_TURN_BACKLOG` message on resume. The backlog is a
  * match's whole history; one message per slice keeps each JSON.stringify on
  * the shared event loop bounded (~a couple hundred KB) instead of serialising
@@ -77,8 +83,26 @@ const BACKLOG_CHUNK_TURNS = 2000;
 /** Share-code alphabet without look-alikes (no 0/O, 1/I/L). */
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
-const makeLobbyCode = (): string =>
-  Array.from({ length: 6 }, () => CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)]).join("");
+/**
+ * Share codes come from crypto-strong draws: the code is the only handle
+ * guarding a room and joins are not rate-limited, so `Math.random`'s
+ * predictable sequence would let an outsider enumerate live codes. Bytes ≥
+ * 248 are rejected (248 = 8·31) so every alphabet character stays equally
+ * likely.
+ */
+const makeLobbyCode = (): string => {
+  const cryptoApi = globalThis.crypto as { getRandomValues<T extends Uint8Array>(array: T): T };
+  const out: string[] = [];
+  const bytes = new Uint8Array(16);
+  while (out.length < 6) {
+    cryptoApi.getRandomValues(bytes);
+    for (const byte of bytes) {
+      if (out.length >= 6) break;
+      if (byte < CODE_ALPHABET.length * 8) out.push(CODE_ALPHABET[byte % CODE_ALPHABET.length] as string);
+    }
+  }
+  return out.join("");
+};
 
 // Re-exported for callers (e.g. the server entry) that import the field rules
 // from here; the rules themselves live in the Node-free `botField` module so a
@@ -113,9 +137,18 @@ export class MatchRegistry {
   /**
    * Transient map tokens → player-made maps of running lockstep matches, so
    * replicas can fetch the terrain via `/api/solo/map?token=...`. Entries live
-   * exactly as long as their match and are dropped by the reaper.
+   * as long as their match plus a short linger window (see
+   * {@link MatchRegistry.expiringMapTokens}) and are dropped by the reaper.
    */
   private readonly mapTokens = new Map<string, GameMap>();
+  /**
+   * Map tokens of reaped matches, token → expiry wall-clock. A replica that
+   * resumed just before the match ended fetches its terrain asynchronously;
+   * deleting the token on the same tick the match ends would 404 that
+   * in-flight fetch and turn the player's match-end summary into a fatal
+   * boot error. The linger keeps the terrain fetchable across that window.
+   */
+  private readonly expiringMapTokens = new Map<string, number>();
 
   /**
    * Start a SOLO raster match immediately: the human versus a field of
@@ -581,13 +614,19 @@ export class MatchRegistry {
       if (!match.session.isEnded() && !abandoned) continue;
       for (const unsub of match.unsubs) unsub();
       for (const token of match.tokens.keys()) this.tokenToMatch.delete(token);
-      if (match.mapToken) this.mapTokens.delete(match.mapToken);
+      if (match.mapToken) this.expiringMapTokens.set(match.mapToken, now + MAP_TOKEN_LINGER_MS);
       for (const connectedId of match.connected) {
         this.clientToSession.delete(connectedId);
         this.clientToLockstep.delete(connectedId);
       }
       this.lockstepMatches.delete(matchId);
       this.activeMatches.delete(matchId);
+    }
+    for (const [token, expiresAt] of this.expiringMapTokens) {
+      if (expiresAt <= now) {
+        this.expiringMapTokens.delete(token);
+        this.mapTokens.delete(token);
+      }
     }
   }
 

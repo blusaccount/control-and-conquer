@@ -184,6 +184,39 @@ test("catalogue lobbies carry no map token", () => {
   assert.equal((setupMsg.payload as RasterLockstepStartPayload).mapToken, undefined);
 });
 
+test("a reaped custom-map match keeps its map token fetchable through a linger window", () => {
+  const registry = new MatchRegistry();
+  const host = makeClient();
+  const data = decodeCustomMapFile(paintedMap());
+  const code = registry.createLobby(
+    "host-1",
+    host.send,
+    "earth-standard",
+    "Earth — Standard",
+    { maxDurationTicks: 20 },
+    "easy",
+    0,
+    "Kai",
+    undefined,
+    undefined,
+    { map: buildCustomGameMap(data), name: data.name },
+  );
+  assert.ok(code);
+  registry.startLobby("host-1");
+  const setupMsg = host.messages.find((m) => m.type === "SERVER_RASTER_LOCKSTEP_START");
+  assert.ok(setupMsg && setupMsg.type === "SERVER_RASTER_LOCKSTEP_START");
+  const setup = setupMsg.payload as RasterLockstepStartPayload;
+  assert.ok(setup.mapToken, "the setup carries a transient map token");
+
+  // Play past the time limit so the reaper sweeps the ended match.
+  for (let i = 0; i < setup.spawnPhaseTicks + 25; i += 1) registry.tickAll();
+  assert.equal(registry.getActiveRasterMatchCount(), 0, "the ended match was reaped");
+  // A replica that resumed just before the end may still have its terrain
+  // fetch in flight; the token must keep resolving briefly after the reap
+  // instead of 404ing that fetch into a fatal boot error.
+  assert.ok(registry.getMapByToken(setup.mapToken!), "the map token lingers past the reap");
+});
+
 test("crest cells cannot smuggle invalid values into a painted lobby map", () => {
   // (Guard the adjacent seam too: the custom map path in a lobby still runs
   // the full .ccmap validation, so a corrupt file never reaches a session.)

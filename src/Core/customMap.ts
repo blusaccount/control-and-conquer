@@ -80,7 +80,19 @@ const bytesToBase64 = (bytes: Uint8Array): string => {
   return btoa(binary);
 };
 
+/**
+ * Strict base64 shape: standard alphabet, optional `=` padding, no whitespace.
+ * Checked up front because the two decoders below disagree on garbage input —
+ * `Buffer.from` silently skips invalid characters while `atob` throws — and
+ * that drift would let the server accept a `.ccmap` file that every browser
+ * (the wizard import, the editor, a guest given the file) rejects.
+ */
+const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
 const base64ToBytes = (encoded: string): Uint8Array => {
+  if (!BASE64_PATTERN.test(encoded)) {
+    throw new Error("cells is not valid base64.");
+  }
   const B = (globalThis as { Buffer?: BufferLike }).Buffer;
   if (B) return new Uint8Array(B.from(encoded, "base64"));
   const binary = atob(encoded);
