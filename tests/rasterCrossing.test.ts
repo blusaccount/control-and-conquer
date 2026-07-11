@@ -73,8 +73,11 @@ test("a transport ship sails the strait, lands, and captures the far bank", () =
 
 test("a ship's snapshot carries its remaining route, thinned and ending on the landing tile", () => {
   // owned 0,1 | a long open-water crossing | neutral far bank. The serialized
-  // route must always end on the destination, only ever shrink as the ship
-  // advances, and stay within the waypoint cap however long the crossing is.
+  // route must always end on the destination and stay within the waypoint cap
+  // however long the crossing is. (Waypoint *count* is not monotonic while the
+  // ship advances — the thinning stride shrinks at bracket boundaries, e.g.
+  // 65 remaining tiles → stride 3 → 22 waypoints but 64 → stride 2 → 32 — so
+  // the invariants are the cap and the endpoints, not "never grows".)
   const water = " ".repeat(80);
   const grid = new TerritoryGrid(rowMap(`##${water}##`));
   grid.addPlayer(1, 50);
@@ -93,7 +96,7 @@ test("a ship's snapshot carries its remaining route, thinned and ending on the l
   conflict.processTick();
   conflict.processTick();
   const later = conflict.activeShips()[0];
-  assert.ok(later.route.length <= first.route.length, "the remaining route never grows");
+  assert.ok(later.route.length <= 32, "the remaining route stays within the waypoint cap");
   assert.equal(later.route[later.route.length - 1], dest, "still ends on the landing tile");
   assert.ok(later.route.every((t) => t > later.tile), "route holds only tiles still ahead of the hull");
 });
@@ -112,6 +115,34 @@ test("troops left after the beachhead push inland from the landing", () => {
 
   assert.equal(grid.ownerOf(5), 1, "beachhead taken");
   assert.ok(grid.ownerOf(6) === 1 && grid.ownerOf(7) === 1, "survivors expand inland from the beachhead");
+});
+
+test("a transport whose owner is eliminated mid-voyage is dropped, not landed", () => {
+  // owned 0,1 | water 2,3,4 | neutral 5,6. Player 1 launches, then loses every
+  // tile (a rival overruns the homeland) while the boat is still at sea. The
+  // ship must NOT land and claim tile 5 — that would resurrect an eliminated
+  // nation. It is scuttled instead, and the neutral shore stays neutral.
+  const grid = new TerritoryGrid(rowMap("##   ##"));
+  grid.addPlayer(1, 50);
+  grid.addPlayer(2, 50);
+  grid.claim(0, 1);
+  grid.claim(1, 1);
+  freezeIncome(grid);
+  const conflict = new RasterConflict(grid);
+
+  assert.equal(conflict.launchShip({ attacker: 1, dest: 5, troops: 50 }), null);
+  assert.equal(conflict.shipCountOf(1), 1, "one ship at sea");
+
+  // Player 1's homeland falls: tileCountOf(1) becomes 0 (eliminated).
+  grid.claim(0, 2);
+  grid.claim(1, 2);
+  assert.equal(grid.tileCountOf(1), 0, "player 1 holds no territory");
+
+  for (let i = 0; i < 20; i += 1) conflict.processTick();
+
+  assert.equal(grid.ownerOf(5), NEUTRAL_PLAYER, "the dead nation's boat never claims a beachhead");
+  assert.equal(grid.tileCountOf(1), 0, "the eliminated player is not resurrected");
+  assert.equal(conflict.shipCountOf(1), 0, "the orphaned ship is removed, not left in flight");
 });
 
 test("a landing always conquers its beachhead outright, even a token force (OpenFront)", () => {

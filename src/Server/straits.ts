@@ -15,8 +15,10 @@ import type { River } from "./rivers.js";
  * open water on one side, through the strait's midline, to open water on the
  * other side. They are carved with the same brush as rivers (`carveRivers` is
  * a hard land→water override), which guarantees a connected channel at every
- * grid size. On very fine grids where the strait already resolves naturally
- * the carve is a harmless no-op over existing water.
+ * reachable grid size (the catalogue's coarsest tier is 640 tiles wide; far
+ * below that, around width ≤128, the carved channel is water but the inland
+ * seas still classify as lakes). On very fine grids where the strait already
+ * resolves naturally the carve is a harmless no-op over existing water.
  *
  * Straits that are wide enough to survive every supported grid size (Sicily
  * ~145 km, Taiwan ~130 km, Korea ~200 km, Mozambique ~420 km) are deliberately

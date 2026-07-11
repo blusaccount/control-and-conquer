@@ -450,8 +450,20 @@ const closeWizard = (): void => {
 
 /** Launch the chosen battlefield: a lobby for the world, or a solo practice run. */
 const finishWizard = (mapId: string | undefined, customMap?: string): void => {
-  closeWizard();
   if (wizardMode === "lobby") {
+    // Validate the room title client-side against the same charset rule the
+    // server enforces. Sending it unchecked would come back as a rejection the
+    // waiting room can't recover from without a reload.
+    const lobbyName = wizard.lobbyName?.value.trim() || undefined;
+    if (lobbyName !== undefined && !PLAYER_NAME_PATTERN.test(lobbyName)) {
+      editorVeil?.classList.add("hidden");
+      wizard.veil?.classList.remove("hidden");
+      wizardStep = 1;
+      renderWizardChrome();
+      setWizardStatus("Lobby names can use letters, digits, spaces and _ . ' - (max 24 characters).");
+      return;
+    }
+    closeWizard();
     openLobby((client) =>
       client.create({
         mapId: mapId ?? DEFAULT_MAP_CHOICE_ID,
@@ -459,11 +471,12 @@ const finishWizard = (mapId: string | undefined, customMap?: string): void => {
         fieldSize: wizardFieldSize(),
         name: playerName(),
         crest: playerCrest(),
-        lobbyName: wizard.lobbyName?.value.trim() || undefined,
+        lobbyName,
         customMap,
       }),
     );
   } else {
+    closeWizard();
     startRasterClient(ui, {
       mapId: mapId ?? DEFAULT_MAP_CHOICE_ID,
       difficulty: wizardDifficultyChoice,

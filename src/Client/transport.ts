@@ -133,13 +133,32 @@ export const createLockstepTransport = (attach?: LockstepAttachOptions): RasterT
    */
   const outbox: string[] = [];
   const OUTBOX_LIMIT = 32;
+  /** Pending reconnect timer, so a shutdown can cancel a scheduled redial. */
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let shutdownDone = false;
 
-  /** Give up for good: stop reconnecting, drop the replica, tell the client. */
+  /**
+   * Give up for good: stop reconnecting, drop the replica, close the socket,
+   * tell the client. Idempotent — the socket close this triggers re-enters
+   * here via the close listener, and a second `onCloseCb` would overwrite
+   * whatever fatal error the first pass surfaced. Closing the socket matters
+   * server-side too: a deaf-but-open connection keeps its seat in
+   * `match.connected`, so the referee streams turns to it forever and the
+   * abandoned-match reaper never fires.
+   */
   const shutdown = (): void => {
+    if (shutdownDone) return;
+    shutdownDone = true;
     matchOver = true;
     resumeToken = null;
+    if (reconnectTimer !== null) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
     worker?.terminate();
     worker = null;
+    socket?.close();
+    socket = null;
     onCloseCb();
   };
 
@@ -202,11 +221,16 @@ export const createLockstepTransport = (attach?: LockstepAttachOptions): RasterT
         return;
       }
       reconnectAttempt += 1;
-      setTimeout(dialResume, 1000 * 2 ** (reconnectAttempt - 1));
+      reconnectTimer = setTimeout(dialResume, 1000 * 2 ** (reconnectAttempt - 1));
     });
   };
 
   const dialResume = (): void => {
+    reconnectTimer = null;
+    // A fatal shutdown may have landed while this redial was waiting (e.g.
+    // the replica died during the backoff). Dialing anyway would present a
+    // null token the server rejects and leave a zombie connection behind.
+    if (matchOver || resumeToken === null) return;
     const ws = new WebSocket(`${protocol}://${window.location.host}/`);
     socket = ws;
     ws.addEventListener("open", () => {
