@@ -80,6 +80,23 @@ export const initSettings = (): void => {
     });
   }
 
+  // Leaderboard header collapses the standings to just the title strip
+  // (OpenFront's leaderboard toggle), persisted across matches.
+  const lbToggle = document.querySelector<HTMLButtonElement>("#leaderboardToggle");
+  const lbPanel = document.querySelector<HTMLDivElement>("#leaderboardPanel");
+  if (lbToggle && lbPanel) {
+    const applyCollapsed = (collapsed: boolean): void => {
+      lbPanel.classList.toggle("collapsed", collapsed);
+      lbToggle.setAttribute("aria-expanded", String(!collapsed));
+    };
+    applyCollapsed(readBool("leaderboardCollapsed", false));
+    lbToggle.addEventListener("click", () => {
+      const next = !lbPanel.classList.contains("collapsed");
+      writeBool("leaderboardCollapsed", next);
+      applyCollapsed(next);
+    });
+  }
+
   // Gear toggles the panel; a click anywhere outside closes it.
   if (button && panel) {
     const setOpen = (open: boolean): void => {

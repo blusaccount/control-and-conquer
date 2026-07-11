@@ -748,12 +748,14 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
    */
   const renderBuildMenuOnce = (): void => {
     if (ui.buildMenu.children.length > 0) return;
+    // Compact OpenFront-style cards: icon on top, name, gold cost — the full
+    // description lives in the tooltip so the grid stays tight.
     ui.buildMenu.innerHTML = BUILDING_TYPES.map((type) => {
       const def = BUILDING_DEFS[type];
       return (
-        `<button class="build-btn" type="button" data-building="${type}">` +
-        `<span class="icon">${iconSvgMarkup(type, 19)}</span>` +
-        `<span class="label">${escapeHtml(def.name)}<span class="sub">${escapeHtml(def.description)}</span></span>` +
+        `<button class="build-btn" type="button" data-building="${type}" title="${escapeHtml(`${def.name} — ${def.description}`)}">` +
+        `<span class="icon">${iconSvgMarkup(type, 17)}</span>` +
+        `<span class="bname">${escapeHtml(def.name)}</span>` +
         `<span class="cost" data-cost></span>` +
         `</button>`
       );
@@ -805,7 +807,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       btn.disabled = !canBuild;
       const costEl = btn.querySelector<HTMLSpanElement>("[data-cost]");
       if (costEl) {
-        costEl.textContent = `${formatCount(cost)}g`;
+        costEl.textContent = `🪙 ${formatCount(cost)}`;
         costEl.classList.toggle("unaffordable", !affordable);
       }
     }
@@ -824,9 +826,9 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     ui.weaponsMenu.innerHTML = NUKE_KINDS.map((kind) => {
       const def = NUKE_DEFS[kind];
       return (
-        `<button class="build-btn" type="button" data-weapon="${kind}">` +
+        `<button class="build-btn" type="button" data-weapon="${kind}" title="${escapeHtml(`${def.name} — ${def.description}`)}">` +
         `<span class="icon">${NUKE_GLYPH[kind]}</span>` +
-        `<span class="label">${escapeHtml(def.name)}<span class="sub">${escapeHtml(def.description)}</span></span>` +
+        `<span class="bname">${escapeHtml(def.name)}</span>` +
         `<span class="cost" data-cost></span>` +
         `</button>`
       );
@@ -873,7 +875,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       btn.disabled = !canAct;
       const costEl = btn.querySelector<HTMLSpanElement>("[data-cost]");
       if (costEl) {
-        costEl.textContent = `${formatCount(cost)}g`;
+        costEl.textContent = `🪙 ${formatCount(cost)}`;
         costEl.classList.toggle("unaffordable", !affordable);
       }
     }
@@ -2731,44 +2733,49 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   /**
-   * Refresh the top resource bar (OpenFront-style), the build menu and the
-   * contextual build hint. The resource bar reads out troops, gold and held
-   * territory with their growth rates, plus the player's building tallies.
+   * Refresh the control panel's resource rows (OpenFront-style: label left,
+   * value + growth rate right, stacked), the build menu and the contextual
+   * build hint. Reads out troops, gold and held territory with their growth
+   * rates, plus the player's building tallies.
    */
   const renderEconomy = (): void => {
     // Only "live" once the start phase is over and we hold land — until then the
-    // resource bar shows a status hint rather than economy figures.
+    // resource rows show a status hint rather than economy figures.
     updateRatioReadout();
     const live = runtime.spawned && runtime.phase === "playing";
     if (!live) {
       const hint = "Choose a starting location";
-      ui.goldInfo.innerHTML = `<span class="res res-muted">${escapeHtml(hint)}</span>`;
+      ui.goldInfo.innerHTML = `<div class="res-row res-muted">${escapeHtml(hint)}</div>`;
     } else {
       const maxPool = runtime.myMaxTroops;
       const pct = runtime.capturableTotal > 0 ? (runtime.myTiles / runtime.capturableTotal) * 100 : 0;
       const pctStr = pct >= 10 ? String(Math.round(pct)) : pct.toFixed(1);
       ui.goldInfo.innerHTML =
-        `<span class="res"><span class="res-ico">👥</span>` +
-        `<span class="res-val">${formatTroops(runtime.pool)}/${formatTroops(maxPool)}</span>` +
-        `<span class="res-rate">+${formatTroopRate(runtime.troopsPerSecond)}/s</span></span>` +
-        `<span class="res"><span class="res-ico">🪙</span>` +
-        `<span class="res-val">${formatCount(runtime.gold)}</span>` +
-        `<span class="res-rate">+${formatRate(runtime.goldPerSecond)}/s</span></span>` +
-        `<span class="res"><span class="res-ico">🗺️</span>` +
-        `<span class="res-val">${pctStr}%</span></span>` +
-        `<span class="res res-builds">${iconSvgMarkup("city", 13)} ${runtime.myCities} ${iconSvgMarkup("port", 13)} ${runtime.myPorts} ${iconSvgMarkup("fort", 13)} ${runtime.myForts} ${iconSvgMarkup("factory", 13)} ${runtime.myFactories}</span>`;
+        `<div class="res-row"><span class="res-name">Troops</span>` +
+        `<span class="res-val">${formatTroops(runtime.pool)} / ${formatTroops(maxPool)} ` +
+        `<span class="res-rate">(+${formatTroopRate(runtime.troopsPerSecond)}/s)</span></span></div>` +
+        `<div class="res-row"><span class="res-name">Gold</span>` +
+        `<span class="res-val">${formatCount(runtime.gold)} ` +
+        `<span class="res-rate">(+${formatRate(runtime.goldPerSecond)}/s)</span></span></div>` +
+        `<div class="res-row"><span class="res-name">Land</span>` +
+        `<span class="res-val">${pctStr}%</span></div>` +
+        `<div class="res-row res-builds">` +
+        `<span>${iconSvgMarkup("city", 13)} ${runtime.myCities}</span>` +
+        `<span>${iconSvgMarkup("port", 13)} ${runtime.myPorts}</span>` +
+        `<span>${iconSvgMarkup("fort", 13)} ${runtime.myForts}</span>` +
+        `<span>${iconSvgMarkup("factory", 13)} ${runtime.myFactories}</span></div>`;
     }
     refreshBuildMenu();
     refreshWeaponsMenu();
-    if (!live) {
-      ui.buildHint.textContent = "";
-    } else if (runtime.buildMode) {
+    // Only surface the hint while a ghost is being placed — the grid itself is
+    // self-explanatory and the panel stays compact (OpenFront-style).
+    if (live && runtime.buildMode) {
       const def = BUILDING_DEFS[runtime.buildMode];
       ui.buildHint.innerHTML =
         `<strong>Placing ${escapeHtml(def.name)}.</strong> Click a tile you own. ` +
         `<em>Click the button again to cancel.</em>`;
     } else {
-      ui.buildHint.textContent = "Select a structure above, then click your land to build it.";
+      ui.buildHint.textContent = "";
     }
   };
 
@@ -2816,7 +2823,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     if (!runtime.spawned || runtime.phase === "spawn") {
       ui.selectionInfo.innerHTML =
         `<strong>Choose a starting location.</strong><br/>` +
-        `<em>Click anywhere on open land to found your nation — the battle begins the moment you do. Drag to pan, scroll to zoom.</em>`;
+        `<em>Click open land to found your nation — drag to pan, scroll to zoom.</em>`;
       ui.eventsPanel.innerHTML = runtime.recentEvents
         .map((ev) => `<div class="event">${escapeHtml(ev)}</div>`)
         .join("");
@@ -2834,13 +2841,9 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
           : "";
 
     ui.selectionInfo.innerHTML =
-      `<strong>Orders</strong><br/>` +
       diplomacyLine +
       `<strong>Ships at sea:</strong> ${runtime.myShips} / 3<br/>` +
-      `<em>Click adjacent land to expand. Click any landmass across water to send a transport ship ` +
-      `to its nearest reachable shore (one per click, max 3 at sea). Drag to pan, scroll to zoom.</em><br/>` +
-      `<em>Propose alliances on the map: right-click a rival's land (or press <strong>K</strong> over it) — ` +
-      `allied nations can't attack each other until the pact is broken.</em>`;
+      `<em>Click land to expand (across water sends a boat) · right-click for the action menu.</em>`;
 
     ui.eventsPanel.innerHTML = runtime.recentEvents
       .map((ev) => `<div class="event">${escapeHtml(ev)}</div>`)
