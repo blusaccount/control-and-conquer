@@ -85,8 +85,9 @@ const start = async (setup: RasterLockstepStartPayload): Promise<void> => {
   starting = true;
 
   // The referee's map, prebuilt server-side — identical bytes to what its own
-  // session was constructed from, which the terrain hash below proves.
-  const { map } = await fetchPrebuiltMap(setup.mapId);
+  // session was constructed from, which the terrain hash below proves. A
+  // player-made lobby map arrives via its transient token instead of an id.
+  const { map } = await fetchPrebuiltMap(setup.mapId, setup.mapToken);
 
   const session = new RasterGameSession({
     prebuiltMap: map,

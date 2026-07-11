@@ -31,8 +31,17 @@ export interface LobbyHooks {
 }
 
 export interface LobbyClient {
-  create(options: { mapId: string; difficulty: RasterDifficulty; fieldSize?: number; name?: string }): void;
-  join(code: string, name?: string): void;
+  create(options: {
+    mapId: string;
+    difficulty: RasterDifficulty;
+    fieldSize?: number;
+    name?: string;
+    crest?: string;
+    lobbyName?: string;
+    /** Serialized .ccmap for a player-made lobby map (wins over mapId). */
+    customMap?: string;
+  }): void;
+  join(code: string, name?: string, crest?: string): void;
   start(): void;
   leave(): void;
   /** Close the socket without a leave — after a fatal error voided the room. */
@@ -80,11 +89,17 @@ export const connectLobby = (hooks: LobbyHooks): LobbyClient => {
           difficulty: options.difficulty,
           ...(options.fieldSize !== undefined ? { fieldSize: options.fieldSize } : {}),
           ...(options.name ? { name: options.name } : {}),
+          ...(options.crest ? { crest: options.crest } : {}),
+          ...(options.lobbyName ? { lobbyName: options.lobbyName } : {}),
+          ...(options.customMap ? { customMap: options.customMap } : {}),
         },
       });
     },
-    join(code, name) {
-      push({ type: "CLIENT_RASTER_LOBBY_JOIN", payload: { code, ...(name ? { name } : {}) } });
+    join(code, name, crest) {
+      push({
+        type: "CLIENT_RASTER_LOBBY_JOIN",
+        payload: { code, ...(name ? { name } : {}), ...(crest ? { crest } : {}) },
+      });
     },
     start() {
       push({ type: "CLIENT_RASTER_LOBBY_START" });

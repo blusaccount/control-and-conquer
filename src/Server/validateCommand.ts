@@ -21,6 +21,7 @@ import {
 } from "../Core/messages.js";
 import { isMapChoiceId } from "../Core/mapCatalog.js";
 import { CUSTOM_MAP_MAX_FILE_CHARS } from "../Core/customMap.js";
+import { isValidCrest } from "../Core/identity.js";
 import { isBuildingType } from "../Core/buildings.js";
 import { isNukeKind } from "../Core/nukes.js";
 
@@ -191,7 +192,7 @@ const parseRasterJoin = (payload: unknown): RasterJoinPayload => {
   if (typeof payload !== "object" || payload === null) {
     throw new Error("CLIENT_RASTER_JOIN.payload must be an object.");
   }
-  const { mapId, difficulty, fieldSize, lockstep, customMap } = payload as Record<string, unknown>;
+  const { mapId, difficulty, fieldSize, lockstep, customMap, name, crest } = payload as Record<string, unknown>;
   if (mapId !== undefined && !isMapChoiceId(mapId)) {
     throw new Error("mapId must be a known map id.");
   }
@@ -209,14 +210,9 @@ const parseRasterJoin = (payload: unknown): RasterJoinPayload => {
     // land floor) runs once in the join handler, inside the same try/catch,
     // so a bad file becomes a descriptive rejection rather than being parsed
     // twice here.
-    if (typeof customMap !== "string" || customMap.length === 0) {
-      throw new Error("customMap must be a serialized .ccmap string.");
-    }
-    if (customMap.length > CUSTOM_MAP_MAX_FILE_CHARS) {
-      throw new Error(`customMap too large (max ${CUSTOM_MAP_MAX_FILE_CHARS} chars).`);
-    }
+    parseCustomMapString(customMap);
     if (lockstep === true) {
-      throw new Error("customMap cannot be combined with lockstep (replicas mirror maps by catalogue id).");
+      throw new Error("customMap cannot be combined with lockstep (solo custom maps run snapshot mode).");
     }
   }
   const out: RasterJoinPayload = {};
@@ -224,7 +220,11 @@ const parseRasterJoin = (payload: unknown): RasterJoinPayload => {
   if (difficulty !== undefined) out.difficulty = difficulty;
   if (fieldSize !== undefined) out.fieldSize = fieldSize as number;
   if (lockstep !== undefined) out.lockstep = lockstep;
-  if (customMap !== undefined) out.customMap = customMap;
+  if (customMap !== undefined) out.customMap = customMap as string;
+  const parsedName = parseName(name);
+  if (parsedName !== undefined) out.name = parsedName;
+  const parsedCrest = parseCrest(crest);
+  if (parsedCrest !== undefined) out.crest = parsedCrest;
   return out;
 };
 
@@ -239,11 +239,29 @@ const parseName = (name: unknown): string | undefined => {
   return trimmed;
 };
 
+/** Validate an optional crest: must be one of the curated crest emojis. */
+const parseCrest = (crest: unknown): string | undefined => {
+  if (crest === undefined) return undefined;
+  if (!isValidCrest(crest)) throw new Error("crest must be one of the offered crest emojis.");
+  return crest;
+};
+
+/** Cheap shape/size gate for a serialized .ccmap (full decode happens once, later). */
+const parseCustomMapString = (customMap: unknown): string => {
+  if (typeof customMap !== "string" || customMap.length === 0) {
+    throw new Error("customMap must be a serialized .ccmap string.");
+  }
+  if (customMap.length > CUSTOM_MAP_MAX_FILE_CHARS) {
+    throw new Error(`customMap too large (max ${CUSTOM_MAP_MAX_FILE_CHARS} chars).`);
+  }
+  return customMap;
+};
+
 const parseLobbyCreate = (payload: unknown): RasterLobbyCreatePayload => {
   if (typeof payload !== "object" || payload === null) {
     throw new Error("CLIENT_RASTER_LOBBY_CREATE.payload must be an object.");
   }
-  const { mapId, difficulty, fieldSize, name } = payload as Record<string, unknown>;
+  const { mapId, difficulty, fieldSize, name, crest, lobbyName, customMap } = payload as Record<string, unknown>;
   if (mapId !== undefined && !isMapChoiceId(mapId)) {
     throw new Error("mapId must be a known map id.");
   }
@@ -257,8 +275,14 @@ const parseLobbyCreate = (payload: unknown): RasterLobbyCreatePayload => {
   if (mapId !== undefined) out.mapId = mapId;
   if (difficulty !== undefined) out.difficulty = difficulty;
   if (fieldSize !== undefined) out.fieldSize = fieldSize as number;
+  if (customMap !== undefined) out.customMap = parseCustomMapString(customMap);
   const parsedName = parseName(name);
   if (parsedName !== undefined) out.name = parsedName;
+  const parsedCrest = parseCrest(crest);
+  if (parsedCrest !== undefined) out.crest = parsedCrest;
+  // Room titles follow the same charset/length rules as player names.
+  const parsedLobbyName = parseName(lobbyName);
+  if (parsedLobbyName !== undefined) out.lobbyName = parsedLobbyName;
   return out;
 };
 
@@ -266,13 +290,15 @@ const parseLobbyJoin = (payload: unknown): RasterLobbyJoinPayload => {
   if (typeof payload !== "object" || payload === null) {
     throw new Error("CLIENT_RASTER_LOBBY_JOIN.payload must be an object.");
   }
-  const { code, name } = payload as Record<string, unknown>;
+  const { code, name, crest } = payload as Record<string, unknown>;
   if (typeof code !== "string" || !LOBBY_CODE_PATTERN.test(code.toUpperCase())) {
     throw new Error("code must be a 4–8 character lobby code.");
   }
   const out: RasterLobbyJoinPayload = { code: code.toUpperCase() };
   const parsedName = parseName(name);
   if (parsedName !== undefined) out.name = parsedName;
+  const parsedCrest = parseCrest(crest);
+  if (parsedCrest !== undefined) out.crest = parsedCrest;
   return out;
 };
 

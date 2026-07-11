@@ -76,6 +76,12 @@ export interface LockstepSeat {
 export interface RasterLockstepStartPayload {
   /** Catalogue id of the match's map — the replica fetches the same prebuilt terrain. */
   mapId: string;
+  /**
+   * Transient token for a player-made (editor) map: when present the replica
+   * fetches the terrain via `/api/solo/map?token=...` instead of by `mapId`.
+   * Valid only while this match runs; the map is never persisted.
+   */
+  mapToken?: string;
   mapName: string;
   /** Fingerprint of the terrain bytes; the replica refuses a map that differs. */
   terrainHash: string;

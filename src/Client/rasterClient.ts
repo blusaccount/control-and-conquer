@@ -33,6 +33,14 @@ import { digitAction } from "./hotkeys.js";
 import { createLockstepTransport, createWebSocketTransport, createWorkerTransport, type LockstepAttachOptions, type RasterTransport } from "./transport.js";
 import { paintRaster, paintTileInto } from "./rasterPaint.js";
 import { borderColor, playerColor, playerEmoji } from "./rasterPalette.js";
+import { startsWithCrest } from "../Core/identity.js";
+
+/**
+ * Nameplate text for a player: names that already lead with a player-picked
+ * crest are shown as-is; everyone else gets the auto-assigned per-id emoji.
+ */
+const displayNameOf = (playerId: number, name: string): string =>
+  startsWithCrest(name) ? name : `${playerEmoji(playerId)} ${name}`;
 import { drawIcon, iconSvgMarkup } from "./icons.js";
 import { loadRunHistory, recordRun, type RunRecord, type StorageLike } from "./runHistory.js";
 import { computeNameAnchors, type NameAnchor } from "./nameLayout.js";
@@ -83,6 +91,10 @@ export interface RasterClientOptions {
    * join payload. Not supported on the lockstep transport.
    */
   customMap?: string;
+  /** The player's display name (menu identity), shown on nameplates. */
+  playerName?: string;
+  /** The player's chosen crest emoji (validated server-side). */
+  crest?: string;
 }
 
 /**
@@ -884,6 +896,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         difficulty: options.difficulty,
         ...(options.fieldSize !== undefined ? { fieldSize: options.fieldSize } : {}),
         ...(options.customMap !== undefined ? { customMap: options.customMap } : {}),
+        ...(options.playerName !== undefined ? { name: options.playerName } : {}),
+        ...(options.crest !== undefined ? { crest: options.crest } : {}),
       },
     };
     transport.send(join);
@@ -1621,7 +1635,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       // a badge row above it — the OpenFront map readout.
       const showDetail = fontPx >= 14;
       const nameY = showDetail ? sy - fontPx * 0.26 : sy;
-      label(`${playerEmoji(player.playerId)} ${player.name}`, sx, nameY, fontPx, "600");
+      label(`${displayNameOf(player.playerId, player.name)}`, sx, nameY, fontPx, "600");
       if (showDetail) {
         label(formatTroops(player.troops), sx, sy + fontPx * 0.52, fontPx * 0.62, "500");
         const badges: string[] = [];
@@ -2977,7 +2991,9 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         const isMe = p.playerId === runtime.myPlayerId;
         const isLeader = p.playerId === leaderId;
         const rowClass = ["lb-row", isMe ? "me" : "", isLeader ? "leader" : ""].filter(Boolean).join(" ");
-        const name = `${playerEmoji(p.playerId)} ${escapeHtml(p.name)}` + (isMe ? " (you)" : "");
+        const name = startsWithCrest(p.name)
+          ? escapeHtml(p.name) + (isMe ? " (you)" : "")
+          : `${playerEmoji(p.playerId)} ${escapeHtml(p.name)}` + (isMe ? " (you)" : "");
         const own = runtime.capturableTotal > 0 ? (p.tiles / runtime.capturableTotal) * 100 : 0;
         const ownStr = own >= 10 ? `${Math.round(own)}%` : `${own.toFixed(1)}%`;
         return (

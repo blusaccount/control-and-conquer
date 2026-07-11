@@ -6,6 +6,7 @@ import { isRasterDifficulty, type RasterDifficulty } from "../../Core/messages.j
 import { applySessionCommand } from "../../Core/applySessionCommand.js";
 import { fetchPrebuiltMap } from "../mapFetch.js";
 import { buildCustomGameMap, decodeCustomMapFile } from "../../Core/customMap.js";
+import { withCrest } from "../../Core/identity.js";
 import type { RasterClientMessage, RasterServerMessage } from "../../Core/types.js";
 
 /**
@@ -52,6 +53,8 @@ const start = async (
   rawDifficulty: unknown,
   rawFieldSize: unknown,
   customMap: string | undefined,
+  playerName: string | undefined,
+  crest: string | undefined,
 ): Promise<void> => {
   if (starting || session) return;
   starting = true;
@@ -81,8 +84,11 @@ const start = async (
   session = live;
 
   // Seat the human first (player 1, unspawned until they pick a start tile), then
-  // the bot field — identical seating order to the server's MatchRegistry.
-  live.subscribe(LOCAL_CLIENT_ID, emit, /*autoSpawn*/ false, /*wantsRaster*/ true);
+  // the bot field — identical seating order to the server's MatchRegistry. The
+  // chosen crest rides as a validated prefix on the display name, exactly as
+  // the authoritative server composes it.
+  const displayName = playerName || crest ? withCrest(playerName ?? "Anonymous", crest) : undefined;
+  live.subscribe(LOCAL_CLIENT_ID, emit, /*autoSpawn*/ false, /*wantsRaster*/ true, displayName);
 
   // The AI field: the lobby's requested size (OpenFront's `bots` slider) or the
   // map-scaled default. buildFieldConfigs is the exact same seating logic the
@@ -107,6 +113,8 @@ ctx.onmessage = (event): void => {
       message.payload.difficulty,
       message.payload.fieldSize,
       message.payload.customMap,
+      message.payload.name,
+      message.payload.crest,
     ).catch((error: unknown) => {
       // Surface a failed start (bad custom map file, map download error) as a
       // rejection so the client shows the reason instead of hanging on
