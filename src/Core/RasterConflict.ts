@@ -1524,6 +1524,13 @@ export class RasterConflict {
 
     for (const w of [...this.warships]) {
       if (w.hp <= 0) continue; // sunk by an earlier warship's shot this tick
+      // An eliminated owner (no territory left) can't crew a fleet: scuttle any
+      // orphaned warship so it stops patrolling and sinking live players' ships
+      // (and destroying trade ships it can never bank) for the rest of the match.
+      if (this.grid.tileCountOf(w.owner) === 0) {
+        this.removeWarship(w.id);
+        continue;
+      }
 
       const ports = this.activePortsOf(w.owner);
       const hasPort = ports.length > 0;
@@ -1580,6 +1587,11 @@ export class RasterConflict {
     const survivors: TransportShip[] = [];
 
     for (const ship of this.ships) {
+      // An owner who lost their last tile while this transport sailed is
+      // eliminated: drop the ship (its embarked troops are forfeit with the
+      // nation) rather than let it land and claim a beachhead, which would
+      // resurrect a player the session has already removed from play.
+      if (this.grid.tileCountOf(ship.attacker) === 0) continue;
       const lastIndex = ship.path.length - 1;
       // Sea God (seaSpeed) makes ships glide faster along their route.
       const step = Math.max(1, Math.round(SHIP_TILES_PER_TICK * this.grid.modifiersOf(ship.attacker).seaSpeed));

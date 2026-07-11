@@ -32,7 +32,7 @@ import { readBoolSetting } from "./settings.js";
 import { digitAction } from "./hotkeys.js";
 import { createLockstepTransport, createWebSocketTransport, createWorkerTransport, type LockstepAttachOptions, type RasterTransport } from "./transport.js";
 import { paintRaster, paintTileInto } from "./rasterPaint.js";
-import { borderColor, playerColor, playerEmoji } from "./rasterPalette.js";
+import { borderColor, DEFAULT_PLAYER_PALETTE, playerColor, playerEmoji, type Rgba } from "./rasterPalette.js";
 import { startsWithCrest } from "../Core/identity.js";
 
 /**
@@ -283,6 +283,14 @@ interface RasterRuntime {
   capturableTotal: number;
   /** Full player standings from the latest snapshot, for the leaderboard. */
   players: RasterPlayerInfo[];
+  /**
+   * Per-nation colours indexed by `playerId - 1`, rebuilt from each snapshot's
+   * authoritative server-assigned colours. Threaded into the map raster and all
+   * unit overlays so every nation renders in its own distinct colour instead of
+   * the 6-entry fallback palette cycling (blue/red/green… repeating every 6 ids).
+   * Empty until the first snapshot; callers fall back to {@link DEFAULT_PLAYER_PALETTE}.
+   */
+  colorPalette: Rgba[];
   /** Which leaderboard column the standings are sorted by, and the direction. */
   leaderboardSort: { key: LeaderboardSortKey; dir: 1 | -1 };
   /** Whether the leaderboard shows every player or just the top few + you. */
@@ -461,17 +469,26 @@ const decodeTileList = (b64: string): number[] => {
 
 const rgbaToCss = (c: { r: number; g: number; b: number }): string => `rgb(${c.r}, ${c.g}, ${c.b})`;
 
+/** Parse a `#rrggbb` hex string into an opaque {@link Rgba}; grey on malformed input. */
+const hexToRgba = (hex: string): Rgba => {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) return { r: 136, g: 136, b: 136, a: 255 };
+  const n = parseInt(m[1], 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255, a: 255 };
+};
+
 /**
  * A brightened CSS colour for a capturing player's conquest-ripple glow: their
  * nation colour pushed toward white so the freshly-taken tile flares before it
  * settles into the ownership wash. Memoised by player id since it is computed
- * once per captured tile on the snapshot path.
+ * once per captured tile on the snapshot path; the cache is cleared whenever the
+ * colour palette is rebuilt so a flash never keeps a stale (pre-palette) hue.
  */
 const flashCssCache = new Map<PlayerId, string>();
-const flashCss = (id: PlayerId): string => {
+const flashCss = (id: PlayerId, palette?: readonly Rgba[]): string => {
   let css = flashCssCache.get(id);
   if (css === undefined) {
-    const c = playerColor(id);
+    const c = playerColor(id, palette && palette.length ? palette : DEFAULT_PLAYER_PALETTE);
     const lift = (ch: number): number => Math.round(ch + (255 - ch) * 0.55);
     css = `rgb(${lift(c.r)}, ${lift(c.g)}, ${lift(c.b)})`;
     flashCssCache.set(id, css);
@@ -545,6 +562,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     renewDismissed: new Set(),
     capturableTotal: 0,
     players: [],
+    colorPalette: [],
     recentEvents: [],
     matchEnded: false,
     myEliminated: false,
@@ -1049,7 +1067,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
           ry: ty,
           tx,
           ty,
-          color: rgbaToCss(playerColor(s.playerId)),
+          color: rgbaToCss(colorOf(s.playerId)),
           troops: s.troops,
           route,
           placed: true,
@@ -1088,7 +1106,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
           ry: w.y,
           tx: w.x,
           ty: w.y,
-          color: rgbaToCss(playerColor(w.playerId)),
+          color: rgbaToCss(colorOf(w.playerId)),
           hp: w.hp,
           maxHp: w.maxHp,
           retreating: w.retreating,
@@ -1113,7 +1131,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       runtime.landings.push({
         x: c.toX,
         y: c.toY,
-        color: rgbaToCss(playerColor(c.playerId)),
+        color: rgbaToCss(colorOf(c.playerId)),
         start: now,
       });
     }
@@ -1162,6 +1180,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.capturableTotal = snapshot.capturableCount;
     runtime.recentEvents = snapshot.recentEvents;
     runtime.players = snapshot.players;
+    rebuildColorPalette(snapshot.players);
     const nextAlliances = snapshot.alliances ?? [];
     // A new pact involving us — whichever side accepted — gets the chime. Diffed
     // against the snapshot (rather than fired from the accept click) so both "I
@@ -1291,13 +1310,43 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     return runtime.baseImage ? { base, image: runtime.baseImage } : null;
   };
 
+  /**
+   * The palette to pass to the paint/overlay helpers: the per-nation server
+   * colours once a snapshot has populated them, else `undefined` so the callees
+   * fall back to {@link DEFAULT_PLAYER_PALETTE}. (Passing `undefined` for a param
+   * with a default value uses that default.)
+   */
+  const activePalette = (): readonly Rgba[] | undefined =>
+    runtime.colorPalette.length ? runtime.colorPalette : undefined;
+
+  /** This nation's on-screen colour, from the authoritative per-id palette. */
+  const colorOf = (id: PlayerId): Rgba => playerColor(id, activePalette());
+
+  /**
+   * Rebuild {@link RuntimeState.colorPalette} from a snapshot's player list. Each
+   * seat's server-assigned colour lands at index `playerId - 1`; any gap (a mid-
+   * range id absent from this snapshot) is filled with the fallback wrap colour
+   * so the array is dense and `playerColor`'s index lookup is always in range.
+   */
+  const rebuildColorPalette = (players: RasterPlayerInfo[]): void => {
+    let maxId = 0;
+    for (const p of players) if (p.playerId > maxId) maxId = p.playerId;
+    const palette: Rgba[] = new Array(maxId);
+    for (let i = 0; i < maxId; i += 1) palette[i] = playerColor(i + 1, DEFAULT_PLAYER_PALETTE);
+    for (const p of players) palette[p.playerId - 1] = hexToRgba(p.color);
+    runtime.colorPalette = palette;
+    // Flash colours are memoised by id off the old palette — drop them so the
+    // next capture glow is computed against the refreshed nation colours.
+    flashCssCache.clear();
+  };
+
   /** Repaint the whole terrain + ownership layer (1 pixel per tile). */
   const repaintBaseFull = (): void => {
     const map = runtime.map;
     const owner = runtime.owner;
     const target = ensureBase();
     if (!map || !owner || !target) return;
-    paintRaster(map, owner, target.image.data, undefined, runtime.myPlayerId ?? -1);
+    paintRaster(map, owner, target.image.data, activePalette(), runtime.myPlayerId ?? -1);
     target.base.getContext("2d")?.putImageData(target.image, 0, 0);
     // A full repaint means we have no per-tile change set to glow (first
     // snapshot, or a high-churn full resend); drop any stale flashes.
@@ -1331,7 +1380,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         // Glow only on a genuine capture by a real player (skip collapses back to
         // neutral), so the wash reads as an advancing front rather than churn.
         if (newOwner !== 0 && newOwner !== prevOwner) {
-          runtime.captureFlashes.push({ ref: index, css: flashCss(newOwner), start: now });
+          runtime.captureFlashes.push({ ref: index, css: flashCss(newOwner, activePalette()), start: now });
         }
       }
     }
@@ -1348,7 +1397,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     let maxX = -1;
     let maxY = -1;
     for (const ref of dirty) {
-      paintTileInto(map, owner, ref, target.image.data, undefined, highlight);
+      paintTileInto(map, owner, ref, target.image.data, activePalette(), highlight);
       const tx = ref % map.width;
       const ty = (ref - tx) / map.width;
       if (tx < minX) minX = tx;
@@ -1818,7 +1867,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ctx.fill();
       ctx.beginPath();
       ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
-      ctx.fillStyle = rgbaToCss(playerColor(train.playerId));
+      ctx.fillStyle = rgbaToCss(colorOf(train.playerId));
       ctx.fill();
     }
     ctx.restore();
@@ -1847,7 +1896,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ctx.arc(p.x, p.y, radius + 1.4, 0, Math.PI * 2);
       ctx.fillStyle = "rgba(234, 179, 8, 0.85)"; // gold halo marks a trade run
       ctx.fill();
-      ctx.fillStyle = rgbaToCss(playerColor(ship.playerId));
+      ctx.fillStyle = rgbaToCss(colorOf(ship.playerId));
       drawIcon(ctx, "ship", p.x, p.y, radius);
     }
     ctx.restore();
@@ -1925,7 +1974,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     for (const b of runtime.buildings) {
       const { x: sx, y: sy } = worldToScreen(b.x + 0.5, b.y + 0.5);
       if (sx < -radius * 2 || sy < -radius * 2 || sx > cw + radius * 2 || sy > ch + radius * 2) continue;
-      const col = playerColor(b.playerId);
+      const col = colorOf(b.playerId);
 
       if (compactMode) {
         // Zoomed out: a compact flat token — dark halo, owner-coloured per-type
@@ -2062,7 +2111,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const ownerCss = (id: number): string => {
       let css = cssCache.get(id);
       if (!css) {
-        css = rgbaToCss(borderColor(id));
+        css = rgbaToCss(borderColor(id, activePalette()));
         cssCache.set(id, css);
       }
       return css;
@@ -2146,7 +2195,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
       traceRoundRect(ctx, rx - 1.5, ry - 1.5, w + 3, h + 3, (h + 3) / 2);
       ctx.fill();
-      ctx.fillStyle = rgbaToCss(playerColor(front.playerId));
+      ctx.fillStyle = rgbaToCss(colorOf(front.playerId));
       traceRoundRect(ctx, rx, ry, w, h, h / 2);
       ctx.fill();
       ctx.fillStyle = "#fff";
@@ -2181,7 +2230,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       // A small sender-coloured dot anchors the reaction to its author.
       ctx.beginPath();
       ctx.arc(sx, sy + px * 0.55, Math.max(2, px * 0.12), 0, Math.PI * 2);
-      ctx.fillStyle = rgbaToCss(playerColor(e.from));
+      ctx.fillStyle = rgbaToCss(colorOf(e.from));
       ctx.fill();
       ctx.fillText(glyph, sx, sy);
     }

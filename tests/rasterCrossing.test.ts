@@ -114,6 +114,34 @@ test("troops left after the beachhead push inland from the landing", () => {
   assert.ok(grid.ownerOf(6) === 1 && grid.ownerOf(7) === 1, "survivors expand inland from the beachhead");
 });
 
+test("a transport whose owner is eliminated mid-voyage is dropped, not landed", () => {
+  // owned 0,1 | water 2,3,4 | neutral 5,6. Player 1 launches, then loses every
+  // tile (a rival overruns the homeland) while the boat is still at sea. The
+  // ship must NOT land and claim tile 5 — that would resurrect an eliminated
+  // nation. It is scuttled instead, and the neutral shore stays neutral.
+  const grid = new TerritoryGrid(rowMap("##   ##"));
+  grid.addPlayer(1, 50);
+  grid.addPlayer(2, 50);
+  grid.claim(0, 1);
+  grid.claim(1, 1);
+  freezeIncome(grid);
+  const conflict = new RasterConflict(grid);
+
+  assert.equal(conflict.launchShip({ attacker: 1, dest: 5, troops: 50 }), null);
+  assert.equal(conflict.shipCountOf(1), 1, "one ship at sea");
+
+  // Player 1's homeland falls: tileCountOf(1) becomes 0 (eliminated).
+  grid.claim(0, 2);
+  grid.claim(1, 2);
+  assert.equal(grid.tileCountOf(1), 0, "player 1 holds no territory");
+
+  for (let i = 0; i < 20; i += 1) conflict.processTick();
+
+  assert.equal(grid.ownerOf(5), NEUTRAL_PLAYER, "the dead nation's boat never claims a beachhead");
+  assert.equal(grid.tileCountOf(1), 0, "the eliminated player is not resurrected");
+  assert.equal(conflict.shipCountOf(1), 0, "the orphaned ship is removed, not left in flight");
+});
+
 test("a landing always conquers its beachhead outright, even a token force (OpenFront)", () => {
   // A one-tile river: OpenFront's TransportShipExecution calls `conquer(dst)`
   // with no toll and no repel roll — the beachhead tile always falls, and the
