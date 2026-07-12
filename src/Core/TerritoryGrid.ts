@@ -40,6 +40,17 @@ interface PlayerStanding {
    * the whole ownership raster.
    */
   tiles: Set<TileRef>;
+  /**
+   * The subset of `tiles` on the player's territory edge: owned tiles with at
+   * least one 4-neighbour they don't own (enemy, neutral land, water or rock).
+   * Maintained incrementally by {@link TerritoryGrid.claim} — a tile's border
+   * status only changes when it or a neighbour changes hands, so the upkeep is
+   * O(1) per claim. Every frontier derivation (land fronts, boat targets,
+   * launchable water) only ever needs edge tiles, so iterating this set instead
+   * of `tiles` turns those scans from O(territory) into O(perimeter) — the
+   * difference between a 500k-tile empire and its ~5k-tile edge, every tick.
+   */
+  border: Set<TileRef>;
   /** Per-player gameplay modifiers; defaults to no effect. */
   modifiers: PlayerModifiers;
   /** How many of each building type this player currently owns (instances). */
@@ -172,6 +183,17 @@ export class TerritoryGrid {
   // Reused, generation-stamped scratch for the {@link canReachByLand} BFS.
   private landReachStamp?: Int32Array;
   private landReachGeneration?: number;
+  // Shared 4-slot scratch for allocation-free neighbour walks (never used
+  // across nested walks — each loop iteration consumes it before the next).
+  private readonly scratchNeighbors = new Int32Array(4);
+  // Cached sorted fallout list (see {@link falloutTiles}); null = stale.
+  private falloutSorted: TileRef[] | null = null;
+  // Cached sorted building rosters (see {@link buildingEntries} /
+  // {@link activeBuildingEntries}); null = stale. Both are read every tick by
+  // several systems (snapshot, rails, trade, fort guns, warships, bots) while
+  // the buildings map changes only on place/raze/activate.
+  private buildingEntriesCache: Array<[TileRef, BuildingType]> | null = null;
+  private activeBuildingEntriesCache: Array<[TileRef, BuildingType]> | null = null;
 
   constructor(map: GameMap) {
     this.map = map;
@@ -250,8 +272,13 @@ export class TerritoryGrid {
    */
   private launchComponentsOf(attacker: PlayerId): Set<number> {
     const comps = new Set<number>();
-    for (const ref of this.standing(attacker).tiles) {
-      for (const n of this.map.neighbors(ref)) {
+    const scratch = this.scratchNeighbors;
+    // Coastal tiles are border tiles by definition (water is never owned), so
+    // the perimeter set suffices.
+    for (const ref of this.standing(attacker).border) {
+      const count = this.map.neighborsInto(ref, scratch);
+      for (let i = 0; i < count; i += 1) {
+        const n = scratch[i];
         if (this.map.isWater(n)) comps.add(this.waterComponent[n]);
       }
     }
@@ -326,10 +353,13 @@ export class TerritoryGrid {
     const depth: number[] = [0];
     stamp[dest] = generation;
 
+    const scratch = this.scratchNeighbors;
     for (let head = 0; head < queue.length; head += 1) {
       const tile = queue[head];
       const d = depth[head];
-      for (const n of this.map.neighbors(tile)) {
+      const count = this.map.neighborsInto(tile, scratch);
+      for (let i = 0; i < count; i += 1) {
+        const n = scratch[i];
         // Touching the player's own ground means a contiguous front can reach here.
         if (this.owner[n] === player) return true;
         // Only spread through *neutral* land: a march can't pass through a third
@@ -361,7 +391,10 @@ export class TerritoryGrid {
 
   /** Mark `ref` radioactive (a nuke blast). Permanent until the tile is conquered. */
   setFallout(ref: TileRef): void {
-    this.fallout.add(ref);
+    if (!this.fallout.has(ref)) {
+      this.fallout.add(ref);
+      this.falloutSorted = null;
+    }
   }
 
   /** Whether `ref` is currently radioactive fallout (dearer and slower to capture). */
@@ -369,9 +402,15 @@ export class TerritoryGrid {
     return this.fallout.has(ref);
   }
 
-  /** Active fallout tiles, ascending — for the snapshot's fallout overlay. */
-  falloutTiles(): TileRef[] {
-    return [...this.fallout].sort((a, b) => a - b);
+  /**
+   * Active fallout tiles, ascending — for the snapshot's fallout overlay.
+   * Cached between mutations: this is read every broadcast tick, while the set
+   * only changes on a detonation or a conquest of irradiated ground — without
+   * the cache a nuke-heavy match pays an O(F log F) sort of a set that only
+   * ever grows, 10 times a second, forever. Callers must not mutate the result.
+   */
+  falloutTiles(): readonly TileRef[] {
+    return (this.falloutSorted ??= [...this.fallout].sort((a, b) => a - b));
   }
 
   /**
@@ -434,6 +473,7 @@ export class TerritoryGrid {
       troops,
       gold: STARTING_GOLD,
       tiles: new Set(),
+      border: new Set(),
       modifiers: { ...IDENTITY_MODIFIERS },
       buildingCounts: new Map(),
       buildingLevelTotals: new Map(),
@@ -564,7 +604,9 @@ export class TerritoryGrid {
     // aura) so the conqueror takes bare ground, not the loser's economy.
     if (this.buildings.has(ref)) this.destroyBuilding(ref, previous);
     if (previous !== NEUTRAL_PLAYER) {
-      this.standing(previous).tiles.delete(ref);
+      const standing = this.standing(previous);
+      standing.tiles.delete(ref);
+      standing.border.delete(ref);
       this.bumpComponent(previous, comp, -1);
     }
     if (id !== NEUTRAL_PLAYER) {
@@ -573,9 +615,35 @@ export class TerritoryGrid {
       // Conquering ground scrubs it clean, mirroring OpenFront's
       // `conquer(...) → setFallout(tile, false)`: fallout lives only on
       // unowned land, and taking the tile is the (one) way to reclaim it.
-      this.fallout.delete(ref);
+      if (this.fallout.delete(ref)) this.falloutSorted = null;
     }
     this.owner[ref] = id;
+    // Border upkeep: this tile and each owned neighbour may have entered or
+    // left their owner's territory edge.
+    this.refreshBorderStatus(ref);
+    const width = this.map.width;
+    const x = ref % width;
+    if (x > 0) this.refreshBorderStatus(ref - 1);
+    if (x + 1 < width) this.refreshBorderStatus(ref + 1);
+    if (ref >= width) this.refreshBorderStatus(ref - width);
+    if (ref + width < this.owner.length) this.refreshBorderStatus(ref + width);
+  }
+
+  /** Re-derive whether `ref` sits on its owner's territory edge (see {@link PlayerStanding.border}). */
+  private refreshBorderStatus(ref: TileRef): void {
+    const id = this.owner[ref];
+    if (id === NEUTRAL_PLAYER) return;
+    const owner = this.owner;
+    const width = this.map.width;
+    const x = ref % width;
+    const isBorder =
+      (x > 0 && owner[ref - 1] !== id) ||
+      (x + 1 < width && owner[ref + 1] !== id) ||
+      (ref >= width && owner[ref - width] !== id) ||
+      (ref + width < owner.length && owner[ref + width] !== id);
+    const border = this.standing(id).border;
+    if (isBorder) border.add(ref);
+    else border.delete(ref);
   }
 
   /**
@@ -661,9 +729,12 @@ export class TerritoryGrid {
     return this.buildings.size;
   }
 
-  /** Every placed building as `[tile, type]` pairs, in ascending tile order. */
+  /**
+   * Every placed building as `[tile, type]` pairs, in ascending tile order.
+   * Cached between building mutations — callers must not mutate the result.
+   */
   buildingEntries(): Array<[TileRef, BuildingType]> {
-    return [...this.buildings.entries()].sort((a, b) => a[0] - b[0]);
+    return (this.buildingEntriesCache ??= [...this.buildings.entries()].sort((a, b) => a[0] - b[0]));
   }
 
   /**
@@ -687,6 +758,8 @@ export class TerritoryGrid {
       throw new Error(`Tile ${ref} already has a building.`);
     }
     this.buildings.set(ref, type);
+    this.buildingEntriesCache = null;
+    this.activeBuildingEntriesCache = null;
     const standing = this.standing(owner);
     standing.buildingCounts.set(type, (standing.buildingCounts.get(type) ?? 0) + 1);
     standing.buildingLevelTotals.set(type, (standing.buildingLevelTotals.get(type) ?? 0) + 1);
@@ -758,6 +831,7 @@ export class TerritoryGrid {
     if (this.construction.size === 0) return;
     const ready: TileRef[] = [];
     for (const [ref, window] of this.construction) if (tick >= window.ready) ready.push(ref);
+    if (ready.length > 0) this.activeBuildingEntriesCache = null;
     for (const ref of ready) {
       this.construction.delete(ref);
       if (this.buildings.get(ref) === "fort") this.addDefensePost(ref, FORT_DEFENSE_RADIUS, FORT_DEFENSE_STRENGTH);
@@ -792,9 +866,13 @@ export class TerritoryGrid {
     return Math.max(0, this.buildingCountOf(player, type) - pending);
   }
 
-  /** Every *active* (finished) building as `[tile, type]`, ascending — for stations/effects. */
+  /**
+   * Every *active* (finished) building as `[tile, type]`, ascending — for
+   * stations/effects. Cached between mutations — callers must not mutate it.
+   */
   activeBuildingEntries(): Array<[TileRef, BuildingType]> {
-    return this.buildingEntries().filter(([ref]) => !this.construction.has(ref));
+    return (this.activeBuildingEntriesCache ??=
+      this.buildingEntries().filter(([ref]) => !this.construction.has(ref)));
   }
 
   /**
@@ -811,6 +889,8 @@ export class TerritoryGrid {
     this.buildings.delete(ref);
     this.buildingLevels.delete(ref);
     this.construction.delete(ref);
+    this.buildingEntriesCache = null;
+    this.activeBuildingEntriesCache = null;
     if (previousOwner !== NEUTRAL_PLAYER) {
       const standing = this.standing(previousOwner);
       const next = (standing.buildingCounts.get(type) ?? 0) - 1;
@@ -852,8 +932,13 @@ export class TerritoryGrid {
    */
   landFrontierOf(attacker: PlayerId, target: PlayerId): TileRef[] {
     const found = new Set<TileRef>();
-    for (const ref of this.standing(attacker).tiles) {
-      for (const n of this.map.neighbors(ref)) {
+    const scratch = this.scratchNeighbors;
+    // Only edge tiles can touch a non-attacker tile — iterate the perimeter,
+    // not the whole territory (this runs per active attack per tick).
+    for (const ref of this.standing(attacker).border) {
+      const count = this.map.neighborsInto(ref, scratch);
+      for (let i = 0; i < count; i += 1) {
+        const n = scratch[i];
         // Fallout ground stays on the frontier — OpenFront keeps it capturable,
         // just at a stiff combat penalty (see falloutCombatModifier).
         if (this.owner[n] === target && this.isCapturable(n)) found.add(n);
@@ -868,8 +953,11 @@ export class TerritoryGrid {
    * water); reachability across water is decided by {@link findSeaPath} instead.
    */
   hasLandBorderWith(attacker: PlayerId, target: PlayerId): boolean {
-    for (const ref of this.standing(attacker).tiles) {
-      for (const n of this.map.neighbors(ref)) {
+    const scratch = this.scratchNeighbors;
+    for (const ref of this.standing(attacker).border) {
+      const count = this.map.neighborsInto(ref, scratch);
+      for (let i = 0; i < count; i += 1) {
+        const n = scratch[i];
         if (this.owner[n] === target && this.isCapturable(n)) return true;
       }
     }
@@ -918,9 +1006,12 @@ export class TerritoryGrid {
     }
     if (queue.length === 0) return null;
 
+    const scratch = this.scratchNeighbors;
     for (let head = 0; head < queue.length; head += 1) {
       const water = queue[head];
-      for (const n of this.map.neighbors(water)) {
+      const count = this.map.neighborsInto(water, scratch);
+      for (let i = 0; i < count; i += 1) {
+        const n = scratch[i];
         if (this.owner[n] === attacker && this.isCapturable(n)) {
           // Reached the near coast. Parent pointers run water→dest, so walking
           // from `water` already yields embarkation→…→dest order: [coast, water,
@@ -973,9 +1064,12 @@ export class TerritoryGrid {
     }
     if (queue.length === 0) return null;
 
+    const scratch = this.scratchNeighbors;
     for (let head = 0; head < queue.length; head += 1) {
       const water = queue[head];
-      for (const n of this.map.neighbors(water)) {
+      const count = this.map.neighborsInto(water, scratch);
+      for (let i = 0; i < count; i += 1) {
+        const n = scratch[i];
         if (n === from) {
           // Reached the source coast. Walk parents water→`to`, yielding
           // [from, water, …, seed-water, to] with no reversal.
@@ -1017,9 +1111,12 @@ export class TerritoryGrid {
 
     // A tile is a valid landing if it is capturable land the attacker doesn't
     // own, on the shore of a body of water the attacker can launch into.
+    const scratch = this.scratchNeighbors;
     const reachableLanding = (ref: TileRef): boolean => {
       if (this.owner[ref] === attacker || !this.isCapturable(ref)) return false;
-      for (const n of this.map.neighbors(ref)) {
+      const count = this.map.neighborsInto(ref, scratch);
+      for (let i = 0; i < count; i += 1) {
+        const n = scratch[i];
         if (this.map.isWater(n) && launch.has(this.waterComponent[n])) return true;
       }
       return false;
@@ -1035,7 +1132,13 @@ export class TerritoryGrid {
 
     let best: TileRef | null = null;
     let bestDepth = Infinity;
-    for (let head = 0; head < queue.length; head += 1) {
+    // A click in a region with no reachable landing at all would otherwise
+    // flood the whole map (O(2.5M) with matching queue growth on the huge
+    // Earth) before giving up — and clicks are user-triggerable at will. Any
+    // genuine landing lies within a coastal band near the click; a generous
+    // budget can't change a reachable result, only bound the hopeless flood.
+    const SEA_LANDING_SCAN_BUDGET = 150_000;
+    for (let head = 0; head < queue.length && head < SEA_LANDING_SCAN_BUDGET; head += 1) {
       const tile = queue[head];
       // BFS visits in non-decreasing depth; once we are past the depth of a found
       // landing, no closer one remains, so stop.
@@ -1045,7 +1148,9 @@ export class TerritoryGrid {
         bestDepth = depth[tile];
         continue; // its neighbours are no nearer to the click than it is
       }
-      for (const n of this.map.neighbors(tile)) {
+      const count = this.map.neighborsInto(tile, scratch);
+      for (let i = 0; i < count; i += 1) {
+        const n = scratch[i];
         if (stamp[n] !== generation) {
           stamp[n] = generation;
           depth[n] = depth[tile] + 1;
@@ -1073,20 +1178,30 @@ export class TerritoryGrid {
     const stamp = (this.seaScanStamp ??= new Int32Array(size).fill(-1));
     const generation = (this.seaScanGeneration = (this.seaScanGeneration ?? 0) + 1);
     const queue: TileRef[] = [];
-    for (const ref of this.standing(attacker).tiles) {
-      for (const n of this.map.neighbors(ref)) {
+    const scratch = this.scratchNeighbors;
+    // Coasts are border tiles by definition — seed from the perimeter only.
+    for (const ref of this.standing(attacker).border) {
+      const count = this.map.neighborsInto(ref, scratch);
+      for (let i = 0; i < count; i += 1) {
+        const n = scratch[i];
         if (this.map.isWater(n) && launch.has(this.waterComponent[n]) && stamp[n] !== generation) {
           stamp[n] = generation;
           queue.push(n);
         }
       }
     }
+    // The seed order feeds a budgeted BFS, so make it deterministic regardless
+    // of border-set insertion history (replicas replay claims in order, but a
+    // sorted seed keeps the scan robust to any future bookkeeping change).
+    queue.sort((a, b) => a - b);
     const targets = new Set<TileRef>();
     let explored = 0;
     for (let head = 0; head < queue.length && explored < SEA_TARGET_SCAN_BUDGET; head += 1) {
       const water = queue[head];
       explored += 1;
-      for (const n of this.map.neighbors(water)) {
+      const count = this.map.neighborsInto(water, scratch);
+      for (let i = 0; i < count; i += 1) {
+        const n = scratch[i];
         if (this.map.isWater(n)) {
           if (stamp[n] !== generation) {
             stamp[n] = generation;
@@ -1114,8 +1229,10 @@ export class TerritoryGrid {
     const consider = (ref: TileRef): void => {
       if (this.owner[ref] === target && this.isCapturable(ref)) found.add(ref);
     };
-    for (const ref of this.standing(attacker).tiles) {
-      for (const n of this.map.neighbors(ref)) consider(n);
+    const scratch = this.scratchNeighbors;
+    for (const ref of this.standing(attacker).border) {
+      const count = this.map.neighborsInto(ref, scratch);
+      for (let i = 0; i < count; i += 1) consider(scratch[i]);
     }
     for (const ref of this.seaTargetTiles(attacker)) consider(ref);
     return [...found].sort((a, b) => a - b);
@@ -1147,8 +1264,10 @@ export class TerritoryGrid {
         if (ref < entry.sample) entry.sample = ref;
       }
     };
-    for (const ref of this.standing(attacker).tiles) {
-      for (const n of this.map.neighbors(ref)) consider(n);
+    const scratch = this.scratchNeighbors;
+    for (const ref of this.standing(attacker).border) {
+      const count = this.map.neighborsInto(ref, scratch);
+      for (let i = 0; i < count; i += 1) consider(scratch[i]);
     }
     for (const ref of this.seaTargetTiles(attacker)) consider(ref);
     return [...acc.entries()]
@@ -1163,8 +1282,10 @@ export class TerritoryGrid {
   hasFrontier(attacker: PlayerId, target: PlayerId): boolean {
     const reaches = (ref: TileRef): boolean =>
       this.owner[ref] === target && this.isCapturable(ref);
-    for (const ref of this.standing(attacker).tiles) {
-      for (const n of this.map.neighbors(ref)) if (reaches(n)) return true;
+    const scratch = this.scratchNeighbors;
+    for (const ref of this.standing(attacker).border) {
+      const count = this.map.neighborsInto(ref, scratch);
+      for (let i = 0; i < count; i += 1) if (reaches(scratch[i])) return true;
     }
     for (const ref of this.seaTargetTiles(attacker)) if (reaches(ref)) return true;
     return false;

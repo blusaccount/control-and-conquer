@@ -144,7 +144,7 @@ const loadStatic = async (filePath: string): Promise<StaticCacheEntry> => {
   const cached = staticCache.get(filePath);
   if (cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size) return cached;
 
-  let body = await readFile(filePath);
+  let body: Buffer = await readFile(filePath);
   const ext = extname(filePath);
   if (ext === ".html") body = await injectModulePreloads(body);
   const compress = COMPRESSIBLE.has(ext) && body.length > 1024;

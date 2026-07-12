@@ -36,9 +36,15 @@ export const createWebSocketTransport = (): RasterTransport => {
     start() {
       socket = new WebSocket(`${protocol}://${window.location.host}/`);
       socket.addEventListener("open", () => onOpenCb());
-      socket.addEventListener("message", (event) =>
-        onMessageCb(JSON.parse(String(event.data)) as RasterServerMessage),
-      );
+      socket.addEventListener("message", (event) => {
+        let message: RasterServerMessage;
+        try {
+          message = JSON.parse(String(event.data)) as RasterServerMessage;
+        } catch {
+          return; // A malformed frame must not kill the listener.
+        }
+        onMessageCb(message);
+      });
       socket.addEventListener("close", () => onCloseCb());
     },
     send(message) {
@@ -213,7 +219,14 @@ export const createLockstepTransport = (attach?: LockstepAttachOptions): RasterT
 
   const wireSocket = (ws: WebSocket): void => {
     ws.addEventListener("message", (event) => {
-      handleServerMessage(JSON.parse(String(event.data)) as RasterServerMessage);
+      let message: RasterServerMessage;
+      try {
+        message = JSON.parse(String(event.data)) as RasterServerMessage;
+      } catch {
+        return; // A malformed frame must not kill the listener (a dropped
+        // relay turn would fatal the replica on the *next* turn's gap).
+      }
+      handleServerMessage(message);
     });
     ws.addEventListener("close", () => {
       if (matchOver || resumeToken === null || reconnectAttempt >= 3) {

@@ -118,8 +118,18 @@ ctx.onmessage = (event): void => {
     ).catch((error: unknown) => {
       // Surface a failed start (bad custom map file, map download error) as a
       // rejection so the client shows the reason instead of hanging on
-      // "Connecting…" with an unhandled worker rejection.
+      // "Connecting…" with an unhandled worker rejection. Roll back *all*
+      // partial start state: if the throw happened after `session` was
+      // assigned (e.g. while seating the bot field), leaving it set would trap
+      // every retry at the `if (starting || session)` guard — a permanently
+      // wedged worker whose sim never ticks.
       starting = false;
+      session = null;
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+      for (const unsub of botUnsubs.splice(0)) unsub();
       emit({
         type: "SERVER_RASTER_ACTION_REJECTED",
         payload: {

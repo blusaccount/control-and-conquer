@@ -90,6 +90,23 @@ export class GameMap {
     return result;
   }
 
+  /**
+   * Allocation-free variant of {@link neighbors} for hot loops: writes the
+   * 4-connected neighbours of `ref` into `out` (length ≥ 4) and returns how
+   * many were written. The per-tick sim paths walk neighbours millions of
+   * times on a big map; a fresh array per call is pure GC pressure there.
+   */
+  neighborsInto(ref: TileRef, out: Int32Array): number {
+    const w = this.width;
+    const x = ref % w;
+    let n = 0;
+    if (x > 0) out[n++] = ref - 1;
+    if (x + 1 < w) out[n++] = ref + 1;
+    if (ref >= w) out[n++] = ref - w;
+    if (ref + w < w * this.height) out[n++] = ref + w;
+    return n;
+  }
+
   isLand(ref: TileRef): boolean {
     return isLand(this.terrain[ref]);
   }

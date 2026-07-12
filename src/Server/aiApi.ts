@@ -168,11 +168,15 @@ export class AiGameSession {
     // Subscribe the AI agent as a player (autoSpawn=false: agent picks spawn via API).
     // A brand-new session always has a free seat for its first subscriber, so
     // the null case is unreachable — guarded defensively rather than trusting it.
+    // wantsRaster=false: the REST snapshot (`getState`) never reads the
+    // base64 owner plane, and a raster subscriber costs a full-map diff plus
+    // a 2×map-bytes private baseline every tick — pure waste for a headless
+    // agent (RasterBotController.attach makes the same choice).
     this.unsub = this.session.subscribe(
       this.clientId,
       (msg: RasterServerMessage) => this.onMessage(msg),
       autoSpawn,
-      true,
+      false,
       playerName,
     ) ?? (() => {});
 
@@ -238,16 +242,21 @@ export class AiGameSession {
     // Up to 20 tiles, evenly strided across the map so they cover the whole map.
     const availableSpawns: Array<{ x: number; y: number }> = [];
     if (snap?.phase === "spawn" && !spawned) {
+      // Stride over the raster directly instead of materializing every open
+      // land tile (hundreds of thousands of refs on a big map, rebuilt on
+      // every poll) just to sample 20 of them. The map-size stride still
+      // spreads the samples across the whole map; scanning forward from each
+      // stride point finds the nearest open tile.
       const SAMPLE_TARGET = 20;
-      const candidates: number[] = [];
-      for (let ref = 0; ref < map.size; ref++) {
-        if (map.isLand(ref) && !map.isImpassable(ref) && grid.ownerOf(ref) === NEUTRAL_PLAYER) {
-          candidates.push(ref);
+      const stride = Math.max(1, Math.floor(map.size / SAMPLE_TARGET));
+      for (let base = 0; base < map.size && availableSpawns.length < SAMPLE_TARGET; base += stride) {
+        const end = Math.min(base + stride, map.size);
+        for (let ref = base; ref < end; ref++) {
+          if (map.isLand(ref) && !map.isImpassable(ref) && grid.ownerOf(ref) === NEUTRAL_PLAYER) {
+            availableSpawns.push({ x: map.x(ref), y: map.y(ref) });
+            break;
+          }
         }
-      }
-      const stride = Math.max(1, Math.floor(candidates.length / SAMPLE_TARGET));
-      for (let i = 0; i < candidates.length && availableSpawns.length < SAMPLE_TARGET; i += stride) {
-        availableSpawns.push({ x: map.x(candidates[i]), y: map.y(candidates[i]) });
       }
     }
 
