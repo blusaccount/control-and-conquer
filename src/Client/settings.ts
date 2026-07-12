@@ -89,7 +89,10 @@ export const initSettings = (): void => {
       lbPanel.classList.toggle("collapsed", collapsed);
       lbToggle.setAttribute("aria-expanded", String(!collapsed));
     };
-    applyCollapsed(readBool("leaderboardCollapsed", false));
+    // Phones start collapsed — the full table would cover half the map. The
+    // player's own choice, once made, wins on every screen size.
+    const smallScreen = window.matchMedia("(max-width: 720px)").matches;
+    applyCollapsed(readBool("leaderboardCollapsed", smallScreen));
     lbToggle.addEventListener("click", () => {
       const next = !lbPanel.classList.contains("collapsed");
       writeBool("leaderboardCollapsed", next);

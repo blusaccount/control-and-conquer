@@ -3124,6 +3124,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
 
   const RADIAL_RADIUS = 78;
 
+  // When a touch long-press opens the menu, the finger is resting exactly on
+  // the centre button, and lifting it synthesizes a click there — which would
+  // instantly fire "Attack". Ignore menu clicks until this deadline.
+  let radialClickGuardUntil = 0;
+
   /** Close the radial menu if one is open. Returns whether it was (so callers can swallow the closing click). */
   const closeRadialMenu = (): boolean => {
     if (!radial) return false;
@@ -3150,6 +3155,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       btn.addEventListener("click", (event) => {
         event.stopPropagation();
         if (item.disabled) return;
+        if (performance.now() < radialClickGuardUntil) return;
         item.onClick();
       });
       slice.appendChild(btn);
@@ -3448,6 +3454,21 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   let downX = 0;
   let downY = 0;
 
+  // Touch state: active touch points by pointerId. Two fingers pinch-zoom and
+  // pan (never issuing an expand), and a stationary one-finger hold opens the
+  // radial menu — the touch stand-ins for wheel zoom and right-click.
+  const touchPoints = new Map<number, { x: number; y: number }>();
+  let pinching = false;
+  let pinchDist = 0;
+  let longPressTimer: number | null = null;
+
+  const clearLongPress = (): void => {
+    if (longPressTimer !== null) {
+      window.clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+  };
+
   ui.mapCanvas.addEventListener("pointerdown", (event) => {
     // Middle click auto-upgrades the structure under the cursor (OpenFront):
     // a build order on your own finished structure levels it up.
@@ -3459,6 +3480,43 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     // Only the primary (left) button drives pan/expand; the right button is
     // reserved for the radial menu's own `contextmenu` handler below.
     if (event.button !== 0) return;
+
+    if (event.pointerType !== "mouse") {
+      touchPoints.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (touchPoints.size === 2) {
+        // Second finger down: this press is a pinch, not a click — cancel the
+        // pending drag/click and the long-press menu.
+        clearLongPress();
+        dragging = false;
+        pinching = true;
+        const [a, b] = [...touchPoints.values()];
+        pinchDist = Math.hypot(a.x - b.x, a.y - b.y);
+        // The pan reference is the midpoint from here on.
+        lastX = (a.x + b.x) / 2;
+        lastY = (a.y + b.y) / 2;
+        ui.mapCanvas.setPointerCapture(event.pointerId);
+        return;
+      }
+      if (touchPoints.size > 2) return;
+      // Single finger: a stationary hold opens the radial menu where a mouse
+      // would right-click. The timer dies on movement, release, or a pinch.
+      clearLongPress();
+      const px = event.clientX;
+      const py = event.clientY;
+      longPressTimer = window.setTimeout(() => {
+        longPressTimer = null;
+        if (pinching || moved || !runtime.map || !canActNow()) return;
+        dragging = false;
+        const { x, y } = toCanvasPixels({ clientX: px, clientY: py });
+        const tileX = Math.floor(runtime.view.x + x / runtime.view.scale);
+        const tileY = Math.floor(runtime.view.y + y / runtime.view.scale);
+        // Swallow the click that lifting the finger will synthesize on the
+        // centre button under it.
+        radialClickGuardUntil = performance.now() + 600;
+        openRadialAt(tileX, tileY, px, py, "root");
+      }, 500);
+    }
+
     if (closeRadialMenu()) return;
     dragging = true;
     moved = false;
@@ -3485,10 +3543,44 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   ui.mapCanvas.addEventListener("pointermove", (event) => {
+    if (event.pointerType !== "mouse" && touchPoints.has(event.pointerId)) {
+      touchPoints.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (pinching) {
+        if (touchPoints.size < 2 || !runtime.map) return;
+        const [a, b] = [...touchPoints.values()];
+        const dist = Math.hypot(a.x - b.x, a.y - b.y);
+        const bounds = ui.mapCanvas.getBoundingClientRect();
+        const midX = (a.x + b.x) / 2;
+        const midY = (a.y + b.y) / 2;
+        if (pinchDist > 0 && dist > 0) {
+          // Zoom by the finger-distance ratio, anchored on the midpoint (the
+          // wheel-zoom anchoring), then pan by the midpoint's own travel.
+          const { x, y } = toCanvasPixels({ clientX: midX, clientY: midY });
+          const tileX = runtime.view.x + x / runtime.view.scale;
+          const tileY = runtime.view.y + y / runtime.view.scale;
+          runtime.view.scale *= dist / pinchDist;
+          clampView();
+          runtime.view.x = tileX - x / runtime.view.scale;
+          runtime.view.y = tileY - y / runtime.view.scale;
+          const sx = ui.mapCanvas.width / bounds.width;
+          const sy = ui.mapCanvas.height / bounds.height;
+          runtime.view.x -= ((midX - lastX) * sx) / runtime.view.scale;
+          runtime.view.y -= ((midY - lastY) * sy) / runtime.view.scale;
+          clampView();
+        }
+        pinchDist = dist;
+        lastX = midX;
+        lastY = midY;
+        return;
+      }
+    }
     if (!dragging || !runtime.map) return;
     // OpenFront's 10px drag threshold: a press that moves less than this is a
     // click (attack/order), more is a pan.
-    if (Math.abs(event.clientX - downX) + Math.abs(event.clientY - downY) > 10) moved = true;
+    if (Math.abs(event.clientX - downX) + Math.abs(event.clientY - downY) > 10) {
+      moved = true;
+      clearLongPress();
+    }
     const bounds = ui.mapCanvas.getBoundingClientRect();
     const sx = ui.mapCanvas.width / bounds.width;
     const sy = ui.mapCanvas.height / bounds.height;
@@ -3596,8 +3688,23 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     setStatus(ui, `Expanding toward (${tileX}, ${tileY})${routeLabel} with ${percent}% of pool.`);
   };
 
-  ui.mapCanvas.addEventListener("pointerup", endDrag);
-  ui.mapCanvas.addEventListener("pointercancel", () => {
+  /** Forget a lifted/cancelled touch point and end the pinch when a finger leaves. */
+  const releaseTouchPoint = (event: PointerEvent): void => {
+    clearLongPress();
+    if (event.pointerType === "mouse") return;
+    touchPoints.delete(event.pointerId);
+    if (touchPoints.size < 2) {
+      pinching = false;
+      pinchDist = 0;
+    }
+  };
+
+  ui.mapCanvas.addEventListener("pointerup", (event) => {
+    releaseTouchPoint(event);
+    endDrag(event);
+  });
+  ui.mapCanvas.addEventListener("pointercancel", (event) => {
+    releaseTouchPoint(event);
     dragging = false;
   });
 
@@ -3704,6 +3811,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.view.y = tileY - cy / runtime.view.scale;
     clampView();
   };
+
+  // On-screen zoom buttons — the touch stand-in for wheel/Q/E. CSS only shows
+  // them on coarse pointers, so wiring them unconditionally is harmless.
+  document.querySelector<HTMLButtonElement>("#zoomInButton")?.addEventListener("click", () => zoomBy(1.3));
+  document.querySelector<HTMLButtonElement>("#zoomOutButton")?.addEventListener("click", () => zoomBy(1 / 1.3));
 
   /** Pan the view by a fraction of the current viewport (for WASD/arrow keys). */
   const panByFraction = (fx: number, fy: number): void => {
