@@ -34,6 +34,9 @@ import {
   type RailStation,
 } from "./railNetwork.js";
 
+/** How often (in ticks) the station set is re-checked and the network rebuilt. */
+const RAIL_SYNC_INTERVAL_TICKS = 10;
+
 /** A train riding the network from station `from` toward station `to`. */
 interface Train {
   id: number;
@@ -109,7 +112,11 @@ export class RailSystem {
    * the fixed cadence. `tick` is the simulation tick being processed.
    */
   advance(tick: number): void {
-    this.sync();
+    // Re-derive the network at most every RAIL_SYNC_INTERVAL_TICKS: a station
+    // owner flipping every tick during a border war would otherwise trigger a
+    // full (A*-heavy) rebuild per tick. Track appearing up to a second late is
+    // invisible in play; the deterministic tick gate keeps replicas identical.
+    if (tick % RAIL_SYNC_INTERVAL_TICKS === 0 || this.signature === "") this.sync();
     if (this.network.edges.length === 0) {
       this.trains.length = 0;
       return;

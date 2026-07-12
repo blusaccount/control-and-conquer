@@ -149,56 +149,103 @@ class NodeHeap {
 const RAIL_ASTAR_MAX_EXPANSIONS = 60_000;
 
 /**
+ * Memoised routes per map: terrain is immutable, so the A\* result between two
+ * tiles (including "unroutable", stored as null) never changes for the life of
+ * a map. Station churn re-runs `computeRailNetwork` often — every owner flip
+ * of a station tile during a border war — and without this cache each rebuild
+ * re-paid the full A\* (up to 60k heap expansions, worst for *failed* routes)
+ * for links it had already routed, which profiled at ~75% of total server CPU
+ * in the late game. Entries are shared arrays — callers must not mutate them.
+ */
+const routeCache = new WeakMap<GameMap, Map<string, TileRef[] | null>>();
+
+const routeRailCached = (map: GameMap, a: TileRef, b: TileRef): TileRef[] | null => {
+  let cache = routeCache.get(map);
+  if (!cache) {
+    cache = new Map();
+    routeCache.set(map, cache);
+  }
+  const key = `${a}-${b}`;
+  let path = cache.get(key);
+  if (path === undefined) {
+    path = routeRail(map, a, b);
+    cache.set(key, path);
+  }
+  return path;
+};
+
+/**
  * Route a railroad from `a` to `b` with OpenFront's A\*: cardinal moves,
  * direction-change and water penalties, weighted Manhattan heuristic, and the
  * {@link RAIL_MAX_TRACK_LENGTH} track cap. Returns the **full tile path** (`a`…`b`
  * inclusive), or null if no route stays within the cap. Callers reduce the path
  * to turn-point corners and can split it at an interior tile to graft a junction.
  */
+// ---------------------------------------------------------------------------
+// A* search scratch. Any route obeying the RAIL_MAX_TRACK_LENGTH cap stays
+// within that many steps of its start, so the whole search fits in a fixed
+// (2·cap+1)² window around `a` — which lets the per-(tile,dir) g-scores and
+// parent pointers live in flat, generation-stamped typed arrays allocated
+// once, instead of per-call Maps. A *failed* route (the worst case — it
+// explores the entire reachable window before giving up) profiled ~10× faster
+// this way, and routing is the dominant cost of every network rebuild.
+// ---------------------------------------------------------------------------
+const WINDOW_SIDE = 2 * RAIL_MAX_TRACK_LENGTH + 1;
+const WINDOW_STATES = WINDOW_SIDE * WINDOW_SIDE * 5; // (tile in window) × (dir 0-4)
+let searchG: Float64Array | null = null;
+let searchCame: Int32Array | null = null;
+let searchStamp: Int32Array | null = null;
+let searchGeneration = 0;
+
 const routeRail = (map: GameMap, a: TileRef, b: TileRef): TileRef[] | null => {
   if (!isTrackableLand(map, a) || !isTrackableLand(map, b)) return null;
+  const ax = map.x(a);
+  const ay = map.y(a);
   const bx = map.x(b);
   const by = map.y(b);
-  const heuristic = (tile: TileRef): number =>
-    (Math.abs(map.x(tile) - bx) + Math.abs(map.y(tile) - by)) * RAIL_HEURISTIC_WEIGHT;
+  // Beyond the window, `b` cannot be reached under the track cap at all.
+  if (Math.abs(bx - ax) + Math.abs(by - ay) > RAIL_MAX_TRACK_LENGTH) return null;
+  const heuristic = (x: number, y: number): number =>
+    (Math.abs(x - bx) + Math.abs(y - by)) * RAIL_HEURISTIC_WEIGHT;
 
-  // State = (tile, arrival direction). dir 0 = start (no direction yet).
-  const stateKey = (tile: TileRef, dir: number): number => tile * 5 + dir;
-  const gScore = new Map<number, number>();
-  const cameFrom = new Map<number, number>();
+  const g = (searchG ??= new Float64Array(WINDOW_STATES));
+  const came = (searchCame ??= new Int32Array(WINDOW_STATES));
+  const stamp = (searchStamp ??= new Int32Array(WINDOW_STATES).fill(-1));
+  const generation = ++searchGeneration;
+  // Window origin: tile (ox, oy) maps to local cell 0.
+  const ox = ax - RAIL_MAX_TRACK_LENGTH;
+  const oy = ay - RAIL_MAX_TRACK_LENGTH;
+  // State = (tile within the window, arrival direction). dir 0 = start.
+  const stateOf = (x: number, y: number, dir: number): number =>
+    ((y - oy) * WINDOW_SIDE + (x - ox)) * 5 + dir;
 
-  const start = stateKey(a, 0);
-  gScore.set(start, 0);
+  const start = stateOf(ax, ay, 0);
+  g[start] = 0;
+  came[start] = -1;
+  stamp[start] = generation;
   const open = new NodeHeap();
-  open.push({ f: heuristic(a), g: 0, len: 0, tile: a, dir: 0 });
+  open.push({ f: heuristic(ax, ay), g: 0, len: 0, tile: a, dir: 0 });
 
   let expansions = 0;
   while (open.size > 0) {
     if (++expansions > RAIL_ASTAR_MAX_EXPANSIONS) return null;
     const cur = open.pop();
-    const curKey = stateKey(cur.tile, cur.dir);
-    if (cur.g > (gScore.get(curKey) ?? Infinity)) continue; // stale heap entry
+    const cx = map.x(cur.tile);
+    const cy = map.y(cur.tile);
+    const curKey = stateOf(cx, cy, cur.dir);
+    if (stamp[curKey] === generation && cur.g > g[curKey]) continue; // stale heap entry
 
     if (cur.tile === b) {
-      // Reconstruct the tile path, then reduce it to turn-point corners.
+      // Reconstruct the tile path by walking the parent states.
       const path: TileRef[] = [];
-      let key = curKey;
-      let tile = cur.tile;
-      let dir = cur.dir;
-      for (;;) {
-        path.push(tile);
-        const prev = cameFrom.get(key);
-        if (prev === undefined) break;
-        tile = Math.floor(prev / 5);
-        dir = prev % 5;
-        key = prev;
+      for (let key = curKey; key !== -1; key = came[key]) {
+        const cell = Math.floor(key / 5);
+        path.push(map.ref((cell % WINDOW_SIDE) + ox, Math.floor(cell / WINDOW_SIDE) + oy));
       }
       path.reverse();
       return path;
     }
 
-    const cx = map.x(cur.tile);
-    const cy = map.y(cur.tile);
     for (const move of DIRS) {
       const nx = cx + move.dx;
       const ny = cy + move.dy;
@@ -213,17 +260,21 @@ const routeRail = (map: GameMap, a: TileRef, b: TileRef): TileRef[] | null => {
 
       const nextLen = cur.len + 1;
       if (nextLen > RAIL_MAX_TRACK_LENGTH) continue; // over the track cap — prune
+      // Off the search window ⇒ already over the cap; guarded above, but keep
+      // the state math safe.
+      if (nx < ox || ny < oy || nx >= ox + WINDOW_SIDE || ny >= oy + WINDOW_SIDE) continue;
 
       let step = 1;
       if (nextWater || nextShore) step += RAIL_WATER_PENALTY;
       if (cur.dir !== 0 && move.code !== cur.dir) step += RAIL_DIRECTION_CHANGE_PENALTY;
 
       const nextG = cur.g + step;
-      const nextKey = stateKey(next, move.code);
-      if (nextG < (gScore.get(nextKey) ?? Infinity)) {
-        gScore.set(nextKey, nextG);
-        cameFrom.set(nextKey, curKey);
-        open.push({ f: nextG + heuristic(next), g: nextG, len: nextLen, tile: next, dir: move.code });
+      const nextKey = stateOf(nx, ny, move.code);
+      if (stamp[nextKey] !== generation || nextG < g[nextKey]) {
+        stamp[nextKey] = generation;
+        g[nextKey] = nextG;
+        came[nextKey] = curKey;
+        open.push({ f: nextG + heuristic(nx, ny), g: nextG, len: nextLen, tile: next, dir: move.code });
       }
     }
   }
@@ -359,7 +410,15 @@ export const computeRailNetwork = (
     // reflects freshly grafted junctions. Node tiles are excluded (connecting
     // to a node is handled by the node scan, not as a mid-track snap).
     const failed = new Set<TileRef>(); // targets whose route couldn't be laid
+    // A station whose nearest targets keep failing almost certainly can't
+    // route to *anything* (blocked terrain, over the track cap in every
+    // direction) — and each failure is a worst-case A* that explores its whole
+    // search window. Give up after a few, instead of burning one full search
+    // per candidate track tile in range (profiled as multi-second ticks).
+    let routeFailures = 0;
+    const MAX_ROUTE_FAILURES = 4;
     for (;;) {
+      if (routeFailures >= MAX_ROUTE_FAILURES) break;
       const tileToEdge = new Map<TileRef, number>();
       eList.forEach((e, idx) => {
         for (let i = 1; i < e.path.length - 1; i += 1) {
@@ -388,9 +447,10 @@ export const computeRailNetwork = (
       if (best === null) break;
 
       const target: { ref: TileRef; d: number; edgeIdx: number | null } = best;
-      const path = routeRail(map, s, target.ref);
+      const path = routeRailCached(map, s, target.ref);
       if (!path) {
         failed.add(target.ref); // unroutable (blocked/over the cap) — try the next
+        routeFailures += 1;
         continue;
       }
       if (target.edgeIdx !== null) splitEdge(target.edgeIdx, target.ref);

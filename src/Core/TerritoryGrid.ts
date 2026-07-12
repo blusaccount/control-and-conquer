@@ -186,6 +186,8 @@ export class TerritoryGrid {
   // Shared 4-slot scratch for allocation-free neighbour walks (never used
   // across nested walks — each loop iteration consumes it before the next).
   private readonly scratchNeighbors = new Int32Array(4);
+  // Memoised shore-to-shore water routes (see {@link findWaterRoute}).
+  private readonly waterRouteCache = new Map<string, TileRef[] | null>();
   // Cached sorted fallout list (see {@link falloutTiles}); null = stale.
   private falloutSorted: TileRef[] | null = null;
   /**
@@ -1073,6 +1075,20 @@ export class TerritoryGrid {
    */
   findWaterRoute(from: TileRef, to: TileRef): TileRef[] | null {
     if (from === to) return null;
+    // Water routes depend only on the (immutable) terrain, so a pair's route —
+    // or its absence — never changes for the life of the grid. Trade dispatch
+    // asks for the same port-pair routes over and over (profiled at ~20% of
+    // late-game tick time unmemoized, a whole-ocean BFS per dispatch). Shared
+    // arrays: callers must not mutate the result.
+    const key = `${from}-${to}`;
+    const cached = this.waterRouteCache.get(key);
+    if (cached !== undefined) return cached;
+    const route = this.computeWaterRoute(from, to);
+    this.waterRouteCache.set(key, route);
+    return route;
+  }
+
+  private computeWaterRoute(from: TileRef, to: TileRef): TileRef[] | null {
     const size = this.map.size;
     const parent = (this.waterRouteParent ??= new Int32Array(size));
     const stamp = (this.waterRouteStamp ??= new Int32Array(size).fill(-1));
