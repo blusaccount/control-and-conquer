@@ -364,6 +364,8 @@ interface Nuke {
  */
 export class RasterConflict {
   private readonly grid: TerritoryGrid;
+  /** Shared 4-slot scratch for allocation-free neighbour walks in hot loops. */
+  private readonly scratchNeighbors = new Int32Array(4);
   /**
    * Diplomacy lookup consulted before any attack lands: allied players can't
    * take each other's tiles. Defaults to {@link NO_ALLIANCES} (nobody allied),
@@ -438,6 +440,15 @@ export class RasterConflict {
     // The trade system consults the (deferred) diplomacy view so an embargoed
     // pair never dispatches trade ships to each other.
     this.trade = new TradeSystem(grid, (a, b) => this.allies.isEmbargoed?.(a, b) ?? false);
+    // Razed SAMs/forts take their timers and RNG streams with them: without
+    // this, the per-tile maps grow for the whole match and a *rebuilt*
+    // launcher on the same tile starts life mid-cooldown on the dead one's
+    // random stream.
+    grid.setBuildingDestroyedListener((ref) => {
+      this.samCooldownUntil.delete(ref);
+      this.fortShellReadyAt.delete(ref);
+      this.samRng.delete(ref);
+    });
   }
 
   /** Live trade ships, for the snapshot (empty until two ports share a sea). */
@@ -1058,7 +1069,8 @@ export class RasterConflict {
    */
   private finishDeadDefender(attacker: PlayerId, target: PlayerId): void {
     for (let pass = 0; pass < 10 && this.grid.tileCountOf(target) > 0; pass += 1) {
-      for (const tile of [...this.grid.tilesOf(target)]) {
+      // tilesOf already returns a fresh copy, safe to claim against while iterating.
+      for (const tile of this.grid.tilesOf(target)) {
         let claimant: PlayerId | null = null;
         for (const n of this.grid.map.neighbors(tile)) {
           const owner = this.grid.ownerOf(n);
@@ -1090,8 +1102,10 @@ export class RasterConflict {
    */
   private tilePriority(attacker: PlayerId, ref: TileRef, entry: FrontierEntry): number {
     let ownedNeighbours = 0;
-    for (const n of this.grid.map.neighbors(ref)) {
-      if (this.grid.ownerOf(n) === attacker) ownedNeighbours += 1;
+    const scratch = this.scratchNeighbors;
+    const count = this.grid.map.neighborsInto(ref, scratch);
+    for (let i = 0; i < count; i += 1) {
+      if (this.grid.ownerOf(scratch[i]) === attacker) ownedNeighbours += 1;
     }
     const structural =
       1 - ownedNeighbours * FRONTIER_SURROUND_WEIGHT + terrainPriorityWeight(this.grid.map.magnitude(ref)) / 2;
@@ -1305,6 +1319,7 @@ export class RasterConflict {
   private pickWarshipTarget(
     w: Warship,
     canCaptureTrade: boolean,
+    tradeTargets: ReturnType<TradeSystem["targetableShips"]>,
   ): { kind: WarshipTargetKind; id: number; x: number; y: number } | null {
     const map = this.grid.map;
     const isHostile = (owner: PlayerId): boolean =>
@@ -1331,7 +1346,7 @@ export class RasterConflict {
     if (best) return best;
 
     if (!canCaptureTrade) return null;
-    for (const t of this.trade.targetableShips()) {
+    for (const t of tradeTargets) {
       if (!isHostile(t.owner) || t.toOwner === w.owner) continue;
       consider("trade", t.id, t.x, t.y);
     }
@@ -1522,6 +1537,19 @@ export class RasterConflict {
     if (this.warships.length === 0) return;
     const map = this.grid.map;
 
+    // Per-tick shared lookups: each owner's active ports and the targetable
+    // trade ships. Both used to be recomputed per warship — with a full fleet
+    // that was thousands of building-roster/trade-ship scans per tick.
+    const portsByOwner = new Map<PlayerId, TileRef[]>();
+    for (const [ref, type] of this.grid.activeBuildingEntries()) {
+      if (type !== "port") continue;
+      const owner = this.grid.ownerOf(ref);
+      const list = portsByOwner.get(owner);
+      if (list) list.push(ref);
+      else portsByOwner.set(owner, [ref]);
+    }
+    const tradeTargets = this.trade.targetableShips();
+
     for (const w of [...this.warships]) {
       if (w.hp <= 0) continue; // sunk by an earlier warship's shot this tick
       // An eliminated owner (no territory left) can't crew a fleet: scuttle any
@@ -1532,7 +1560,7 @@ export class RasterConflict {
         continue;
       }
 
-      const ports = this.activePortsOf(w.owner);
+      const ports = portsByOwner.get(w.owner) ?? [];
       const hasPort = ports.length > 0;
       // The wiki: a warship heals only while its owner has at least one port.
       if (hasPort) w.hp = Math.min(WARSHIP_MAX_HP, w.hp + WARSHIP_PASSIVE_HEAL_PER_TICK);
@@ -1550,7 +1578,7 @@ export class RasterConflict {
         continue;
       }
 
-      const target = this.pickWarshipTarget(w, hasPort);
+      const target = this.pickWarshipTarget(w, hasPort, tradeTargets);
       w.target = target ? { kind: target.kind, id: target.id } : null;
       if (!target) {
         this.patrolWarship(w);
@@ -1770,8 +1798,13 @@ export class RasterConflict {
         // troop count dips below 1 mid-loop.
         if (attack.committed < 1) break;
         // A tile may have been captured already if a player relinquished it; skip
-        // anything no longer owned by the target.
-        if (this.grid.ownerOf(ref) !== attack.target) continue;
+        // anything no longer owned by the target (and forget its frontier entry
+        // — without the prune, `seen` grows one record for every tile the front
+        // ever touched, hundreds of MB over a map-sweeping campaign).
+        if (this.grid.ownerOf(ref) !== attack.target) {
+          attack.seen.delete(ref);
+          continue;
+        }
         // OpenFront's per-tile attacker loss: the ratio shifts as the assault is
         // spent down, so a front that bleeds out grinds to a halt on the spot.
         // The large-empire factor rides inside the ratio term only (OpenFront
@@ -1791,6 +1824,10 @@ export class RasterConflict {
 
         if (vsPlayer) this.grid.addTroops(attack.target, -defenderBleed);
         this.grid.claim(ref, attack.attacker);
+        // Captured ground leaves the frontier for good — drop its entry (a
+        // tile lost and retaken re-enqueues with a fresh tick/jitter, exactly
+        // like a tile joining the front for the first time).
+        attack.seen.delete(ref);
         attack.committed -= loss;
         captured = true;
       }

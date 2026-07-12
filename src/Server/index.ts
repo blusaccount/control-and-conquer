@@ -188,11 +188,17 @@ const sendStatic = (request: IncomingMessage, response: ServerResponse, entry: S
 // modules load in their own module map and are deliberately not preloaded.
 // ---------------------------------------------------------------------------
 const DOCUMENT_ENTRY = "Client/main.js";
+// Worker entry points (see `transport.ts`): they run in their own module maps,
+// so modulepreload can't help them — but the HTTP cache is shared, so plain
+// prefetch links warm their (deep) import graphs during the menu instead of
+// letting a match start discover them level-by-level.
+const WORKER_ENTRIES = ["Client/solo/soloWorker.js", "Client/lockstep/lockstepWorker.js"];
 let modulePreloadTags: Promise<string> | undefined;
 
-const collectDocumentModules = async (): Promise<string> => {
+/** Transitive static-import closure of `entries` within dist, incl. the entries. */
+const collectModuleGraph = async (entries: readonly string[]): Promise<Set<string>> => {
   const seen = new Set<string>();
-  const queue = [DOCUMENT_ENTRY];
+  const queue = [...entries];
   const importRe = /(?:^|[\n;])\s*(?:import|export)\s[^"'\n]*?from\s*["']([^"']+)["']|[\n;\s(=]import\s*\(\s*["']([^"']+)["']\s*\)|(?:^|[\n;])\s*import\s*["']([^"']+)["']/g;
   while (queue.length > 0) {
     const rel = queue.pop()!;
@@ -209,11 +215,23 @@ const collectDocumentModules = async (): Promise<string> => {
       if (spec && spec.startsWith(".")) queue.push(posix.normalize(posix.join(dirname(rel), spec)));
     }
   }
-  seen.delete(DOCUMENT_ENTRY); // already discovered instantly via its <script src>.
-  return [...seen]
+  return seen;
+};
+
+const collectDocumentModules = async (): Promise<string> => {
+  const documentGraph = await collectModuleGraph([DOCUMENT_ENTRY]);
+  documentGraph.delete(DOCUMENT_ENTRY); // already discovered instantly via its <script src>.
+  const preloads = [...documentGraph]
     .sort()
-    .map((rel) => `    <link rel="modulepreload" href="/assets/${rel}" />`)
-    .join("\n");
+    .map((rel) => `    <link rel="modulepreload" href="/assets/${rel}" />`);
+  // Worker-only modules (not part of the document graph) get a low-priority
+  // prefetch so the first match start hits a warm HTTP cache.
+  const workerGraph = await collectModuleGraph(WORKER_ENTRIES);
+  const prefetches = [...workerGraph]
+    .filter((rel) => !documentGraph.has(rel) && rel !== DOCUMENT_ENTRY)
+    .sort()
+    .map((rel) => `    <link rel="prefetch" href="/assets/${rel}" as="script" />`);
+  return [...preloads, ...prefetches].join("\n");
 };
 
 const injectModulePreloads = async (html: Buffer): Promise<Buffer> => {
@@ -421,6 +439,17 @@ wss.on("connection", (socket) => {
       } else if (message.type === "CLIENT_RASTER_EMOJI") {
         registry.sendRasterEmoji(clientId, message.payload.targetId, message.payload.emoji);
       } else if (message.type === "CLIENT_RASTER_LOBBY_CREATE") {
+        // The busy check runs BEFORE the custom-map decode: decoding + building
+        // a max-size map blocks the shared tick loop, and createLobby would
+        // reject a busy client anyway — without the gate, a client already in
+        // a match could spam expensive decodes for free.
+        if (registry.isClientBusy(clientId)) {
+          send({
+            type: "SERVER_RASTER_LOBBY_ERROR",
+            payload: { message: "You are already in a lobby or match.", fatal: true },
+          });
+          return;
+        }
         const choice = resolveMapChoice(message.payload.mapId);
         const difficulty = isRasterDifficulty(message.payload.difficulty) ? message.payload.difficulty : "medium";
         const rawField = message.payload.fieldSize;

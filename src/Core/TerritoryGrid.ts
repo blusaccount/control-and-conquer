@@ -188,6 +188,19 @@ export class TerritoryGrid {
   private readonly scratchNeighbors = new Int32Array(4);
   // Cached sorted fallout list (see {@link falloutTiles}); null = stale.
   private falloutSorted: TileRef[] | null = null;
+  /**
+   * Notified whenever a building leaves the map (conquest raze, demolition),
+   * so engines keeping per-building-tile state (SAM cooldowns, fort gun
+   * timers, per-launcher RNG streams) can drop it — otherwise a *new*
+   * structure built on the same tile inherits the dead one's timers.
+   */
+  private buildingDestroyedListener: ((ref: TileRef, type: BuildingType) => void) | null = null;
+
+  /** Register the (single) building-destroyed listener; see its field doc. */
+  setBuildingDestroyedListener(listener: (ref: TileRef, type: BuildingType) => void): void {
+    this.buildingDestroyedListener = listener;
+  }
+
   // Cached sorted building rosters (see {@link buildingEntries} /
   // {@link activeBuildingEntries}); null = stale. Both are read every tick by
   // several systems (snapshot, rails, trade, fort guns, warships, bots) while
@@ -589,6 +602,17 @@ export class TerritoryGrid {
   }
 
   /**
+   * Live, read-only view of a player's tiles in claim (insertion) order — for
+   * bounded sampling passes that don't need the sorted copy {@link tilesOf}
+   * makes (copy + sort of a 500k-tile empire is not free). Deterministic for
+   * a given command history. Callers must not mutate the set or claim tiles
+   * while iterating.
+   */
+  tilesViewOf(id: PlayerId): ReadonlySet<TileRef> {
+    return this.standing(id).tiles;
+  }
+
+  /**
    * Assign a capturable tile to a player (or to {@link NEUTRAL_PLAYER}),
    * keeping per-player tile counts in sync. Throws if the tile is not
    * capturable terrain.
@@ -902,6 +926,7 @@ export class TerritoryGrid {
       else standing.buildingLevelTotals.delete(type);
     }
     if (type === "fort") this.removeDefensePost(ref);
+    this.buildingDestroyedListener?.(ref, type);
     return true;
   }
 
