@@ -9,19 +9,19 @@
         color-scheme: dark;
         font-family: Inter, system-ui, sans-serif;
 
-        /* OpenFront-style HUD palette: dark translucent glass panels floating
-           over a full-bleed map, with a single blue accent. */
+        /* OpenFront-style HUD palette: compact dark-slate translucent panels
+           floating over a full-bleed map, minimal chrome, one blue accent. */
         --accent: #3b82f6;
         --accent-strong: #2563eb;
         --gold: #fbbf24;
-        --text: #e8edf5;
-        --text-dim: #97a3b6;
-        --text-faint: #6b7689;
-        --panel-bg: rgba(15, 20, 30, 0.82);
-        --panel-bg-solid: #11161f;
-        --panel-border: rgba(255, 255, 255, 0.09);
-        --panel-radius: 12px;
-        --panel-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+        --text: #eef2f8;
+        --text-dim: #9aa7ba;
+        --text-faint: #6d7789;
+        --panel-bg: rgba(24, 32, 46, 0.78);
+        --panel-bg-solid: #131a26;
+        --panel-border: rgba(255, 255, 255, 0.07);
+        --panel-radius: 8px;
+        --panel-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
       }
 
       * { box-sizing: border-box; }
@@ -36,12 +36,12 @@
         overscroll-behavior: none;
       }
 
-      /* ---- Start-phase countdown banner ---------------------------------- */
-      /* A floating glass banner over the top-center of the map during the
-         opening start phase, sitting just below the resource readout. */
+      /* ---- Start-phase banner --------------------------------------------- */
+      /* A slim translucent strip over the top-center of the map during the
+         opening spawn phase (OpenFront's spawn heads-up). */
       #startBanner {
         position: fixed;
-        top: 64px;
+        top: 12px;
         left: 50%;
         transform: translateX(-50%);
         z-index: 20;
@@ -49,15 +49,15 @@
         flex-direction: column;
         align-items: center;
         gap: 2px;
-        padding: 14px 30px;
+        padding: 10px 26px;
         text-align: center;
         pointer-events: none;
         background: var(--panel-bg);
-        border: 1px solid var(--accent);
+        border: 1px solid var(--panel-border);
         border-radius: var(--panel-radius);
         box-shadow: var(--panel-shadow);
-        backdrop-filter: blur(10px) saturate(1.1);
-        -webkit-backdrop-filter: blur(10px) saturate(1.1);
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
       }
       /* Global visibility utility — every component toggles this one class. */
       .hidden { display: none !important; }
@@ -131,64 +131,83 @@
       .hotkey-hint { margin-top: 7px; font-size: 11px; color: var(--text-faint); }
       .hotkey-hint b { color: var(--text-dim); font-weight: 600; }
 
-      /* ---- Top-left: brand + identity ------------------------------------ */
-      .hud-brand {
-        top: 12px;
+      /* ---- Bottom-left: control panel ------------------------------------- */
+      /* OpenFront's control panel: nation line, stacked resource rows with
+         growth rates, then the attack-ratio slider — one compact column. */
+      .hud-control {
         left: 12px;
-        padding: 10px 14px;
-        max-width: 240px;
-      }
-      .brand-title {
-        font-size: 15px;
-        font-weight: 800;
-        letter-spacing: 0.02em;
-        background: linear-gradient(90deg, #fff, #9ec5ff);
-        -webkit-background-clip: text;
-        background-clip: text;
-        color: transparent;
-      }
-      .brand-sub {
-        margin-top: 2px;
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--text-dim);
-      }
-
-      /* ---- Top-center: resource readout ---------------------------------- */
-      .hud-resources {
-        top: 12px;
-        left: 50%;
-        transform: translateX(-50%);
+        bottom: 12px;
+        width: 264px;
+        /* Never grow into the top-left leaderboard's corner (which caps at 42vh). */
+        max-height: 58vh;
+        overflow-y: auto;
+        padding: 10px 12px;
         display: flex;
-        align-items: center;
-        gap: 18px;
-        padding: 8px 18px;
-        font-size: 14px;
-        white-space: nowrap;
+        flex-direction: column;
+        gap: 7px;
+        font-size: 13px;
       }
-      .hud-resources .res {
-        display: inline-flex;
+      .hud-control .control-title {
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+      .control-resources { display: flex; flex-direction: column; gap: 3px; }
+      .res-row {
+        display: flex;
         align-items: baseline;
-        gap: 6px;
+        gap: 8px;
+        font-size: 13px;
+        line-height: 1.35;
       }
-      .hud-resources .res-ico { font-size: 15px; }
-      .hud-resources .res-val {
+      .res-row .res-name { color: var(--text-dim); flex: 0 0 auto; }
+      .res-row .res-val {
+        margin-left: auto;
         font-weight: 700;
         font-variant-numeric: tabular-nums;
+        text-align: right;
       }
-      .hud-resources .res-rate {
+      .res-row .res-rate {
         font-size: 11px;
-        color: var(--text-faint);
+        font-weight: 500;
+        color: #6ee7a0;
         font-variant-numeric: tabular-nums;
       }
-      .hud-resources .res-builds {
+      .res-row.res-builds {
+        justify-content: flex-end;
+        gap: 10px;
         color: var(--text-dim);
-        font-size: 13px;
-        border-left: 1px solid var(--panel-border);
-        padding-left: 16px;
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
       }
-      .hud-resources .res-builds svg { vertical-align: -2px; }
-      .hud-resources .res-muted { color: var(--text-dim); font-weight: 600; }
+      .res-row.res-builds svg { vertical-align: -2px; }
+      .res-row.res-muted { color: var(--text-dim); font-weight: 600; }
+
+      .control-slider label {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        color: var(--text-dim);
+      }
+      .control-slider output {
+        font-size: 13px;
+        font-weight: 800;
+        color: var(--accent);
+        font-variant-numeric: tabular-nums;
+        text-transform: none;
+        letter-spacing: 0;
+      }
+      .control-slider input[type="range"] {
+        width: 100%;
+        margin-top: 4px;
+        accent-color: var(--accent);
+        height: 5px;
+      }
+      .control-sep { height: 1px; background: var(--panel-border); margin: 1px -12px; }
 
       /* ---- Top-right: frame controls (timer, fullscreen, leave) ---------- */
       .hud-frame {
@@ -224,88 +243,57 @@
       .frame-btn:hover { color: var(--text); border-color: var(--accent); }
       .frame-btn.frame-btn-leave:hover { color: #f87171; border-color: #f87171; }
 
-      /* ---- Top-right: leaderboard (sits below the frame-controls bar) ----- */
+      /* ---- Top-left: leaderboard (OpenFront's standings corner) ----------- */
       .hud-leaderboard {
-        top: 58px;
-        right: 12px;
-        width: 336px;
-        max-height: 38vh;
+        top: 12px;
+        left: 12px;
+        width: 324px;
+        max-height: 36vh;
         display: flex;
         flex-direction: column;
-        padding: 12px 12px 8px;
+        padding: 6px 10px 8px;
       }
+      .lb-toggle {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        width: 100%;
+        padding: 4px 0;
+        border: 0;
+        background: none;
+        color: var(--text-dim);
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        cursor: pointer;
+        text-align: left;
+      }
+      .lb-toggle:hover { color: var(--text); }
+      .lb-toggle .chev { margin-left: auto; font-size: 10px; transition: transform 0.12s; }
+      .hud-leaderboard.collapsed { width: auto; }
+      .hud-leaderboard.collapsed #leaderboard { display: none; }
+      .hud-leaderboard.collapsed .lb-toggle .chev { transform: rotate(-90deg); }
       .hud-leaderboard #leaderboard {
         overflow-y: auto;
         margin: 0 -4px;
         padding: 0 4px;
       }
 
-      /* ---- Left: status / orders / build --------------------------------- */
-      .hud-info {
-        top: 50%;
-        left: 12px;
-        transform: translateY(-50%);
-        width: 250px;
-        max-height: 70vh;
-        overflow-y: auto;
-        padding: 14px;
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-      }
-      .hud-info .info-body { font-size: 13px; line-height: 1.5; }
-      .hud-info .info-body strong { color: #fff; }
-      .hud-info .info-body em { color: var(--text-faint); font-style: normal; }
+      /* Contextual status / orders text lives at the foot of the control panel. */
+      .control-help { font-size: 11.5px; line-height: 1.45; color: var(--text-dim); }
+      .control-help strong { color: var(--text); }
+      .control-help em { color: var(--text-faint); font-style: normal; }
 
       .status {
-        min-height: 18px;
-        font-size: 12.5px;
+        min-height: 16px;
+        font-size: 12px;
         color: var(--text-dim);
       }
       .status.error { color: #fca5a5; }
       .status.victory { color: var(--gold); font-weight: 700; }
 
-      .panel-divider {
-        height: 1px;
-        background: var(--panel-border);
-        margin: 2px -14px;
-      }
-
-      /* ---- Bottom-center: attack ratio ----------------------------------- */
-      .hud-attack {
-        bottom: 16px;
-        left: 50%;
-        transform: translateX(-50%);
-        width: min(440px, 70vw);
-        padding: 10px 16px 12px;
-      }
-      .attack-label {
-        display: block;
-        font-size: 11px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        color: var(--text-dim);
-      }
-      .slider-row {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        margin-top: 8px;
-      }
-      .slider-row input[type="range"] {
-        flex: 1;
-        accent-color: var(--accent);
-        height: 6px;
-      }
-      .slider-row output {
-        min-width: 48px;
-        text-align: right;
-        font-variant-numeric: tabular-nums;
-        font-weight: 800;
-        font-size: 18px;
-        color: var(--accent);
-      }
+      .panel-head-row { display: flex; align-items: baseline; justify-content: space-between; }
 
       /* ---- Menu: AI-opponents field-size slider -------------------------- */
       .field-row {
@@ -404,39 +392,13 @@
         image-rendering: pixelated;
       }
 
-      /* ---- Bottom-left: settings ----------------------------------------- */
-      .hud-settings {
-        position: absolute;
-        left: 12px;
-        bottom: 16px;
-        display: flex;
-        flex-direction: column-reverse;
-        align-items: flex-start;
-        gap: 8px;
-        pointer-events: none;
-      }
-      .hud-settings > * { pointer-events: auto; }
-      .settings-btn {
-        width: 38px;
-        height: 38px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 18px;
-        line-height: 1;
-        border: 1px solid var(--panel-border);
-        border-radius: 10px;
-        background: var(--panel-bg);
-        color: var(--text-dim);
-        cursor: pointer;
-        backdrop-filter: blur(10px) saturate(1.1);
-        -webkit-backdrop-filter: blur(10px) saturate(1.1);
-        box-shadow: var(--panel-shadow);
-        transition: color 0.12s, border-color 0.12s;
-      }
-      .settings-btn:hover { color: var(--text); border-color: var(--accent); }
+      /* ---- Settings dropdown (below the top-right frame bar) -------------- */
       .settings-panel {
-        width: 220px;
+        top: 58px;
+        right: 12px;
+        width: 272px;
+        max-height: calc(100vh - 80px);
+        overflow-y: auto;
         padding: 12px 14px;
       }
       .settings-panel.hidden { display: none; }
@@ -465,6 +427,9 @@
         margin-top: 4px;
       }
       .controls-grid span:nth-child(odd) { color: var(--text-dim); font-weight: 600; white-space: nowrap; }
+      /* Value cells hold dot-separated run-on strings — allow breaks anywhere so
+         the grid can never grow wider than the panel. */
+      .controls-grid span:nth-child(even) { min-width: 0; overflow-wrap: anywhere; }
       .settings-row .settings-sub {
         display: block;
         font-size: 11px;
@@ -472,64 +437,61 @@
         margin-top: 2px;
       }
 
-      /* ---- Build menu ---------------------------------------------------- */
+      /* ---- Build / weapons grid (OpenFront's build-menu cards, docked) ---- */
       .build-menu {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 5px;
       }
       .build-btn {
         display: flex;
+        flex-direction: column;
         align-items: center;
-        gap: 9px;
-        width: 100%;
-        padding: 8px 10px;
+        gap: 1px;
+        padding: 4px 2px 4px;
         border: 1px solid var(--panel-border);
-        border-radius: 9px;
+        border-radius: 7px;
         background: rgba(255, 255, 255, 0.03);
         color: var(--text);
         cursor: pointer;
-        text-align: left;
-        font-size: 13px;
+        font-size: 10px;
         transition: border-color 0.12s, background 0.12s;
       }
       .build-btn:hover:not(:disabled) {
         border-color: var(--accent);
-        background: rgba(59, 130, 246, 0.1);
+        background: rgba(59, 130, 246, 0.12);
       }
       .build-btn.selected {
         border-color: var(--accent);
         box-shadow: inset 0 0 0 1px var(--accent);
-        background: rgba(59, 130, 246, 0.16);
+        background: rgba(59, 130, 246, 0.18);
       }
       .build-btn:disabled { opacity: 0.45; cursor: not-allowed; }
       .build-btn .icon {
-        flex: 0 0 auto;
         display: flex;
         align-items: center;
         justify-content: center;
-        width: 30px;
-        height: 30px;
-        border-radius: 50%;
-        background: rgba(0, 0, 0, 0.35);
-        border: 1px solid rgba(255, 255, 255, 0.14);
+        width: 24px;
+        height: 24px;
         color: #fff;
-        font-size: 19px;
+        font-size: 17px;
         line-height: 1;
         font-family: "Segoe UI Symbol", "Noto Sans Symbols2", system-ui, sans-serif;
       }
-      .build-btn .label { flex: 1; font-weight: 600; }
-      .build-btn .label .sub {
-        display: block;
-        font-size: 11px;
-        font-weight: 400;
+      .build-btn .bname {
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-weight: 600;
         color: var(--text-dim);
       }
       .build-btn .cost {
-        flex: 0 0 auto;
         font-variant-numeric: tabular-nums;
         color: var(--gold);
         font-weight: 700;
+        font-size: 10px;
+        white-space: nowrap;
       }
       .build-btn .cost.unaffordable { color: var(--text-faint); }
 
@@ -605,7 +567,7 @@
       #leaderboard .lb-head,
       #leaderboard .lb-row {
         display: grid;
-        grid-template-columns: 1.5em minmax(0, 1fr) 3.4em 3.6em 4em;
+        grid-template-columns: 1.5em minmax(0, 1fr) 3.9em 3.9em 4em;
         align-items: center;
         gap: 8px;
       }
@@ -1112,11 +1074,10 @@
 
       /* ---- Small screens: collapse side panels to corners ---------------- */
       @media (max-width: 720px) {
-        .hud-info { top: auto; bottom: 90px; transform: none; width: 200px; max-height: 40vh; }
-        .hud-leaderboard { width: 210px; max-height: 32vh; }
+        .hud-control { width: 208px; max-height: 52vh; }
+        .hud-leaderboard { width: 216px; max-height: 30vh; }
         .hud-corner { display: none; }
-        .hud-resources { gap: 12px; padding: 7px 12px; font-size: 13px; }
-        .hud-resources .res-builds { display: none; }
+        .res-row.res-builds { display: none; }
       }
     </style>
   </head>
@@ -1124,51 +1085,75 @@
     <canvas id="mapCanvas" width="760" height="460"></canvas>
 
     <div id="hud">
-      <div class="panel hud-brand">
-        <div class="brand-title">Control &amp; Conquer</div>
-        <div id="teamInfo" class="brand-sub">Connecting…</div>
+      <!-- Top-left: standings, collapsible like OpenFront's leaderboard. -->
+      <div class="panel hud-leaderboard" id="leaderboardPanel">
+        <button id="leaderboardToggle" class="lb-toggle" type="button" aria-expanded="true">Leaderboard <span class="chev">▾</span></button>
+        <div id="leaderboard"><div class="lb-empty">Waiting for the match…</div></div>
       </div>
 
-      <div class="panel hud-resources" id="goldInfo">
-        <span class="res res-muted">Connecting…</span>
-      </div>
-
+      <!-- Top-right: match timer + frame controls (settings, fullscreen, leave). -->
       <div class="panel hud-frame">
         <span id="matchTimer" class="frame-timer">0:00</span>
+        <button id="settingsButton" class="frame-btn" type="button" title="Settings" aria-label="Settings" aria-expanded="false">⚙</button>
         <button id="fullscreenButton" class="frame-btn" type="button" title="Toggle fullscreen" aria-label="Toggle fullscreen">⛶</button>
         <button id="leaveButton" class="frame-btn frame-btn-leave" type="button" title="Leave match" aria-label="Leave match">⏻</button>
       </div>
 
-      <div class="panel hud-leaderboard">
-        <div class="panel-head">Leaderboard</div>
-        <div id="leaderboard"><div class="lb-empty">Waiting for the match…</div></div>
-      </div>
-
-      <div class="panel hud-info">
-        <div id="selectionInfo" class="info-body">Connecting…</div>
-        <div id="statusMessage" class="status" aria-live="polite"></div>
-        <!-- Hidden during the spawn phase (OpenFront shows a clean
-             choose-your-spawn screen, no build UI before the game is live). -->
-        <div id="buildSections">
-          <div class="panel-divider"></div>
-          <div class="panel-head">Build</div>
-          <div id="buildMenu" class="build-menu"></div>
-          <div id="buildHint" class="hint"></div>
-          <div class="panel-divider"></div>
-          <div class="panel-head">Weapons</div>
-          <div id="weaponsMenu" class="build-menu"></div>
+      <div id="settingsPanel" class="panel settings-panel hidden">
+        <div class="panel-head">Settings</div>
+        <label class="settings-row">
+          <input id="toggleEvents" type="checkbox" />
+          <span>Show event log<span class="settings-sub">The bottom-right feed of captures and eliminations.</span></span>
+        </label>
+        <label class="settings-row">
+          <input id="toggleSound" type="checkbox" />
+          <span>Sound effects<span class="settings-sub">Short cues for expanding, alliances, and match end.</span></span>
+        </label>
+        <label class="settings-row">
+          <input id="toggleLeftClickMenu" type="checkbox" />
+          <span>Left click opens menu<span class="settings-sub">OpenFront option: left click opens the radial menu instead of attacking. Shift+click still attacks.</span></span>
+        </label>
+        <div class="settings-controls">
+          <div class="panel-head">Controls</div>
+          <div class="controls-grid">
+            <span>Left click</span><span>Attack / order tile</span>
+            <span>Right click</span><span>Radial menu (cancels a build ghost)</span>
+            <span>Drag</span><span>Pan · Scroll Zoom · Shift+Scroll Attack ratio</span>
+            <span>Ctrl / ⌘ + click</span><span>Build menu at tile</span>
+            <span>Alt + click</span><span>Emoji at tile · Middle click Upgrade</span>
+            <span>1–0</span><span>City·Factory·Port·Def·Silo·SAM·Warship·Atom·Hydro·MIRV</span>
+            <span>T / Y</span><span>Attack ratio − / + · B / G Boat / Ground</span>
+            <span>K / L</span><span>Ally / Break · R Retreat · Shift+R Retaliate</span>
+            <span>Space</span><span>Hold: terrain view · M Grid</span>
+            <span>Q / E · WASD</span><span>Zoom · Pan · C Centre · Esc Cancel</span>
+          </div>
         </div>
       </div>
 
-      <div class="panel hud-attack">
-        <label class="attack-label">
-          Attack ratio
-          <div class="slider-row">
-            <input id="attackPercentInput" type="range" min="1" max="100" step="1" value="20" />
-            <output id="attackPercentOutput">20%</output>
-          </div>
-        </label>
-        <div class="hint hotkey-hint"><b>1–0</b> build/weapon · <b>T/Y</b> ratio (or Shift+scroll) · <b>B/G</b> boat/ground · <b>K/L</b> ally/break · <b>R</b> retreat · <b>Shift+R</b> retaliate · <b>Space</b> hold terrain · <b>Ctrl+click</b> build · <b>Alt+click</b> emoji · full list in ⚙</div>
+      <!-- Bottom-left: OpenFront-style control panel — nation, resources with
+           growth rates, attack ratio, and the docked build/weapons grids. -->
+      <div class="panel hud-control">
+        <div id="teamInfo" class="control-title">Connecting…</div>
+        <div id="goldInfo" class="control-resources">
+          <div class="res-row res-muted">Connecting…</div>
+        </div>
+        <div class="control-slider">
+          <label for="attackPercentInput">Attack ratio <output id="attackPercentOutput">20%</output></label>
+          <input id="attackPercentInput" type="range" min="1" max="100" step="1" value="20" />
+        </div>
+        <!-- Hidden during the spawn phase (OpenFront shows a clean
+             choose-your-spawn screen, no build UI before the game is live). -->
+        <div id="buildSections">
+          <div class="control-sep"></div>
+          <div class="panel-head">Build &amp; weapons</div>
+          <div id="buildMenu" class="build-menu"></div>
+          <div id="weaponsMenu" class="build-menu" style="margin-top: 5px"></div>
+          <div id="buildHint" class="hint" style="margin-top: 5px"></div>
+        </div>
+        <div id="statusMessage" class="status" aria-live="polite"></div>
+        <div class="control-sep"></div>
+        <div id="selectionInfo" class="control-help">Connecting…</div>
+        <div class="hint hotkey-hint"><b>1–0</b> build · <b>T/Y</b> ratio · full list in ⚙</div>
       </div>
 
       <div class="hud-corner">
@@ -1185,39 +1170,6 @@
         </div>
       </div>
 
-      <div class="hud-settings">
-        <button id="settingsButton" class="settings-btn" type="button" title="Settings" aria-label="Settings" aria-expanded="false">⚙</button>
-        <div id="settingsPanel" class="panel settings-panel hidden">
-          <div class="panel-head">Settings</div>
-          <label class="settings-row">
-            <input id="toggleEvents" type="checkbox" />
-            <span>Show event log<span class="settings-sub">The bottom-right feed of captures and eliminations.</span></span>
-          </label>
-          <label class="settings-row">
-            <input id="toggleSound" type="checkbox" />
-            <span>Sound effects<span class="settings-sub">Short cues for expanding, alliances, and match end.</span></span>
-          </label>
-          <label class="settings-row">
-            <input id="toggleLeftClickMenu" type="checkbox" />
-            <span>Left click opens menu<span class="settings-sub">OpenFront option: left click opens the radial menu instead of attacking. Shift+click still attacks.</span></span>
-          </label>
-          <div class="settings-controls">
-            <div class="panel-head">Controls</div>
-            <div class="controls-grid">
-              <span>Left click</span><span>Attack / order tile</span>
-              <span>Right click</span><span>Radial menu (cancels a build ghost)</span>
-              <span>Drag</span><span>Pan · Scroll Zoom · Shift+Scroll Attack ratio</span>
-              <span>Ctrl / ⌘ + click</span><span>Build menu at tile</span>
-              <span>Alt + click</span><span>Emoji at tile · Middle click Upgrade</span>
-              <span>1–0</span><span>City·Factory·Port·Def·Silo·SAM·Warship·Atom·Hydro·MIRV</span>
-              <span>T / Y</span><span>Attack ratio − / + · B / G Boat / Ground</span>
-              <span>K / L</span><span>Ally / Break · R Retreat · Shift+R Retaliate</span>
-              <span>Space</span><span>Hold: terrain view · M Grid</span>
-              <span>Q / E · WASD</span><span>Zoom · Pan · C Centre · Esc Cancel</span>
-            </div>
-          </div>
-        </div>
-      </div>
     </div>
 
     <div id="statsOverlay" class="menu-overlay hidden"></div>
