@@ -626,9 +626,11 @@ export class TerritoryGrid {
     const previous = this.owner[ref];
     if (previous === id) return;
     const comp = this.landComponent[ref];
-    // A building cannot survive its tile changing hands — raze it (and any fort
-    // aura) so the conqueror takes bare ground, not the loser's economy.
-    if (this.buildings.has(ref)) this.destroyBuilding(ref, previous);
+    // OpenFront's capture semantics: a structure on conquered ground is
+    // CAPTURED by the new owner — except a fort (OpenFront's Defense Post),
+    // which is razed with its aura. Ground falling to neutral (a nuke's
+    // no-man's-land) keeps nothing standing either.
+    if (this.buildings.has(ref)) this.captureOrRazeBuilding(ref, previous, id);
     if (previous !== NEUTRAL_PLAYER) {
       const standing = this.standing(previous);
       standing.tiles.delete(ref);
@@ -941,6 +943,44 @@ export class TerritoryGrid {
    */
   demolishBuilding(ref: TileRef): boolean {
     return this.destroyBuilding(ref, this.owner[ref]);
+  }
+
+  /**
+   * Resolve the building on `ref` when its tile passes from `previous` to
+   * `next` — OpenFront's capture sweep (`PlayerExecution`): a **fort**
+   * (OpenFront's Defense Post) is razed outright, ground falling to neutral
+   * keeps nothing standing, and a structure still **under construction** dies
+   * with its site; every other finished structure (city, port, factory, silo,
+   * SAM) is *captured* — it keeps its tile, level and construction history,
+   * and its counts and upgrade-ramp levels move from the loser's books to the
+   * conqueror's. Captured ports re-enter the trade roster and captured
+   * cities/factories the rail net on their next owner-signature sync; a
+   * captured silo even keeps its reload timer (those are keyed by tile).
+   */
+  private captureOrRazeBuilding(ref: TileRef, previous: PlayerId, next: PlayerId): void {
+    const type = this.buildings.get(ref);
+    if (type === undefined) return;
+    if (type === "fort" || next === NEUTRAL_PLAYER || this.construction.has(ref)) {
+      this.destroyBuilding(ref, previous);
+      return;
+    }
+    const level = this.buildingLevelOf(ref);
+    if (previous !== NEUTRAL_PLAYER) {
+      const standing = this.standing(previous);
+      const count = (standing.buildingCounts.get(type) ?? 0) - 1;
+      if (count > 0) standing.buildingCounts.set(type, count);
+      else standing.buildingCounts.delete(type);
+      const totals = (standing.buildingLevelTotals.get(type) ?? 0) - level;
+      if (totals > 0) standing.buildingLevelTotals.set(type, totals);
+      else standing.buildingLevelTotals.delete(type);
+    }
+    const captor = this.standing(next);
+    captor.buildingCounts.set(type, (captor.buildingCounts.get(type) ?? 0) + 1);
+    captor.buildingLevelTotals.set(type, (captor.buildingLevelTotals.get(type) ?? 0) + level);
+    // Ownership itself is the tile's owner — no per-building owner to rewrite —
+    // but the entry caches key off the building set, which just changed hands.
+    this.buildingEntriesCache = null;
+    this.activeBuildingEntriesCache = null;
   }
 
   /** True if any 4-connected land neighbour of `ref` is owned by `attacker`. */

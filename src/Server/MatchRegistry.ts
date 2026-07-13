@@ -563,6 +563,7 @@ export class MatchRegistry {
       return false;
     }
     match.tokens.set(token, clientId);
+    match.session.setSeatConnected(clientId, true);
     match.connected.delete(oldClientId);
     match.connected.add(clientId);
     match.lastConnectedAt = Date.now();
@@ -607,6 +608,7 @@ export class MatchRegistry {
     if (match) {
       match.session.autoPickSpawn(clientId);
       match.session.rebindSubscriber(clientId, clientId, () => {});
+      match.session.setSeatConnected(clientId, false);
       match.connected.delete(clientId);
       match.lastConnectedAt = Date.now();
       this.clientToSession.delete(clientId);

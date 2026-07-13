@@ -250,6 +250,22 @@ export interface RasterTickResult {
   nukeDetonations: NukeDetonation[];
   /** Warheads shot down by a SAM Launcher this tick (empty on most ticks). */
   nukeInterceptions: NukeInterception[];
+  /**
+   * Ships lost to enemy action this tick: a trade ship captured by a rival
+   * warship or a transport shelled out of the water. Feeds the nation AI's
+   * naval retaliation (OpenFront's `trackShipsAndRetaliate`), which is why
+   * the *culprit* is attributed.
+   */
+  shipLosses: ShipLoss[];
+}
+
+/** One ship lost to enemy action: whose, to whom, what kind, and where. */
+export interface ShipLoss {
+  victim: PlayerId;
+  by: PlayerId;
+  kind: "trade" | "transport";
+  x: number;
+  y: number;
 }
 
 /**
@@ -424,6 +440,8 @@ export class RasterConflict {
   private nextWarshipId = 1;
   /** Transport-ship landings resolved during the current tick. */
   private crossings: SeaCrossing[] = [];
+  /** Ships lost to enemy action this tick (see {@link ShipLoss}); reset each tick. */
+  private shipLosses: ShipLoss[] = [];
   private tickCount = 0;
   private winnerId: PlayerId | null = null;
 
@@ -510,6 +528,20 @@ export class RasterConflict {
       tile: s.path[s.progress],
       troops: s.troops,
       route: downsampleRoute(s.path, s.progress),
+    }));
+  }
+
+  /**
+   * Transports in flight as (id, owner, position, destination) — the nation
+   * AI's incoming-landing scan (OpenFront's `trackIncomingTransports`), which
+   * needs the *destination* tile the snapshot route does not carry in full.
+   */
+  transportTargets(): Array<{ id: number; attacker: PlayerId; tile: TileRef; dest: TileRef }> {
+    return this.ships.map((s) => ({
+      id: s.id,
+      attacker: s.attacker,
+      tile: s.path[s.progress],
+      dest: s.path[s.path.length - 1],
     }));
   }
 
@@ -972,6 +1004,7 @@ export class RasterConflict {
         crossings: [],
         nukeDetonations: [],
         nukeInterceptions: [],
+        shipLosses: [],
       };
     }
 
@@ -983,6 +1016,7 @@ export class RasterConflict {
     this.crossings = [];
     this.nukeDetonations = [];
     this.nukeInterceptions = [];
+    this.shipLosses = [];
     // Switch on any structures whose construction window has elapsed, so their
     // effects (city cap, stations, fort aura) count from this tick on.
     this.grid.activateDue(this.tickCount);
@@ -1015,6 +1049,7 @@ export class RasterConflict {
       crossings: this.crossings,
       nukeDetonations: this.nukeDetonations,
       nukeInterceptions: this.nukeInterceptions,
+      shipLosses: this.shipLosses,
     };
   }
 
@@ -1444,7 +1479,11 @@ export class RasterConflict {
   private fireOn(w: Warship, target: { kind: WarshipTargetKind; id: number }): void {
     if (target.kind === "transport") {
       const idx = this.ships.findIndex((s) => s.id === target.id);
-      if (idx !== -1) this.ships.splice(idx, 1);
+      if (idx !== -1) {
+        const sunk = this.ships[idx];
+        this.shipLosses.push({ victim: sunk.attacker, by: w.owner, kind: "transport", x: w.destX, y: w.destY });
+        this.ships.splice(idx, 1);
+      }
       return;
     }
     if (target.kind === "trade") return; // captured on contact, not shelled
@@ -1611,6 +1650,12 @@ export class RasterConflict {
         // contact — no shells, no cooldown.
         const d = Math.max(Math.abs(target.x - w.x), Math.abs(target.y - w.y));
         if (d <= WARSHIP_CAPTURE_CONTACT_RANGE) {
+          // Attribute the piracy before the prize changes hands — the victim's
+          // AI reads this to consider a retaliation warship.
+          const prize = this.trade.targetableShips().find((t) => t.id === target.id);
+          if (prize) {
+            this.shipLosses.push({ victim: prize.owner, by: w.owner, kind: "trade", x: prize.x, y: prize.y });
+          }
           this.trade.captureShip(target.id, w.owner);
           w.target = null;
         } else {

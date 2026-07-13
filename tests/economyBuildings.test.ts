@@ -104,7 +104,7 @@ test("placeBuilding rejects neutral / unowned tiles", () => {
   assert.throws(() => grid.placeBuilding(0, "city"));
 });
 
-test("a building is razed when its tile changes hands", () => {
+test("a building is captured when its tile changes hands (OpenFront semantics)", () => {
   const grid = landStrip(4);
   grid.addPlayer(1, 0);
   grid.addPlayer(2, 0);
@@ -112,10 +112,42 @@ test("a building is razed when its tile changes hands", () => {
   grid.placeBuilding(ref, "city");
   assert.equal(grid.buildingCountOf(1, "city"), 1);
 
-  grid.claim(ref, 2); // player 2 captures the tile
-  assert.equal(grid.buildingAt(ref), undefined, "the structure is destroyed on capture");
+  grid.claim(ref, 2); // player 2 captures the tile — and the city on it
+  assert.equal(grid.buildingAt(ref), "city", "the structure survives the capture");
   assert.equal(grid.buildingCountOf(1, "city"), 0, "the former owner's count drops");
-  assert.equal(grid.buildingCountOf(2, "city"), 0, "the captor does not inherit it");
+  assert.equal(grid.buildingCountOf(2, "city"), 1, "the captor inherits it");
+});
+
+test("a fort is razed on capture, and ground falling to neutral keeps nothing", () => {
+  const grid = landStrip(6);
+  grid.addPlayer(1, 0);
+  grid.addPlayer(2, 0);
+  const refs = claimRun(grid, 1, 3);
+  // A fort never survives capture (OpenFront razes Defense Posts).
+  grid.placeBuilding(refs[0], "fort");
+  grid.claim(refs[0], 2);
+  assert.equal(grid.buildingAt(refs[0]), undefined, "the fort is razed on capture");
+  assert.equal(grid.buildingCountOf(2, "fort"), 0);
+  // A city on ground that falls to NEUTRAL (a nuke's no-man's-land) dies too.
+  grid.placeBuilding(refs[1], "city");
+  grid.claim(refs[1], 0);
+  assert.equal(grid.buildingAt(refs[1]), undefined, "no structure stands on neutral ground");
+  assert.equal(grid.buildingCountOf(1, "city"), 0);
+});
+
+test("a captured building keeps its level and moves the upgrade-ramp books", () => {
+  const grid = landStrip(4);
+  grid.addPlayer(1, 0);
+  grid.addPlayer(2, 0);
+  const [ref] = claimRun(grid, 1, 1);
+  grid.placeBuilding(ref, "city");
+  grid.upgradeBuilding(ref); // level 2 — two ramp levels on player 1's books
+  assert.equal(grid.totalLevelsOf(1, "city"), 2);
+
+  grid.claim(ref, 2);
+  assert.equal(grid.buildingLevelOf(ref), 2, "the level survives the capture");
+  assert.equal(grid.totalLevelsOf(1, "city"), 0, "the loser's ramp empties");
+  assert.equal(grid.totalLevelsOf(2, "city"), 2, "the captor's ramp inherits both levels");
 });
 
 test("a fort raises a defense aura that vanishes when the fort is lost", () => {
@@ -439,11 +471,10 @@ test("upgradeBuilding raises the level and the cost counter; razing clears both"
   assert.equal(grid.totalLevelsOf(1, "city"), 2, "but two ramp steps consumed");
   assert.equal(grid.activeLevelsOf(1, "city"), 2, "both levels are active");
 
-  // The conqueror gets bare ground: the whole upgrade investment dies with it.
-  grid.addPlayer(2, 0);
-  grid.claim(0, 2);
+  // Demolition (not capture) clears the whole investment.
+  grid.demolishBuilding(0);
   assert.equal(grid.buildingLevelOf(0), 0, "no structure left");
-  assert.equal(grid.totalLevelsOf(1, "city"), 0, "the loser's cost counter resets");
+  assert.equal(grid.totalLevelsOf(1, "city"), 0, "the owner's cost counter resets");
 });
 
 test("upgradeBuilding refuses bare ground and under-construction structures", () => {

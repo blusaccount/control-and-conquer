@@ -355,6 +355,16 @@ export class RasterGameSession {
    * recorded commands can ignore it.
    */
   private readonly relations = new RelationLedger();
+  /** Ships lost to enemy action on the most recent tick (bots read this for naval retaliation). */
+  private lastShipLosses: ReturnType<RasterConflict["processTick"]>["shipLosses"] = [];
+  /** MIRV pile-on guard: last tick each player was MIRV'd (OpenFront's shared map). */
+  private readonly recentMirvTargets = new Map<PlayerId, number>();
+  /**
+   * Seats whose human went dark (lockstep socket dropped, not yet resumed).
+   * The registry maintains this; the nation AI reads it for OpenFront's "afk"
+   * strategy — disconnected humans are easy prey.
+   */
+  private readonly disconnectedSeats = new Set<PlayerId>();
   /** Tick (exclusive) each Missile Silo, keyed by tile, is ready to fire again. */
   private readonly siloReadyAt = new Map<TileRef, number>();
   private recentEvents: string[] = ["Match started."];
@@ -1210,6 +1220,26 @@ export class RasterGameSession {
     this.pushEvent(`${this.nameOf(me)} pulled its forces back from ${targetName}.`);
   }
 
+  /**
+   * Tear down the caller's own finished structure at (`targetX`, `targetY`) —
+   * OpenFront's unit deletion. Its main caller is the Tribe AI razing
+   * structures it captured (a passive map-filler wants no economy). Silent on
+   * success (OpenFront announces nothing); invalid targets are ignored.
+   */
+  public deleteBuilding(clientId: string, targetX: number, targetY: number): void {
+    this.recordFor(clientId, { type: "CLIENT_RASTER_DELETE", payload: { targetX, targetY } });
+    if (this.matchEndedBroadcast || this.phase === "spawn") return;
+    const subscriber = this.subscribers.get(clientId);
+    if (!subscriber) return;
+    const me = subscriber.playerId;
+    if (!this.grid.hasPlayer(me) || this.eliminated.has(me)) return;
+    if (!this.map.inBounds(targetX, targetY)) return;
+    const ref = this.map.ref(targetX, targetY);
+    if (this.grid.ownerOf(ref) !== me) return;
+    if (this.grid.isUnderConstruction(ref)) return;
+    this.grid.demolishBuilding(ref);
+  }
+
   /** Set (`on: true`) or lift a trade embargo against `targetId`. */
   public setEmbargo(clientId: string, targetId: PlayerId, on: boolean): void {
     this.recordFor(clientId, { type: "CLIENT_RASTER_EMBARGO", payload: { targetId, on } });
@@ -1397,6 +1427,7 @@ export class RasterGameSession {
     }
 
     const tickResult = this.conflict.processTick(intents);
+    this.lastShipLosses = tickResult.shipLosses;
 
     // Attitudes drift back toward neutral a little every tick — old grudges
     // (and old favours) fade in minutes, exactly like OpenFront's decay.
@@ -1694,6 +1725,52 @@ export class RasterGameSession {
   /** Bot helper: whether `id` is inside the conflict engine's 30-second traitor window. */
   public peekConflictTraitor(id: PlayerId): boolean {
     return this.conflict.isTraitor(id);
+  }
+
+  /** Registry hook: mark the seat behind `clientId` as connected/disconnected (lockstep). */
+  public setSeatConnected(clientId: string, connected: boolean): void {
+    const subscriber = this.subscribers.get(clientId);
+    if (!subscriber) return;
+    if (connected) this.disconnectedSeats.delete(subscriber.playerId);
+    else this.disconnectedSeats.add(subscriber.playerId);
+  }
+
+  /** Bot helper: whether `id`'s human has dropped (OpenFront's isDisconnected). */
+  public peekDisconnected(id: PlayerId): boolean {
+    return this.disconnectedSeats.has(id);
+  }
+
+  /** Bot helper: ships lost to enemy action on the most recent tick (naval retaliation). */
+  public peekShipLosses(): ReturnType<RasterConflict["processTick"]>["shipLosses"] {
+    return this.lastShipLosses;
+  }
+
+  /** Bot helper: transports currently at sea (id, owner, position, destination). */
+  public peekTransportTargets(): ReturnType<RasterConflict["transportTargets"]> {
+    return this.conflict.transportTargets();
+  }
+
+  /** Bot helper: live warships (owner + position) — the incoming-landing cover check. */
+  public peekWarships(): ReturnType<RasterConflict["activeWarships"]> {
+    return this.conflict.activeWarships();
+  }
+
+  /** Bot helper: warheads in flight (kind, attacker, aim point) — the counter-MIRV scan. */
+  public peekActiveNukes(): ReturnType<RasterConflict["activeNukes"]> {
+    return this.conflict.activeNukes();
+  }
+
+  /**
+   * MIRV pile-on guard (OpenFront's shared `recentMirvTargets`): the last tick
+   * each player ate a MIRV, so several nations don't dogpile one target.
+   */
+  public peekRecentMirvTick(id: PlayerId): number | undefined {
+    return this.recentMirvTargets.get(id);
+  }
+
+  /** Record that a MIRV was just fired at `id` (see {@link peekRecentMirvTick}). */
+  public recordMirvTarget(id: PlayerId): void {
+    this.recentMirvTargets.set(id, this.conflict.tick);
   }
 
   /**

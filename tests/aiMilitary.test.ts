@@ -294,3 +294,53 @@ test("the anti-human throttle: an easy nation holds back where hard does not", (
   assert.ok(easy >= 1, `even easy nations attack humans sometimes (saw ${easy})`);
   assert.ok(easy * 2 < hard, `easy holds back vs hard (easy ${easy}, hard ${hard})`);
 });
+
+test("a tribe razes structures it captured (passive fillers keep no economy)", () => {
+  const session = new RasterGameSession({ prebuiltMap: landMap(60, 20), mapName: "t" });
+  session.subscribe("human", noop); // player 1
+  const bot = new RasterBotController({ botId: "raze", kind: "bot", difficulty: "medium", seed: 1 });
+  bot.attach(session); // player 2
+  const p2 = bot.getPlayerId()!;
+  const grid = session.peekGrid();
+  const map = session.peekMap();
+  session.tick();
+  claimRect(session, 1, 0, 29, 0, 19);
+  claimRect(session, p2, 30, 59, 0, 19);
+  // The human's border city falls to the tribe: OpenFront capture semantics
+  // hand it over intact…
+  grid.placeBuilding(map.ref(29, 10), "city");
+  assert.equal(grid.buildingCountOf(1, "city"), 1);
+  grid.claim(map.ref(29, 10), p2);
+  assert.equal(grid.buildingCountOf(p2, "city"), 1, "the tribe inherits the city");
+
+  // …and the tribe deletes it on one of its next decision beats.
+  for (let i = 0; i < 300 && grid.buildingCountOf(p2, "city") > 0; i += 1) session.tick();
+  assert.equal(grid.buildingCountOf(p2, "city"), 0, "the tribe razed the captured city");
+});
+
+test("a MIRV flies for victory denial once a rival's land share crosses the threshold", () => {
+  const session = new RasterGameSession({ prebuiltMap: landMap(100, 30), mapName: "t" });
+  session.subscribe("human", noop); // player 1 — the runaway leader
+  const bot = new RasterBotController({ botId: "mirv-test", kind: "nation", difficulty: "impossible", seed: 7 });
+  bot.attach(session); // player 2
+  const p2 = bot.getPlayerId()!;
+  const grid = session.peekGrid();
+  const map = session.peekMap();
+  session.tick();
+  // The human holds ~60% of the land (past Impossible's 0.4 denial threshold
+  // but under the 80% win); the nation holds the rest with a ready silo and a
+  // banked MIRV budget.
+  claimRect(session, 1, 0, 59, 0, 29);
+  claimRect(session, p2, 60, 99, 0, 29);
+  grid.placeBuilding(map.ref(80, 15), "silo");
+  grid.setGold(p2, 40_000_000);
+  grid.setTroops(p2, 200_000);
+
+  let mirv = false;
+  for (let i = 0; i < 600 && !mirv; i += 1) {
+    session.tick();
+    grid.setGold(p2, 40_000_000); // hold the budget: only the judgement gates the launch
+    mirv = session.peekActiveNukes().some((n) => n.kind === "mirv" && n.attacker === p2);
+  }
+  assert.ok(mirv, "the nation MIRVs the runaway leader");
+});
