@@ -7,6 +7,7 @@ import { applySessionCommand } from "../../Core/applySessionCommand.js";
 import { fetchPrebuiltMap } from "../mapFetch.js";
 import { buildCustomGameMap, decodeCustomMapFile } from "../../Core/customMap.js";
 import { withCrest } from "../../Core/identity.js";
+import { binarySnapshotTransfer } from "../workerBinary.js";
 import type { RasterClientMessage, RasterServerMessage } from "../../Core/types.js";
 
 /**
@@ -31,7 +32,7 @@ type Inbound = { type: "CLIENT"; message: RasterClientMessage };
 /** Minimal typing for the dedicated-worker global (avoids needing the WebWorker
  * lib alongside DOM, which would clash on shared globals). */
 interface WorkerScope {
-  postMessage(message: unknown): void;
+  postMessage(message: unknown, transfer?: ArrayBuffer[]): void;
   onmessage: ((event: { data: Inbound }) => void) | null;
 }
 const ctx = self as unknown as WorkerScope;
@@ -44,7 +45,9 @@ let starting = false;
 const botUnsubs: Array<() => void> = [];
 
 const emit = (message: RasterServerMessage): void => {
-  ctx.postMessage({ type: "SERVER", message });
+  // Raster payloads leave as transferred binary, not base64 (see workerBinary).
+  const { message: out, transfer } = binarySnapshotTransfer(message);
+  ctx.postMessage({ type: "SERVER", message: out }, transfer);
 };
 
 /** Resolve the match terrain and seat the match (human + bot field). */
@@ -118,8 +121,18 @@ ctx.onmessage = (event): void => {
     ).catch((error: unknown) => {
       // Surface a failed start (bad custom map file, map download error) as a
       // rejection so the client shows the reason instead of hanging on
-      // "Connecting…" with an unhandled worker rejection.
+      // "Connecting…" with an unhandled worker rejection. Roll back *all*
+      // partial start state: if the throw happened after `session` was
+      // assigned (e.g. while seating the bot field), leaving it set would trap
+      // every retry at the `if (starting || session)` guard — a permanently
+      // wedged worker whose sim never ticks.
       starting = false;
+      session = null;
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+      for (const unsub of botUnsubs.splice(0)) unsub();
       emit({
         type: "SERVER_RASTER_ACTION_REJECTED",
         payload: {

@@ -310,7 +310,17 @@ export class MatchRegistry {
 
     for (const member of members) {
       const unsub = session.subscribe(member.clientId, member.send, false, false, member.name, "human", true);
-      if (!unsub) continue; // full session — the member simply isn't seated
+      if (!unsub) {
+        // Full session — the member can't be seated. Tell them so instead of
+        // leaving their client hanging on the join screen forever. (Currently
+        // unreachable — the lobby cap plus the bot field exactly fits
+        // MAX_PLAYERS — but a future cap change would make it live.)
+        member.send({
+          type: "SERVER_RASTER_LOBBY_ERROR",
+          payload: { message: "The match filled up before you could be seated.", fatal: true },
+        });
+        continue;
+      }
       match.unsubs.push(unsub);
       const token = (globalThis.crypto as { randomUUID(): string }).randomUUID();
       match.tokens.set(token, member.clientId);
@@ -536,6 +546,17 @@ export class MatchRegistry {
       send({ type: "SERVER_RASTER_LOBBY_ERROR", payload: { message: "That match is no longer running.", fatal: true } });
       return false;
     }
+    // A resume replays the match from tick 0; once the turn history has been
+    // dropped (very long match — see RESUME_HISTORY_MAX_TURNS) that replay is
+    // impossible. Checked before the rebind so the seat is left untouched.
+    const backlog = match.session.turnBacklog();
+    if (backlog === null) {
+      send({
+        type: "SERVER_RASTER_LOBBY_ERROR",
+        payload: { message: "That match has been running too long to rejoin.", fatal: true },
+      });
+      return false;
+    }
     if (!match.session.rebindSubscriber(oldClientId, clientId, send)) {
       // Never fail silently — an unanswered resume freezes the client.
       send({ type: "SERVER_RASTER_LOBBY_ERROR", payload: { message: "Could not resume that seat.", fatal: true } });
@@ -560,7 +581,6 @@ export class MatchRegistry {
     });
     // The backlog is the whole match history; slice it so no single
     // JSON.stringify on the shared event loop grows with match length.
-    const backlog = match.session.turnBacklog();
     for (let i = 0; i < backlog.length || i === 0; i += BACKLOG_CHUNK_TURNS) {
       send({ type: "SERVER_RASTER_TURN_BACKLOG", payload: { turns: backlog.slice(i, i + BACKLOG_CHUNK_TURNS) } });
     }

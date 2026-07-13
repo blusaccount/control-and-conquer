@@ -1,6 +1,6 @@
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile, stat } from "node:fs/promises";
-import { extname, join, normalize } from "node:path";
+import { dirname, extname, join, normalize, posix } from "node:path";
 import { performance } from "node:perf_hooks";
 import { gzipSync } from "node:zlib";
 import { Buffer } from "node:buffer";
@@ -93,11 +93,19 @@ const botOverride = botOverrideRaw !== undefined && Number.isFinite(Number(botOv
 const registry = new MatchRegistry();
 let clientSequence = 0;
 
+// Gzipped `/api/solo/map` payloads per catalogue id (token maps are per-match
+// and never cached). A handful of maps at a few hundred KB each.
+const soloMapGzipCache = new Map<string, Buffer>();
+
 const mimeTypes: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".map": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".txt": "text/plain; charset=utf-8",
 };
 
 const safeJoin = (baseDir: string, requestPath: string): string => {
@@ -105,12 +113,140 @@ const safeJoin = (baseDir: string, requestPath: string): string => {
   return join(baseDir, sanitized);
 };
 
-const serveFile = async (filePath: string): Promise<{ body: Buffer; contentType: string }> => {
-  const body = await readFile(filePath);
-  return {
+// ---------------------------------------------------------------------------
+// Static assets: in-memory cache + gzip + ETag revalidation.
+//
+// The client ships as ~50 individual ES modules (tsc output, no bundler), so a
+// cold page load is dominated by transfer size and request count, and a warm
+// one by refetching unchanged files. Each file is read and gzipped once, then
+// served from memory; the cache entry is validated against the file's
+// mtime/size on every hit so an edit (dev, or a redeploy into the same
+// process) is picked up immediately. Assets aren't content-hashed, so clients
+// get `no-cache` + a strong ETag: repeat loads collapse to 304s instead of
+// full transfers, and a redeploy can never serve a stale mix of modules.
+// ---------------------------------------------------------------------------
+const COMPRESSIBLE = new Set([".html", ".js", ".css", ".json", ".svg", ".txt", ".map"]);
+
+interface StaticCacheEntry {
+  mtimeMs: number;
+  size: number;
+  body: Buffer;
+  gzip?: Buffer;
+  etag: string;
+  contentType: string;
+}
+
+const staticCache = new Map<string, StaticCacheEntry>();
+
+const loadStatic = async (filePath: string): Promise<StaticCacheEntry> => {
+  const info = await stat(filePath);
+  if (!info.isFile()) throw new Error("Not a file");
+  const cached = staticCache.get(filePath);
+  if (cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size) return cached;
+
+  let body: Buffer = await readFile(filePath);
+  const ext = extname(filePath);
+  if (ext === ".html") body = await injectModulePreloads(body);
+  const compress = COMPRESSIBLE.has(ext) && body.length > 1024;
+  const entry: StaticCacheEntry = {
+    mtimeMs: info.mtimeMs,
+    size: info.size,
     body,
-    contentType: mimeTypes[extname(filePath)] ?? "application/octet-stream",
+    gzip: compress ? gzipSync(body, { level: 9 }) : undefined,
+    etag: `"${info.size.toString(36)}-${Math.trunc(info.mtimeMs).toString(36)}-${body.length.toString(36)}"`,
+    contentType: mimeTypes[ext] ?? "application/octet-stream",
   };
+  staticCache.set(filePath, entry);
+  return entry;
+};
+
+const sendStatic = (request: IncomingMessage, response: ServerResponse, entry: StaticCacheEntry): void => {
+  const headers: Record<string, string> = {
+    "content-type": entry.contentType,
+    etag: entry.etag,
+    "cache-control": "no-cache",
+    vary: "accept-encoding",
+  };
+  if (request.headers["if-none-match"] === entry.etag) {
+    response.writeHead(304, headers);
+    response.end();
+    return;
+  }
+  const acceptsGzip = entry.gzip && String(request.headers["accept-encoding"] ?? "").includes("gzip");
+  if (acceptsGzip) headers["content-encoding"] = "gzip";
+  response.writeHead(200, headers);
+  response.end(acceptsGzip ? entry.gzip : entry.body);
+};
+
+// ---------------------------------------------------------------------------
+// Module preloading: without a bundler, the browser discovers the client's
+// import graph one level at a time — main.js, then its imports, then theirs —
+// a 5+ round-trip waterfall across ~50 modules. Walking the emitted static
+// imports from the document entry once lets us inject
+// <link rel="modulepreload"> for the whole graph into the served index.html,
+// so every module downloads in parallel with the first response. Worker-only
+// modules load in their own module map and are deliberately not preloaded.
+// ---------------------------------------------------------------------------
+const DOCUMENT_ENTRY = "Client/main.js";
+// Worker entry points (see `transport.ts`): they run in their own module maps,
+// so modulepreload can't help them — but the HTTP cache is shared, so plain
+// prefetch links warm their (deep) import graphs during the menu instead of
+// letting a match start discover them level-by-level.
+const WORKER_ENTRIES = [
+  "Client/solo/soloWorker.js",
+  "Client/lockstep/lockstepWorker.js",
+  "Client/names/nameWorker.js",
+];
+let modulePreloadTags: Promise<string> | undefined;
+
+/** Transitive static-import closure of `entries` within dist, incl. the entries. */
+const collectModuleGraph = async (entries: readonly string[]): Promise<Set<string>> => {
+  const seen = new Set<string>();
+  const queue = [...entries];
+  const importRe = /(?:^|[\n;])\s*(?:import|export)\s[^"'\n]*?from\s*["']([^"']+)["']|[\n;\s(=]import\s*\(\s*["']([^"']+)["']\s*\)|(?:^|[\n;])\s*import\s*["']([^"']+)["']/g;
+  while (queue.length > 0) {
+    const rel = queue.pop()!;
+    if (seen.has(rel)) continue;
+    let source: string;
+    try {
+      source = await readFile(join(assetDir, rel), "utf8");
+    } catch {
+      continue; // dist not built (or a stale specifier) — preload what exists.
+    }
+    seen.add(rel);
+    for (const match of source.matchAll(importRe)) {
+      const spec = match[1] ?? match[2] ?? match[3];
+      if (spec && spec.startsWith(".")) queue.push(posix.normalize(posix.join(dirname(rel), spec)));
+    }
+  }
+  return seen;
+};
+
+const collectDocumentModules = async (): Promise<string> => {
+  const documentGraph = await collectModuleGraph([DOCUMENT_ENTRY]);
+  documentGraph.delete(DOCUMENT_ENTRY); // already discovered instantly via its <script src>.
+  const preloads = [...documentGraph]
+    .sort()
+    .map((rel) => `    <link rel="modulepreload" href="/assets/${rel}" />`);
+  // Worker-only modules (not part of the document graph) get a low-priority
+  // prefetch so the first match start hits a warm HTTP cache.
+  const workerGraph = await collectModuleGraph(WORKER_ENTRIES);
+  const prefetches = [...workerGraph]
+    .filter((rel) => !documentGraph.has(rel) && rel !== DOCUMENT_ENTRY)
+    .sort()
+    .map((rel) => `    <link rel="prefetch" href="/assets/${rel}" as="script" />`);
+  return [...preloads, ...prefetches].join("\n");
+};
+
+const injectModulePreloads = async (html: Buffer): Promise<Buffer> => {
+  // The graph is scanned once per process — dist is immutable for a deploy.
+  modulePreloadTags ??= collectDocumentModules();
+  const tags = await modulePreloadTags;
+  if (!tags) return html;
+  const text = html.toString("utf8");
+  const anchor = text.indexOf("</head>");
+  if (anchor === -1) return html;
+  return Buffer.from(`${text.slice(0, anchor)}${tags}\n  ${text.slice(anchor)}`, "utf8");
 };
 
 const server = createServer(async (request, response) => {
@@ -153,6 +289,7 @@ const server = createServer(async (request, response) => {
       const token = requestUrl.searchParams.get("token");
       let map;
       let name;
+      let cacheKey: string | undefined;
       if (token) {
         const custom = registry.getMapByToken(token);
         if (!custom) {
@@ -167,11 +304,19 @@ const server = createServer(async (request, response) => {
         const resolved = resolveCatalogSessionMap(choice.options, choice.name);
         map = resolved.map;
         name = resolved.name;
+        cacheKey = choice.id;
       }
-      const header = Buffer.alloc(8);
-      header.writeUInt32LE(map.width, 0);
-      header.writeUInt32LE(map.height, 4);
-      const body = gzipSync(Buffer.concat([header, Buffer.from(map.terrain)]));
+      // Catalogue maps are immutable for the life of the process, but gzipping
+      // the multi-megabyte terrain plane costs tens of milliseconds of blocked
+      // event loop — pay it once per map, not per request.
+      let body = cacheKey ? soloMapGzipCache.get(cacheKey) : undefined;
+      if (!body) {
+        const header = Buffer.alloc(8);
+        header.writeUInt32LE(map.width, 0);
+        header.writeUInt32LE(map.height, 4);
+        body = gzipSync(Buffer.concat([header, Buffer.from(map.terrain)]));
+        if (cacheKey) soloMapGzipCache.set(cacheKey, body);
+      }
       response.writeHead(200, {
         "content-type": "application/octet-stream",
         "content-encoding": "gzip",
@@ -184,18 +329,12 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname.startsWith("/assets/")) {
       const filePath = safeJoin(assetDir, requestUrl.pathname.replace("/assets/", ""));
-      await stat(filePath);
-      const file = await serveFile(filePath);
-      response.writeHead(200, { "content-type": file.contentType });
-      response.end(file.body);
+      sendStatic(request, response, await loadStatic(filePath));
       return;
     }
 
     const filePath = requestUrl.pathname === "/" ? join(publicDir, "index.html") : safeJoin(publicDir, requestUrl.pathname);
-    await stat(filePath);
-    const file = await serveFile(filePath);
-    response.writeHead(200, { "content-type": file.contentType });
-    response.end(file.body);
+    sendStatic(request, response, await loadStatic(filePath));
   } catch {
     response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
     response.end("Not found");
@@ -304,6 +443,17 @@ wss.on("connection", (socket) => {
       } else if (message.type === "CLIENT_RASTER_EMOJI") {
         registry.sendRasterEmoji(clientId, message.payload.targetId, message.payload.emoji);
       } else if (message.type === "CLIENT_RASTER_LOBBY_CREATE") {
+        // The busy check runs BEFORE the custom-map decode: decoding + building
+        // a max-size map blocks the shared tick loop, and createLobby would
+        // reject a busy client anyway — without the gate, a client already in
+        // a match could spam expensive decodes for free.
+        if (registry.isClientBusy(clientId)) {
+          send({
+            type: "SERVER_RASTER_LOBBY_ERROR",
+            payload: { message: "You are already in a lobby or match.", fatal: true },
+          });
+          return;
+        }
         const choice = resolveMapChoice(message.payload.mapId);
         const difficulty = isRasterDifficulty(message.payload.difficulty) ? message.payload.difficulty : "medium";
         const rawField = message.payload.fieldSize;

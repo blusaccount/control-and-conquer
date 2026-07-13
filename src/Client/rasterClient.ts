@@ -436,7 +436,14 @@ const SPAWN_ZOOM_TILES = 70;
 
 const clamp = (value: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, value));
 
+/** Native base64 decoder where available (Firefox/Safari, recent Chrome). */
+const nativeFromBase64: ((b64: string) => Uint8Array) | undefined =
+  typeof (Uint8Array as unknown as { fromBase64?: (b64: string) => Uint8Array }).fromBase64 === "function"
+    ? (b64) => (Uint8Array as unknown as { fromBase64: (b64: string) => Uint8Array }).fromBase64(b64)
+    : undefined;
+
 const decodeBase64ToBytes = (b64: string): Uint8Array => {
+  if (nativeFromBase64) return nativeFromBase64(b64);
   const binary = atob(b64);
   const len = binary.length;
   const out = new Uint8Array(len);
@@ -444,10 +451,20 @@ const decodeBase64ToBytes = (b64: string): Uint8Array => {
   return out;
 };
 
-const decodeOwnerArray = (b64: string, expectedLength: number): Uint16Array => {
-  const bytes = decodeBase64ToBytes(b64);
+// The wire format is little-endian, which is also the byte order of every
+// platform a browser ships on — so multi-byte payloads can be reinterpreted as
+// typed-array views instead of copied element-wise through a DataView (the
+// first snapshot's owner plane alone is 2.5M elements on the huge Earth). The
+// one-time check keeps a hypothetical big-endian host correct via a slow path.
+const HOST_IS_LE = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
+
+/** Reinterpret packed little-endian owner bytes as a `Uint16Array`. */
+const ownerArrayFromBytes = (bytes: Uint8Array, expectedLength: number): Uint16Array => {
   if (bytes.length !== expectedLength * 2) {
     throw new Error(`Owner array byte length ${bytes.length} does not match expected ${expectedLength * 2}.`);
+  }
+  if (HOST_IS_LE && bytes.byteOffset % 2 === 0) {
+    return new Uint16Array(bytes.buffer, bytes.byteOffset, expectedLength);
   }
   const owner = new Uint16Array(expectedLength);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -457,16 +474,24 @@ const decodeOwnerArray = (b64: string, expectedLength: number): Uint16Array => {
   return owner;
 };
 
-/** Decode a base64-packed little-endian `Uint32Array` of tile indices (fallout). */
-const decodeTileList = (b64: string): number[] => {
-  if (b64.length === 0) return [];
-  const bytes = decodeBase64ToBytes(b64);
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+const decodeOwnerArray = (b64: string, expectedLength: number): Uint16Array =>
+  ownerArrayFromBytes(decodeBase64ToBytes(b64), expectedLength);
+
+/** Reinterpret packed little-endian bytes as a tile-index list (fallout). */
+const tileListFromBytes = (bytes: Uint8Array): ArrayLike<number> & Iterable<number> => {
   const count = Math.floor(bytes.length / 4);
+  if (HOST_IS_LE && bytes.byteOffset % 4 === 0) {
+    return new Uint32Array(bytes.buffer, bytes.byteOffset, count);
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const refs: number[] = new Array(count);
   for (let i = 0; i < count; i += 1) refs[i] = view.getUint32(i * 4, true);
   return refs;
 };
+
+/** Decode a base64-packed little-endian `Uint32Array` of tile indices (fallout). */
+const decodeTileList = (b64: string): ArrayLike<number> & Iterable<number> =>
+  b64.length === 0 ? [] : tileListFromBytes(decodeBase64ToBytes(b64));
 
 const rgbaToCss = (c: { r: number; g: number; b: number }): string => `rgb(${c.r}, ${c.g}, ${c.b})`;
 
@@ -807,7 +832,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       btn.disabled = !canBuild;
       const costEl = btn.querySelector<HTMLSpanElement>("[data-cost]");
       if (costEl) {
-        costEl.textContent = `🪙 ${formatCount(cost)}`;
+        const text = `🪙 ${formatCount(cost)}`;
+        if (costEl.textContent !== text) costEl.textContent = text;
         costEl.classList.toggle("unaffordable", !affordable);
       }
     }
@@ -875,7 +901,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       btn.disabled = !canAct;
       const costEl = btn.querySelector<HTMLSpanElement>("[data-cost]");
       if (costEl) {
-        costEl.textContent = `🪙 ${formatCount(cost)}`;
+        const text = `🪙 ${formatCount(cost)}`;
+        if (costEl.textContent !== text) costEl.textContent = text;
         costEl.classList.toggle("unaffordable", !affordable);
       }
     }
@@ -1159,9 +1186,14 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   const onSnapshot = (snapshot: RasterSnapshot): void => {
+    // Diplomacy relations are derived per snapshot, consumed by both the
+    // sidebar and the per-frame nameplate badges — invalidate the memo.
+    relCache = null;
     // Establish the static GameMap on the first snapshot that carries terrain.
-    if (snapshot.terrainBase64 && !runtime.map) {
-      const terrainBytes = decodeBase64ToBytes(snapshot.terrainBase64);
+    // Worker transports ship the raster payloads as transferred binary
+    // (`*Bytes`); the WebSocket wire as base64 — binary wins when present.
+    if ((snapshot.terrainBytes || snapshot.terrainBase64) && !runtime.map) {
+      const terrainBytes = snapshot.terrainBytes ?? decodeBase64ToBytes(snapshot.terrainBase64!);
       runtime.map = new GameMap(snapshot.width, snapshot.height, terrainBytes);
       initView();
     }
@@ -1180,11 +1212,16 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     // Ownership arrives either as a full raster (first snapshot / high churn) or
     // as a delta against what we already hold. A full raster repaints the whole
     // base; a delta repaints only the touched tiles.
-    if (snapshot.ownerBase64 !== undefined) {
+    if (snapshot.ownerBytes !== undefined) {
+      runtime.owner = ownerArrayFromBytes(snapshot.ownerBytes, snapshot.width * snapshot.height);
+      repaintBaseFull();
+    } else if (snapshot.ownerBase64 !== undefined) {
       runtime.owner = decodeOwnerArray(snapshot.ownerBase64, snapshot.width * snapshot.height);
       repaintBaseFull();
+    } else if (snapshot.ownerDeltaBytes !== undefined && runtime.owner) {
+      applyOwnerDelta(snapshot.ownerDeltaBytes);
     } else if (snapshot.ownerDeltaBase64 !== undefined && runtime.owner) {
-      applyOwnerDelta(snapshot.ownerDeltaBase64);
+      applyOwnerDelta(decodeBase64ToBytes(snapshot.ownerDeltaBase64));
     }
 
     runtime.capturableTotal = snapshot.capturableCount;
@@ -1242,7 +1279,9 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.nukes = snapshot.nukes ?? [];
     // Fallout is sent whole each snapshot (empty string = nowhere irradiated),
     // so replace the set outright rather than diffing.
-    if (snapshot.falloutBase64 !== undefined) {
+    if (snapshot.falloutBytes !== undefined) {
+      runtime.fallout = new Set(tileListFromBytes(snapshot.falloutBytes));
+    } else if (snapshot.falloutBase64 !== undefined) {
       runtime.fallout = new Set(decodeTileList(snapshot.falloutBase64));
     }
     runtime.rails = snapshot.rails ?? [];
@@ -1288,7 +1327,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       runtime.winnerPlayerId = snapshot.winnerPlayerId;
       const winnerInfo = snapshot.players.find((p) => p.playerId === snapshot.winnerPlayerId);
       const winnerName = winnerInfo?.name ?? `Player ${snapshot.winnerPlayerId}`;
-      setStatus(ui, `Match over — ${escapeHtml(winnerName)} won!`, "victory");
+      setStatus(ui, `Match over — ${winnerName} won!`, "victory");
     }
 
     const ships = snapshot.ships ?? [];
@@ -1337,7 +1376,15 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
    * range id absent from this snapshot) is filled with the fallback wrap colour
    * so the array is dense and `playerColor`'s index lookup is always in range.
    */
+  let lastPaletteKey = "";
   const rebuildColorPalette = (players: RasterPlayerInfo[]): void => {
+    // Colours are static after seating, but snapshots arrive at 10Hz — skip the
+    // rebuild (and keep the palette array's identity, which downstream colour
+    // LUTs key on) unless an id→colour assignment actually changed.
+    let key = "";
+    for (const p of players) key += `${p.playerId}:${p.color};`;
+    if (key === lastPaletteKey) return;
+    lastPaletteKey = key;
     let maxId = 0;
     for (const p of players) if (p.playerId > maxId) maxId = p.playerId;
     const palette: Rgba[] = new Array(maxId);
@@ -1349,6 +1396,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     flashCssCache.clear();
   };
 
+  // Bumped whenever the owner raster (and thus the base canvas) changes, so
+  // per-frame overlays derived from it (borders, minimap) can cache their work
+  // between the 10Hz snapshots instead of rebuilding at 60fps.
+  let baseGeneration = 0;
+
   /** Repaint the whole terrain + ownership layer (1 pixel per tile). */
   const repaintBaseFull = (): void => {
     const map = runtime.map;
@@ -1357,19 +1409,19 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     if (!map || !owner || !target) return;
     paintRaster(map, owner, target.image.data, activePalette(), runtime.myPlayerId ?? -1);
     target.base.getContext("2d")?.putImageData(target.image, 0, 0);
+    baseGeneration += 1;
     // A full repaint means we have no per-tile change set to glow (first
     // snapshot, or a high-churn full resend); drop any stale flashes.
     runtime.captureFlashes.length = 0;
   };
 
-  /** Apply a packed owner delta to the owner array and repaint touched tiles. */
-  const applyOwnerDelta = (deltaBase64: string): void => {
+  /** Apply a packed owner delta (raw bytes) to the owner array and repaint touched tiles. */
+  const applyOwnerDelta = (bytes: Uint8Array): void => {
     const map = runtime.map;
     const owner = runtime.owner;
     const target = ensureBase();
     if (!map || !owner || !target) return;
 
-    const bytes = decodeBase64ToBytes(deltaBase64);
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const records = Math.floor(bytes.length / 6);
     // First apply every ownership change, then repaint: a tile's border status
@@ -1385,7 +1437,13 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         const prevOwner = owner[index];
         owner[index] = newOwner;
         dirty.add(index);
-        for (const n of map.neighbors(index)) dirty.add(n);
+        // Inlined 4-neighbour marks (no per-record array allocation — this runs
+        // for every changed tile of every delta at a hot front).
+        const nx = index % map.width;
+        if (nx > 0) dirty.add(index - 1);
+        if (nx + 1 < map.width) dirty.add(index + 1);
+        if (index >= map.width) dirty.add(index - map.width);
+        if (index + map.width < owner.length) dirty.add(index + map.width);
         // Glow only on a genuine capture by a real player (skip collapses back to
         // neutral), so the wash reads as an advancing front rather than churn.
         if (newOwner !== 0 && newOwner !== prevOwner) {
@@ -1418,6 +1476,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       target.base
         .getContext("2d")
         ?.putImageData(target.image, 0, 0, minX, minY, maxX - minX + 1, maxY - minY + 1);
+      baseGeneration += 1;
     }
   };
 
@@ -1603,6 +1662,37 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.captureFlashes = survivors;
   };
 
+  // The anchor computation is a full O(map) owner scan (~10ms on the large
+  // Earth) — run on the render thread it was a guaranteed dropped frame twice
+  // a second. It runs in a dedicated worker instead: the main thread ships a
+  // copied owner raster (transferred, so the copy itself is the only cost)
+  // and keeps drawing the previous anchors until fresh ones arrive. At most
+  // one request is in flight; a `null` worker after a failed boot falls back
+  // to the synchronous path.
+  let nameWorker: Worker | null | undefined;
+  let nameRequestId = 0;
+  let nameRequestInFlight = false;
+
+  const ensureNameWorker = (): Worker | null => {
+    if (nameWorker !== undefined) return nameWorker;
+    try {
+      const w = new Worker(new URL("./names/nameWorker.js", import.meta.url), { type: "module" });
+      w.onmessage = (event: MessageEvent<{ id: number; anchors: NameAnchor[] }>): void => {
+        nameRequestInFlight = false;
+        if (event.data.id === nameRequestId) runtime.nameAnchors = event.data.anchors;
+      };
+      w.onerror = () => {
+        // Worker died (or never booted) — fall back to inline computation.
+        nameWorker = null;
+        nameRequestInFlight = false;
+      };
+      nameWorker = w;
+    } catch {
+      nameWorker = null;
+    }
+    return nameWorker;
+  };
+
   /**
    * Recompute each nation's name anchor (throttled). Operates on the live owner
    * raster for every player still holding land, so labels track territory as it
@@ -1612,11 +1702,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const map = runtime.map;
     const owner = runtime.owner;
     if (!map || !owner) return;
-    // Recompute less often on big maps — labels drift slowly and the pass is a
-    // full O(size) owner scan (~10ms on the 1.6M-tile Earth), so a longer
-    // interval keeps the hitch rare.
+    // Recompute less often on big maps — labels drift slowly, so even off the
+    // main thread there's no point re-scanning a huge raster more often.
     const interval = map.size > 600_000 ? 900 : NAME_RECOMPUTE_MS;
-    if (now - runtime.lastNameComputeMs < interval) return;
+    if (now - runtime.lastNameComputeMs < interval || nameRequestInFlight) return;
     runtime.lastNameComputeMs = now;
 
     const players = runtime.players
@@ -1636,6 +1725,19 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     if (maxSize > 0 && tileTotal === runtime.lastNameTileTotal && maxSize * runtime.view.scale < MIN_NAME_FONT_PX) return;
     runtime.lastNameTileTotal = tileTotal;
 
+    const worker = ensureNameWorker();
+    if (worker) {
+      nameRequestId += 1;
+      nameRequestInFlight = true;
+      // The worker needs its own copy (the live raster keeps mutating);
+      // transferring the copy makes the hand-off itself free.
+      const ownerCopy = Uint16Array.from(owner);
+      worker.postMessage(
+        { id: nameRequestId, width: map.width, height: map.height, owner: ownerCopy, players },
+        [ownerCopy.buffer],
+      );
+      return;
+    }
     runtime.nameAnchors = computeNameAnchors(map.width, map.height, owner, players);
   };
 
@@ -1737,6 +1839,13 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
    * (so it carries the identical terrain + ownership palette), then overlay a
    * green rectangle marking the main view's current viewport.
    */
+  // The downscale of the full (up to 2.5M-pixel) base raster only changes when
+  // the base does (10Hz), but the viewport rectangle moves every pan/zoom frame
+  // — so the downscaled map is cached on its own layer and per frame we only
+  // blit that small layer and stroke the rectangle.
+  let minimapLayer: HTMLCanvasElement | null = null;
+  let minimapLayerGen = -1;
+
   const drawMinimap = (): void => {
     const ctx = ui.minimapContext;
     const mw = ui.minimapCanvas.width;
@@ -1749,8 +1858,22 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const t = minimapTransform();
     if (!map || !base || !t) return;
 
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(base, 0, 0, map.width, map.height, t.offX, t.offY, map.width * t.scale, map.height * t.scale);
+    if (!minimapLayer || minimapLayer.width !== mw || minimapLayer.height !== mh) {
+      minimapLayer = document.createElement("canvas");
+      minimapLayer.width = mw;
+      minimapLayer.height = mh;
+      minimapLayerGen = -1;
+    }
+    if (minimapLayerGen !== baseGeneration) {
+      const lctx = minimapLayer.getContext("2d");
+      if (lctx) {
+        lctx.clearRect(0, 0, mw, mh);
+        lctx.imageSmoothingEnabled = false;
+        lctx.drawImage(base, 0, 0, map.width, map.height, t.offX, t.offY, map.width * t.scale, map.height * t.scale);
+        minimapLayerGen = baseGeneration;
+      }
+    }
+    ctx.drawImage(minimapLayer, 0, 0);
 
     // Viewport rectangle: the tile span currently shown on the main canvas.
     const viewW = ui.mapCanvas.width / runtime.view.scale;
@@ -2102,11 +2225,37 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
    * we stroke a handful of paths, not thousands of segments. Only runs when
    * zoomed in enough that borders read and the visible-tile count stays in budget.
    */
+  // The border paths are a pure function of (owner raster, camera, canvas
+  // size); the raster changes at 10Hz and the camera only while panning, so
+  // caching the built paths avoids redoing the full visible-tile scan +
+  // Path2D construction on the ~50 frames a second where nothing moved.
+  let borderCache: {
+    x: number;
+    y: number;
+    scale: number;
+    cw: number;
+    ch: number;
+    generation: number;
+    paths: Map<string, Path2D>;
+  } | null = null;
+
   const drawBorders = (ctx: CanvasRenderingContext2D, scale: number): void => {
     const map = runtime.map;
     const owner = runtime.owner;
     if (!map || !owner || scale < BORDER_DETAIL_SCALE) return;
     const view = runtime.view;
+    if (
+      borderCache &&
+      borderCache.x === view.x &&
+      borderCache.y === view.y &&
+      borderCache.scale === scale &&
+      borderCache.cw === ui.mapCanvas.width &&
+      borderCache.ch === ui.mapCanvas.height &&
+      borderCache.generation === baseGeneration
+    ) {
+      strokeBorderPaths(ctx, borderCache.paths);
+      return;
+    }
     const x0 = Math.max(0, Math.floor(view.x));
     const y0 = Math.max(0, Math.floor(view.y));
     const x1 = Math.min(map.width - 1, Math.ceil(view.x + ui.mapCanvas.width / scale));
@@ -2160,15 +2309,28 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       }
     }
 
+    borderCache = {
+      x: view.x,
+      y: view.y,
+      scale,
+      cw: ui.mapCanvas.width,
+      ch: ui.mapCanvas.height,
+      generation: baseGeneration,
+      paths,
+    };
+    strokeBorderPaths(ctx, paths);
+  };
+
+  const strokeBorderPaths = (ctx: CanvasRenderingContext2D, paths: Map<string, Path2D>): void => {
     ctx.save();
     ctx.lineCap = "round";
     for (const [key, path] of paths) {
-      if (key === meKey) continue;
+      if (key === "me") continue;
       ctx.strokeStyle = key;
       ctx.lineWidth = 1.8;
       ctx.stroke(path);
     }
-    const mePath = paths.get(meKey);
+    const mePath = paths.get("me");
     if (mePath) {
       ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
       ctx.lineWidth = 2.4;
@@ -2649,29 +2811,66 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
    * a struck region stays visibly scorched on the map — OpenFront's fallout
    * ground tint. Viewport-culled; drawn in screen space over the base raster.
    */
+  // Fallout tint lives on its own world-space layer (1 pixel per tile), rebuilt
+  // only when the server's fallout set changes; per frame it is a single
+  // drawImage under the camera transform. The old per-frame loop iterated the
+  // whole fallout set at 60fps — O(N) per frame after a big nuclear exchange
+  // even with every tile off-screen.
+  let falloutLayer: HTMLCanvasElement | null = null;
+  let falloutLayerImage: ImageData | null = null;
+  let falloutLayerSource: ReadonlySet<number> | null = null;
+  let falloutPrevRefs: number[] = [];
+
+  const packRgbaScratch = new Uint8ClampedArray(4);
+  const packRgbaScratch32 = new Uint32Array(packRgbaScratch.buffer);
+  const packRgba = (r: number, g: number, b: number, a: number): number => {
+    packRgbaScratch[0] = r;
+    packRgbaScratch[1] = g;
+    packRgbaScratch[2] = b;
+    packRgbaScratch[3] = a;
+    return packRgbaScratch32[0];
+  };
+  const FALLOUT_BRIGHT = packRgba(150, 200, 40, 140); // rgba(…, 0.55)
+  const FALLOUT_DIM = packRgba(120, 160, 30, 102); // rgba(…, 0.4)
+
+  const ensureFalloutLayer = (map: GameMap): HTMLCanvasElement | null => {
+    if (!falloutLayer || falloutLayer.width !== map.width || falloutLayer.height !== map.height) {
+      falloutLayer = document.createElement("canvas");
+      falloutLayer.width = map.width;
+      falloutLayer.height = map.height;
+      falloutLayerImage = falloutLayer.getContext("2d")?.createImageData(map.width, map.height) ?? null;
+      falloutLayerSource = null;
+      falloutPrevRefs = [];
+    }
+    if (!falloutLayerImage) return null;
+    if (falloutLayerSource !== runtime.fallout) {
+      const u32 = new Uint32Array(falloutLayerImage.data.buffer);
+      for (const ref of falloutPrevRefs) u32[ref] = 0;
+      falloutPrevRefs = [];
+      for (const ref of runtime.fallout) {
+        if (ref >= u32.length) continue;
+        // Deterministic per-tile speckle so the wash reads as radioactive
+        // grime, not a flat fill; cheap integer hash is stable across rebuilds.
+        const h = ((ref * 2654435761) >>> 0) / 0x100000000;
+        u32[ref] = h < 0.4 ? FALLOUT_BRIGHT : FALLOUT_DIM;
+        falloutPrevRefs.push(ref);
+      }
+      falloutLayer.getContext("2d")?.putImageData(falloutLayerImage, 0, 0);
+      falloutLayerSource = runtime.fallout;
+    }
+    return falloutLayer;
+  };
+
   const drawFallout = (ctx: CanvasRenderingContext2D, scale: number): void => {
     const map = runtime.map;
     if (!map || runtime.fallout.size === 0 || scale < BORDER_DETAIL_SCALE) return;
+    const layer = ensureFalloutLayer(map);
+    if (!layer) return;
     const view = runtime.view;
-    const cw = ui.mapCanvas.width;
-    const ch = ui.mapCanvas.height;
-    const x0 = Math.floor(view.x);
-    const y0 = Math.floor(view.y);
-    const x1 = Math.ceil(view.x + cw / scale);
-    const y1 = Math.ceil(view.y + ch / scale);
     ctx.save();
-    for (const ref of runtime.fallout) {
-      const tx = ref % map.width;
-      const ty = (ref / map.width) | 0;
-      if (tx < x0 || tx > x1 || ty < y0 || ty > y1) continue;
-      const sx = (tx - view.x) * scale;
-      const sy = (ty - view.y) * scale;
-      // Deterministic per-tile speckle so the wash reads as radioactive grime,
-      // not a flat fill; cheap integer hash keeps it stable frame-to-frame.
-      const h = ((ref * 2654435761) >>> 0) / 0x100000000;
-      ctx.fillStyle = h < 0.4 ? "rgba(150, 200, 40, 0.55)" : "rgba(120, 160, 30, 0.4)";
-      ctx.fillRect(sx, sy, scale + 1, scale + 1);
-    }
+    ctx.imageSmoothingEnabled = false;
+    ctx.setTransform(scale, 0, 0, scale, -view.x * scale, -view.y * scale);
+    ctx.drawImage(layer, 0, 0);
     ctx.restore();
   };
 
@@ -2738,19 +2937,31 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
    * build hint. Reads out troops, gold and held territory with their growth
    * rates, plus the player's building tallies.
    */
+  // Sidebar panels re-render on every snapshot (10Hz) but their markup rarely
+  // changes; assigning identical innerHTML still tears down and re-parses the
+  // whole subtree — constant layout churn, and any button destroyed between a
+  // click's mousedown and mouseup swallows that click. Skip unchanged markup.
+  // All writes to an element must go through this helper or the cache lies.
+  const htmlCache = new WeakMap<Element, string>();
+  const setHtml = (el: Element, html: string): void => {
+    if (htmlCache.get(el) === html) return;
+    htmlCache.set(el, html);
+    el.innerHTML = html;
+  };
+
   const renderEconomy = (): void => {
     // Only "live" once the start phase is over and we hold land — until then the
     // resource rows show a status hint rather than economy figures.
     updateRatioReadout();
     const live = runtime.spawned && runtime.phase === "playing";
     if (!live) {
-      const hint = "Choose a starting location";
-      ui.goldInfo.innerHTML = `<div class="res-row res-muted">${escapeHtml(hint)}</div>`;
+      setHtml(ui.goldInfo, `<div class="res-row res-muted">Choose a starting location</div>`);
     } else {
       const maxPool = runtime.myMaxTroops;
       const pct = runtime.capturableTotal > 0 ? (runtime.myTiles / runtime.capturableTotal) * 100 : 0;
       const pctStr = pct >= 10 ? String(Math.round(pct)) : pct.toFixed(1);
-      ui.goldInfo.innerHTML =
+      setHtml(
+        ui.goldInfo,
         `<div class="res-row"><span class="res-name">Troops</span>` +
         `<span class="res-val">${formatTroops(runtime.pool)} / ${formatTroops(maxPool)} ` +
         `<span class="res-rate">(+${formatTroopRate(runtime.troopsPerSecond)}/s)</span></span></div>` +
@@ -2763,7 +2974,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         `<span>${iconSvgMarkup("city", 13)} ${runtime.myCities}</span>` +
         `<span>${iconSvgMarkup("port", 13)} ${runtime.myPorts}</span>` +
         `<span>${iconSvgMarkup("fort", 13)} ${runtime.myForts}</span>` +
-        `<span>${iconSvgMarkup("factory", 13)} ${runtime.myFactories}</span></div>`;
+        `<span>${iconSvgMarkup("factory", 13)} ${runtime.myFactories}</span></div>`,
+      );
     }
     refreshBuildMenu();
     refreshWeaponsMenu();
@@ -2771,11 +2983,13 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     // self-explanatory and the panel stays compact (OpenFront-style).
     if (live && runtime.buildMode) {
       const def = BUILDING_DEFS[runtime.buildMode];
-      ui.buildHint.innerHTML =
+      setHtml(
+        ui.buildHint,
         `<strong>Placing ${escapeHtml(def.name)}.</strong> Click a tile you own. ` +
-        `<em>Click the button again to cancel.</em>`;
+          `<em>Click the button again to cancel.</em>`,
+      );
     } else {
-      ui.buildHint.textContent = "";
+      setHtml(ui.buildHint, "");
     }
   };
 
@@ -2793,9 +3007,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       ui.startBanner.classList.add("hidden");
       return;
     }
-    ui.startBanner.innerHTML =
+    setHtml(
+      ui.startBanner,
       `<span class="start-banner-title">Choose a starting location</span>` +
-      `<span class="start-banner-sub">Click anywhere on open land — the battle begins the moment you do.</span>`;
+        `<span class="start-banner-sub">Click anywhere on open land — the battle begins the moment you do.</span>`,
+    );
     ui.startBanner.classList.remove("hidden");
   };
 
@@ -2821,12 +3037,12 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     // build/weapons UI stays out of sight — OpenFront's spawn screen is clean.
     ui.buildSections.classList.toggle("hidden", !runtime.spawned || runtime.phase === "spawn");
     if (!runtime.spawned || runtime.phase === "spawn") {
-      ui.selectionInfo.innerHTML =
+      setHtml(
+        ui.selectionInfo,
         `<strong>Choose a starting location.</strong><br/>` +
-        `<em>Click open land to found your nation — drag to pan, scroll to zoom.</em>`;
-      ui.eventsPanel.innerHTML = runtime.recentEvents
-        .map((ev) => `<div class="event">${escapeHtml(ev)}</div>`)
-        .join("");
+          `<em>Click open land to found your nation — drag to pan, scroll to zoom.</em>`,
+      );
+      setHtml(ui.eventsPanel, runtime.recentEvents.map((ev) => `<div class="event">${escapeHtml(ev)}</div>`).join(""));
       renderActionCards();
       renderLeaderboard();
       return;
@@ -2840,14 +3056,14 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
           ? `<strong>🤝 Allied with ${rel.allies.size} nation${rel.allies.size === 1 ? "" : "s"}.</strong> Allies can't attack each other.<br/>`
           : "";
 
-    ui.selectionInfo.innerHTML =
+    setHtml(
+      ui.selectionInfo,
       diplomacyLine +
-      `<strong>Ships at sea:</strong> ${runtime.myShips} / 3<br/>` +
-      `<em>Click land to expand (across water sends a boat) · right-click for the action menu.</em>`;
+        `<strong>Ships at sea:</strong> ${runtime.myShips} / 3<br/>` +
+        `<em>Click land to expand (across water sends a boat) · right-click for the action menu.</em>`,
+    );
 
-    ui.eventsPanel.innerHTML = runtime.recentEvents
-      .map((ev) => `<div class="event">${escapeHtml(ev)}</div>`)
-      .join("");
+    setHtml(ui.eventsPanel, runtime.recentEvents.map((ev) => `<div class="event">${escapeHtml(ev)}</div>`).join(""));
 
     renderActionCards();
     renderLeaderboard();
@@ -2871,7 +3087,13 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
    * renewal votes. Derived fresh from the snapshot's alliance + proposal lists
    * so the leaderboard can label each rival and pick the right diplomacy action.
    */
+  // Memoised per snapshot (see `onSnapshot`): `drawNames` reads it every frame
+  // and the sidebar renderers several times per snapshot — the Sets/Map only
+  // change when a new snapshot lands.
+  let relCache: DiplomacyState | null = null;
+
   const diplomacyState = (): DiplomacyState => {
+    if (relCache) return relCache;
     const me = runtime.myPlayerId;
     const allies = new Set<number>();
     const incoming = new Set<number>();
@@ -2897,7 +3119,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         if (r.to === me) incomingTargetRequests.add(r.target);
       }
     }
-    return { allies, incoming, outgoing, pacts, embargoed, incomingTargetRequests };
+    relCache = { allies, incoming, outgoing, pacts, embargoed, incomingTargetRequests };
+    return relCache;
   };
 
   /**
@@ -2933,7 +3156,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const rel = diplomacyState();
     const canDiplo = runtime.spawned && runtime.phase === "playing" && !runtime.matchEnded && !runtime.myEliminated && runtime.myPlayerId !== null;
     if (!canDiplo) {
-      ui.actionCards.innerHTML = "";
+      setHtml(ui.actionCards, "");
       return;
     }
 
@@ -2988,7 +3211,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       );
     }
 
-    ui.actionCards.innerHTML = cards.join("");
+    setHtml(ui.actionCards, cards.join(""));
   };
 
   /**
@@ -3010,10 +3233,20 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   const leaderboardValue = (p: RasterPlayerInfo, key: LeaderboardSortKey): number | string =>
     key === "name" ? p.name.toLowerCase() : key === "gold" ? p.gold : key === "max" ? p.maxTroops : p.tiles;
 
-  const renderLeaderboard = (): void => {
+  // The standings' numbers (gold especially) tick every snapshot, so change
+  // detection alone can't stop the 10Hz DOM rebuild — cap the refresh rate
+  // instead. User interactions (sort, expand) bypass the throttle so the
+  // table answers clicks instantly.
+  const LEADERBOARD_REFRESH_MS = 500;
+  let lastLeaderboardRenderMs = -Infinity;
+
+  const renderLeaderboard = (force = false): void => {
+    const now = performance.now();
+    if (!force && now - lastLeaderboardRenderMs < LEADERBOARD_REFRESH_MS) return;
+    lastLeaderboardRenderMs = now;
     const activeAll = runtime.players.filter((p) => !p.eliminated);
     if (activeAll.length === 0) {
-      ui.leaderboard.innerHTML = `<div class="lb-empty">No active players.</div>`;
+      setHtml(ui.leaderboard, `<div class="lb-empty">No active players.</div>`);
       return;
     }
     // The leader crown always tracks territory, whatever the table is sorted by.
@@ -3078,7 +3311,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const leaderOwn = leader && runtime.capturableTotal > 0 ? (leader.tiles / runtime.capturableTotal) * 100 : 0;
     const leaderOwnStr = leaderOwn >= 10 ? `${Math.round(leaderOwn)}%` : `${leaderOwn.toFixed(1)}%`;
     const note = `<div class="lb-note">Win at ${Math.round(WIN_TILE_FRACTION * 100)}% of land — leader holds ${leaderOwnStr}</div>`;
-    ui.leaderboard.innerHTML = header + rows + expander + note;
+    setHtml(ui.leaderboard, header + rows + expander + note);
   };
 
   /** Apply a header click: toggle direction when re-clicking a column, else sort by it. */
@@ -3087,7 +3320,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     // Numeric columns default to descending (biggest first); name to ascending.
     if (cur.key === key) cur.dir = cur.dir === 1 ? -1 : 1;
     else runtime.leaderboardSort = { key, dir: key === "name" ? 1 : -1 };
-    renderLeaderboard();
+    renderLeaderboard(true);
   };
 
   // ---- Input -----------------------------------------------------------
@@ -3944,7 +4177,7 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     }
     if (node?.closest("button[data-lb-expand]")) {
       runtime.leaderboardExpanded = !runtime.leaderboardExpanded;
-      renderLeaderboard();
+      renderLeaderboard(true);
       return;
     }
     const row = node?.closest<HTMLElement>("[data-focus-player]");
@@ -3989,6 +4222,21 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   // Match the canvas backing store to its rendered size now and whenever the
   // window changes, so the map fills the available play area at all times.
   window.addEventListener("resize", resizeCanvas);
+  // `devicePixelRatio` can change with no resize event (dragging the window to
+  // a monitor with a different DPR keeps the CSS size identical), leaving the
+  // canvas backing store at the wrong scale — blurry and mis-hit-tested until
+  // the next real resize. A matchMedia query on the *current* ratio fires once
+  // when it stops matching; re-arm on each change.
+  const watchDpr = (): void => {
+    if (typeof window.matchMedia !== "function") return;
+    window
+      .matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
+      .addEventListener("change", () => {
+        resizeCanvas();
+        watchDpr();
+      }, { once: true });
+  };
+  watchDpr();
   resizeCanvas();
 
   requestAnimationFrame(renderFrame);

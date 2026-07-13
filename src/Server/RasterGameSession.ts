@@ -28,6 +28,15 @@ import { LAND_ATTACK_REACH, SPAWN_BLOB_RADIUS, SPAWN_IMMUNITY_SECONDS, WIN_TILE_
 import { NUKE_DEFS, nukeCost, SILO_RELOAD_TICKS, type NukeKind } from "../Core/nukes.js";
 import { BUILDING_CONSTRUCTION_TICKS, BUILDING_DEFS, buildingCost, COASTAL_BUILDING_TYPES, COASTAL_SNAP_RADIUS, CONQUER_GOLD_FRACTION_AI, CONQUER_GOLD_FRACTION_HUMAN, costCounterTypes, STRUCTURE_MIN_DIST, UPGRADABLE_BUILDING_TYPES } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
+
+/**
+ * How many relay turns the resume/replay history may hold before it is
+ * dropped (see {@link RasterGameSession.turnLogTruncated}): 30 minutes at the
+ * simulation tick rate. Beyond this a disconnected player can no longer
+ * rejoin (their replica would have to replay the whole match), but the
+ * server stops accruing unbounded per-turn command history.
+ */
+const RESUME_HISTORY_MAX_TURNS = 30 * 60 * SIMULATION_TICK_RATE;
 import { RASTER_EMOJIS, type RasterDifficulty } from "../Core/messages.js";
 import { IDENTITY_MODIFIERS } from "../Core/playerModifiers.js";
 import {
@@ -81,12 +90,18 @@ interface RasterSubscriber {
    */
   kind: RasterPlayerKind;
   /**
-   * Per-subscriber owner baseline: the ownership raster this client last
-   * received. Owner snapshots after the first are encoded as a delta against
-   * this array, which is then advanced to match. `null` until the first
-   * (full-owner) snapshot is sent. Always `null` for headless subscribers.
+   * Whether this client has received an ownership raster to delta against.
+   * The baseline itself is a single session-wide array (see
+   * {@link RasterGameSession.lastBroadcastOwner}): every in-sync subscriber
+   * receives the identical per-tick delta, so keeping (and diffing) a private
+   * 2-bytes-per-tile baseline per client was pure duplication — O(map) memory
+   * and an O(map) scan per client per tick. `false` until the first
+   * (full-owner) snapshot is sent; that full send brings the client level with
+   * the shared baseline (deltas are absolute `(index, owner)` records, so a
+   * client that is *ahead* of the baseline mid-cycle just re-applies values it
+   * already has). Always `false` for headless subscribers.
    */
-  lastOwner: Uint16Array | null;
+  hasOwnerBaseline: boolean;
   /**
    * Lockstep subscriber: simulates locally off the relayed turn stream. Gets
    * `SERVER_RASTER_TURN` messages only — no snapshots, no rejections, no
@@ -308,6 +323,14 @@ export class RasterGameSession {
   private readonly terrainBase64: string;
   private readonly playerMeta = new Map<PlayerId, PlayerMeta>();
   private readonly subscribers = new Map<string, RasterSubscriber>();
+  /**
+   * Session-wide owner baseline for delta encoding (see
+   * {@link RasterSubscriber.hasOwnerBaseline}): the raster as of the last
+   * broadcast that computed a delta. One array and one O(map) diff per tick
+   * serve every subscriber. `null` until the first broadcast with a raster
+   * subscriber seeds it.
+   */
+  private lastBroadcastOwner: Uint16Array | null = null;
   private readonly pendingExpands: PendingExpand[] = [];
   private readonly pendingBuilds: PendingBuild[] = [];
   private readonly pendingNukes: PendingNuke[] = [];
@@ -355,6 +378,14 @@ export class RasterGameSession {
    * by construction, a complete replay of the match.
    */
   private readonly turnLog: RasterTurn[] = [];
+  /**
+   * Set once the log outgrew {@link RESUME_HISTORY_MAX_TURNS} and was dropped.
+   * The log exists solely so a reconnecting client can replay the match from
+   * tick 0; without a cap an hours-long lockstep match accumulates every
+   * command of up to 408 seats forever. Past the cap the match keeps running
+   * normally — only the resume affordance is given up.
+   */
+  private turnLogTruncated = false;
   private matchEndedBroadcast = false;
   /**
    * The match's winner once decided, including a timeLimit finish (where
@@ -551,7 +582,7 @@ export class RasterGameSession {
       hasTerrain: false,
       wantsRaster,
       kind,
-      lastOwner: null,
+      hasOwnerBaseline: false,
       lockstep,
     };
     this.subscribers.set(clientId, subscriber);
@@ -677,16 +708,26 @@ export class RasterGameSession {
     };
     this.recordedCommands = [];
     this.turnCounter += 1;
-    this.turnLog.push(turn);
+    if (!this.turnLogTruncated) {
+      this.turnLog.push(turn);
+      if (this.turnLog.length > RESUME_HISTORY_MAX_TURNS) {
+        this.turnLog.length = 0;
+        this.turnLogTruncated = true;
+      }
+    }
     this.turnListener?.(turn);
     for (const sub of this.subscribers.values()) {
       if (sub.lockstep) sub.send({ type: "SERVER_RASTER_TURN", payload: turn });
     }
   }
 
-  /** The full relay-turn history (resume backlog / replay source). */
-  public turnBacklog(): readonly RasterTurn[] {
-    return this.turnLog;
+  /**
+   * The full relay-turn history (resume backlog / replay source), or `null`
+   * once the match outlived {@link RESUME_HISTORY_MAX_TURNS} and the history
+   * was dropped — a replay from tick 0 is no longer possible.
+   */
+  public turnBacklog(): readonly RasterTurn[] | null {
+    return this.turnLogTruncated ? null : this.turnLog;
   }
 
   /**
@@ -2068,8 +2109,31 @@ export class RasterGameSession {
     const shared = this.buildSharedBody();
     let fullOwnerCache: string | undefined;
     const fullOwner = (): string => (fullOwnerCache ??= encodeOwners(this.grid.owner));
+
+    // The per-tick owner delta is identical for every in-sync raster
+    // subscriber, so diff the raster against the session baseline exactly once
+    // per tick and fan the encoded payload out — not once per client.
+    let tickDelta: string | undefined;
+    let anyRaster = false;
+    for (const s of this.subscribers.values()) {
+      if (s.wantsRaster && !s.lockstep) {
+        anyRaster = true;
+        break;
+      }
+    }
+    if (anyRaster) {
+      const owner = this.grid.owner;
+      if (this.lastBroadcastOwner === null) {
+        this.lastBroadcastOwner = Uint16Array.from(owner);
+      } else {
+        const { deltaBase64, changed } = encodeOwnerDelta(this.lastBroadcastOwner, owner);
+        // 6 bytes/change vs 2 bytes/tile full: a delta only wins below ~1/3 churn.
+        if (deltaBase64 !== null && changed * 3 <= owner.length) tickDelta = deltaBase64;
+      }
+    }
+
     for (const subscriber of this.subscribers.values()) {
-      this.sendSnapshotTo(subscriber, shared, fullOwner);
+      this.sendSnapshotTo(subscriber, shared, fullOwner, tickDelta);
     }
   }
 
@@ -2089,6 +2153,7 @@ export class RasterGameSession {
     subscriber: RasterSubscriber,
     shared: RasterSnapshot = this.buildSharedBody(),
     fullOwner: () => string = () => encodeOwners(this.grid.owner),
+    tickDelta?: string,
   ): void {
     // Lockstep subscribers render from their own replica — the referee ships
     // them turns only, never snapshots.
@@ -2100,20 +2165,18 @@ export class RasterGameSession {
     }
 
     const includeTerrain = !subscriber.hasTerrain;
-    const owner = this.grid.owner;
 
-    // Owner encoding: the first snapshot (and any with no baseline yet) carries
-    // the full raster and seeds the baseline. Later snapshots send only the
-    // tiles that changed — unless the churn is so high that a full resend would
-    // be smaller, in which case we resend in full. encodeOwnerDelta advances the
-    // baseline in place either way, so it stays in sync even on a full resend.
+    // Owner encoding: the first snapshot carries the full raster (bringing the
+    // client level with — or ahead of — the shared session baseline); later
+    // broadcasts attach the shared per-tick delta computed once in
+    // `broadcastSnapshots`. A one-off send outside the broadcast loop (on
+    // subscribe, on spawn pick) has no tick delta and simply sends full —
+    // delta records are absolute `(index, owner)` pairs, so a client ahead of
+    // the baseline stays correct when the next broadcast delta re-covers
+    // ground it already has.
     let ownerDeltaBase64: string | undefined;
-    if (subscriber.lastOwner === null) {
-      subscriber.lastOwner = Uint16Array.from(owner);
-    } else {
-      const { deltaBase64, changed } = encodeOwnerDelta(subscriber.lastOwner, owner);
-      // 6 bytes/change vs 2 bytes/tile full: a delta only wins below ~1/3 churn.
-      if (changed * 3 <= owner.length) ownerDeltaBase64 = deltaBase64;
+    if (subscriber.hasOwnerBaseline && tickDelta !== undefined) {
+      ownerDeltaBase64 = tickDelta;
     }
 
     const snapshot = attachOwnership(shared, {
@@ -2126,5 +2189,6 @@ export class RasterGameSession {
     if (includeTerrain) {
       subscriber.hasTerrain = true;
     }
+    subscriber.hasOwnerBaseline = true;
   }
 }

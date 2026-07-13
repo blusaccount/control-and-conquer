@@ -151,15 +151,25 @@ const transport = netParam === "lockstep" ? "lockstep" as const
 // ---------------------------------------------------------------------------
 const recordStats = document.querySelector<HTMLDivElement>("#recordStats");
 if (recordStats) {
-  const history = loadRunHistory(localStorage);
+  // Accessing `localStorage` itself throws when storage is blocked (sandboxed
+  // iframe, cookies disabled) — and this runs at module top level, where an
+  // uncaught throw would kill the whole app before first paint.
+  let history: ReturnType<typeof loadRunHistory> = [];
+  try {
+    history = loadRunHistory(localStorage);
+  } catch {
+    // No storage — show a blank record.
+  }
   const wins = history.filter((r) => r.won).length;
   let streak = 0;
   for (let i = history.length - 1; i >= 0 && history[i].won; i -= 1) streak += 1;
   const peak = history.reduce((max, r) => Math.max(max, r.peakTiles), 0);
+  // Total matches = the latest run number, not the (capped-at-25) history length.
+  const matches = history.length > 0 ? history[history.length - 1].run : 0;
   const stat = (value: string, label: string): string =>
     `<div class="stat"><b>${value}</b><span>${label}</span></div>`;
   recordStats.innerHTML =
-    stat(String(history.length), "matches") +
+    stat(String(matches), "matches") +
     stat(String(wins), "wins") +
     stat(String(streak), "win streak") +
     stat(peak >= 1000 ? `${(peak / 1000).toFixed(1)}k` : String(peak), "peak tiles");
@@ -182,9 +192,16 @@ const escapeHtml = (value: string): string =>
   value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 let latestLobbies: LobbyDirectoryEntry[] = [];
+let renderedLobbiesKey = "";
 
 const renderLobbies = (): void => {
   if (!lobbyRows) return;
+  // Skip the rebuild when nothing changed: replacing identical innerHTML every
+  // 3s poll re-parses the list and destroys the Join button under the user's
+  // cursor mid-click.
+  const key = JSON.stringify(latestLobbies);
+  if (key === renderedLobbiesKey) return;
+  renderedLobbiesKey = key;
   if (latestLobbies.length === 0) {
     lobbyRows.innerHTML =
       `<div class="lob-empty">No open lobbies right now — create one and invite the world, ` +
@@ -335,7 +352,7 @@ const joinByCode = (code: string): void => {
 lobbyEls.join?.addEventListener("click", () => {
   const code = lobbyEls.codeInput?.value.trim().toUpperCase() ?? "";
   if (!LOBBY_CODE_PATTERN.test(code)) {
-    setMenuStatus("Enter the 6-character lobby code.");
+    setMenuStatus("Enter the lobby code from your invite (4–8 letters or digits).");
     return;
   }
   joinByCode(code);

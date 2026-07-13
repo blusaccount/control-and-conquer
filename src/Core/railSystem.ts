@@ -34,6 +34,9 @@ import {
   type RailStation,
 } from "./railNetwork.js";
 
+/** How often (in ticks) the station set is re-checked and the network rebuilt. */
+const RAIL_SYNC_INTERVAL_TICKS = 10;
+
 /** A train riding the network from station `from` toward station `to`. */
 interface Train {
   id: number;
@@ -46,6 +49,13 @@ interface Train {
   progress: number;
   /** Stations reached so far; the train retires at {@link TRAIN_MAX_VISITS}. */
   visits: number;
+  /**
+   * *Paying* stops (city/port) banked so far — the decay counter `trainGold`
+   * documents. Tracked separately from `visits`: a route threading factories
+   * must not decay its payout (or reach retirement pay) faster than the
+   * documented per-paying-stop model.
+   */
+  paidStops: number;
 }
 
 /** Wire-ready view of one rail link: its owner and the corner points to draw. */
@@ -102,7 +112,11 @@ export class RailSystem {
    * the fixed cadence. `tick` is the simulation tick being processed.
    */
   advance(tick: number): void {
-    this.sync();
+    // Re-derive the network at most every RAIL_SYNC_INTERVAL_TICKS: a station
+    // owner flipping every tick during a border war would otherwise trigger a
+    // full (A*-heavy) rebuild per tick. Track appearing up to a second late is
+    // invisible in play; the deterministic tick gate keeps replicas identical.
+    if (tick % RAIL_SYNC_INTERVAL_TICKS === 0 || this.signature === "") this.sync();
     if (this.network.edges.length === 0) {
       this.trains.length = 0;
       return;
@@ -195,15 +209,16 @@ export class RailSystem {
         if (RAIL_PAYOUT_TYPES.includes(arrivedType)) {
           const stationOwner = this.grid.ownerOf(train.to);
           if (stationOwner === train.owner) {
-            this.grid.addGold(train.owner, trainGold(train.visits, TRAIN_GOLD_SELF_BASE));
+            this.grid.addGold(train.owner, trainGold(train.paidStops, TRAIN_GOLD_SELF_BASE));
           } else if (!this.isEmbargoed(train.owner, stationOwner)) {
             const base = this.isAllied(train.owner, stationOwner)
               ? TRAIN_GOLD_ALLY_BASE
               : TRAIN_GOLD_OTHER_BASE;
-            const gold = trainGold(train.visits, base);
+            const gold = trainGold(train.paidStops, base);
             this.grid.addGold(train.owner, gold);
             this.grid.addGold(stationOwner, gold);
           }
+          train.paidStops += 1;
         }
         train.visits += 1;
         if (train.visits >= TRAIN_MAX_VISITS) continue;
@@ -285,7 +300,7 @@ export class RailSystem {
 
       const neighbors = [...this.network.adjacency.get(factory)!].sort((a, b) => a - b);
       const to = neighbors[tick % neighbors.length];
-      this.trains.push({ id: this.nextTrainId++, owner, from: factory, to, progress: 0, visits: 0 });
+      this.trains.push({ id: this.nextTrainId++, owner, from: factory, to, progress: 0, visits: 0, paidStops: 0 });
       this.trainRejections.set(factory, 0);
       this.lastTrainSpawn.set(factory, tick);
       liveByOwner.set(owner, (liveByOwner.get(owner) ?? 0) + 1);

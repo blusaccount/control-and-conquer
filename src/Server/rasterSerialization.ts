@@ -58,7 +58,16 @@ export const encodeTerrain = (map: GameMap): { terrainBase64: string; terrainHas
  * little-endian explicitly so the client decoder doesn't depend on the host's
  * native byte order (browsers can disagree with the server's V8).
  */
+const HOST_IS_LE = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
+
 export const encodeOwners = (owner: ArrayLike<number>): string => {
+  // On little-endian hosts (every platform Node or a browser ships on) the
+  // typed array's backing bytes already *are* the wire format — reinterpret
+  // instead of copying 2.5M elements through a DataView. The DataView path
+  // remains as the big-endian fallback.
+  if (HOST_IS_LE && owner instanceof Uint16Array) {
+    return bytesToBase64(new Uint8Array(owner.buffer, owner.byteOffset, owner.byteLength));
+  }
   const bytes = new Uint8Array(owner.length * 2);
   const view = new DataView(bytes.buffer);
   for (let i = 0; i < owner.length; i += 1) {
@@ -77,7 +86,7 @@ export const encodeOwners = (owner: ArrayLike<number>): string => {
 export const encodeOwnerDelta = (
   prev: Uint16Array,
   curr: ArrayLike<number>,
-): { deltaBase64: string; changed: number } => {
+): { deltaBase64: string | null; changed: number } => {
   // Single pass over the raster: collect the changed indices, then size and fill
   // the buffer from that list. The previous two-pass form scanned the whole
   // (up-to-1.6M-tile) array twice per tick just to learn the change count first.
@@ -85,6 +94,13 @@ export const encodeOwnerDelta = (
   for (let i = 0; i < curr.length; i += 1) if (prev[i] !== curr[i]) indices.push(i);
 
   const changed = indices.length;
+  // 6 bytes/change vs 2 bytes/tile full: past ~1/3 churn every caller falls
+  // back to a full resend, so don't encode a multi-MB delta that would only be
+  // discarded — just advance the baseline and say how much changed.
+  if (changed * 3 > curr.length) {
+    for (const i of indices) prev[i] = curr[i];
+    return { deltaBase64: null, changed };
+  }
   const bytes = new Uint8Array(changed * 6);
   const view = new DataView(bytes.buffer);
   for (let k = 0; k < changed; k += 1) {
@@ -106,6 +122,21 @@ export const encodeTileList = (refs: readonly number[]): string => {
   const view = new DataView(bytes.buffer);
   for (let i = 0; i < refs.length; i += 1) view.setUint32(i * 4, refs[i], true);
   return bytesToBase64(bytes);
+};
+
+// The fallout list only changes on a detonation or a conquest of irradiated
+// ground, but it is serialized every broadcast tick — and after a nuclear
+// exchange it can be tens of thousands of refs. `TerritoryGrid.falloutTiles`
+// returns a stable array identity while unchanged, so memoise the encoding by
+// identity (WeakMap keeps retired arrays collectable).
+const tileListEncodeCache = new WeakMap<readonly number[], string>();
+const encodeTileListCached = (refs: readonly number[]): string => {
+  let encoded = tileListEncodeCache.get(refs);
+  if (encoded === undefined) {
+    encoded = encodeTileList(refs);
+    tileListEncodeCache.set(refs, encoded);
+  }
+  return encoded;
 };
 
 /** Per-player metadata needed to build a `RasterPlayerInfo`. */
@@ -149,7 +180,7 @@ export interface BuildSnapshotInput {
   /** Warheads shot down by a SAM Launcher this tick (for the interception flash). */
   nukeInterceptions?: RasterNukeInterception[];
   /** Tile indices currently under fallout (for the lingering radioactive tint). */
-  falloutTiles?: number[];
+  falloutTiles?: readonly number[];
   /** Active land-attack fronts this tick (for the on-map troop-count labels). */
   fronts: RasterAttackFront[];
   /** Auto-routed railroads this snapshot (for the client to draw track). */
@@ -275,7 +306,7 @@ export const buildSharedSnapshot = (input: BuildSnapshotInput): RasterSnapshot =
     nukes,
     nukeDetonations,
     nukeInterceptions,
-    ...(falloutTiles.length > 0 ? { falloutBase64: encodeTileList(falloutTiles) } : { falloutBase64: "" }),
+    ...(falloutTiles.length > 0 ? { falloutBase64: encodeTileListCached(falloutTiles) } : { falloutBase64: "" }),
     buildings,
     rails,
     trains,

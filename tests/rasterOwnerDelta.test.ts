@@ -15,16 +15,30 @@ const applyDelta = (mirror: Uint16Array, deltaBase64: string): void => {
 };
 
 test("encodeOwnerDelta encodes only changed tiles and advances the baseline", () => {
-  const prev = new Uint16Array([0, 0, 0, 0, 0]);
-  const curr = new Uint16Array([0, 5, 0, 7, 0]);
+  const prev = new Uint16Array(12);
+  const curr = Uint16Array.from(prev);
+  curr[1] = 5;
+  curr[7] = 7;
   const mirror = Uint16Array.from(prev);
 
   const { deltaBase64, changed } = encodeOwnerDelta(prev, curr);
   assert.equal(changed, 2, "two tiles changed");
+  assert.ok(deltaBase64 !== null, "low churn yields an encoded delta");
 
-  applyDelta(mirror, deltaBase64);
+  applyDelta(mirror, deltaBase64!);
   assert.deepEqual(Array.from(mirror), Array.from(curr), "delta reconstructs curr");
   assert.deepEqual(Array.from(prev), Array.from(curr), "baseline advanced in place");
+});
+
+test("encodeOwnerDelta skips encoding past 1/3 churn but still advances the baseline", () => {
+  const prev = new Uint16Array(12);
+  const curr = Uint16Array.from(prev);
+  for (let i = 0; i < 5; i += 1) curr[i] = i + 1; // 5 of 12 changed (> 1/3)
+
+  const { deltaBase64, changed } = encodeOwnerDelta(prev, curr);
+  assert.equal(changed, 5);
+  assert.equal(deltaBase64, null, "high churn returns no delta (callers resend in full)");
+  assert.deepEqual(Array.from(prev), Array.from(curr), "baseline still advanced in place");
 });
 
 test("a stream of deltas keeps a mirror in sync with the source", () => {
@@ -35,7 +49,7 @@ test("a stream of deltas keeps a mirror in sync with the source", () => {
   for (const [i, v] of [[3, 1], [3, 2], [10, 4], [3, 4], [19, 9]] as [number, number][]) {
     source[i] = v;
     const { deltaBase64 } = encodeOwnerDelta(baseline, source);
-    applyDelta(mirror, deltaBase64);
+    applyDelta(mirror, deltaBase64!);
     assert.deepEqual(Array.from(mirror), Array.from(source));
   }
 });

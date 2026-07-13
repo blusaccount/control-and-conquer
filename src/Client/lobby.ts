@@ -66,7 +66,12 @@ export const connectLobby = (hooks: LobbyHooks): LobbyClient => {
   });
   socket.addEventListener("message", (event) => {
     if (handedOver) return;
-    const message = JSON.parse(String(event.data)) as RasterServerMessage;
+    let message: RasterServerMessage;
+    try {
+      message = JSON.parse(String(event.data)) as RasterServerMessage;
+    } catch {
+      return; // A malformed frame must not kill the listener.
+    }
     if (message.type === "SERVER_RASTER_LOBBY_STATE") {
       hooks.onState(message.payload);
     } else if (message.type === "SERVER_RASTER_LOBBY_ERROR") {

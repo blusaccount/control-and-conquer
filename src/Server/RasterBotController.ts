@@ -268,6 +268,32 @@ export class RasterBotController {
   private readonly kindOf = new Map<PlayerId, RasterPlayerKind>();
 
   /**
+   * Per-decision memo of `grid.frontierTargets(me)` — a full perimeter walk
+   * plus a budgeted sea BFS that several decision helpers (attack choice,
+   * military builds, nuke targeting, diplomacy) each used to recompute. The
+   * grid can't change mid-decision (bot orders are queued, applied next tick),
+   * so one computation per decision is exact. Keyed by decision tick.
+   */
+  private frontierCache: { tick: number; targets: Array<{ target: PlayerId; tiles: number; sample: TileRef }> } | null = null;
+
+  /** Per-decision memo of the bot's own sorted tile list (see {@link frontierCache}). */
+  private myTilesCache: { tick: number; tiles: TileRef[] } | null = null;
+
+  private cachedFrontierTargets(grid: TerritoryGrid): Array<{ target: PlayerId; tiles: number; sample: TileRef }> {
+    if (this.frontierCache?.tick !== this.lastDecisionTick) {
+      this.frontierCache = { tick: this.lastDecisionTick, targets: grid.frontierTargets(this.myPlayerId!) };
+    }
+    return this.frontierCache.targets;
+  }
+
+  private cachedMyTiles(grid: TerritoryGrid): TileRef[] {
+    if (this.myTilesCache?.tick !== this.lastDecisionTick) {
+      this.myTilesCache = { tick: this.lastDecisionTick, tiles: grid.tilesOf(this.myPlayerId!) };
+    }
+    return this.myTilesCache.tiles;
+  }
+
+  /**
    * The bot reinvests in a city once it holds at least this much land — early
    * game it pours everything into expansion; a maturing empire banks gold into
    * structures that compound its economy.
@@ -353,14 +379,26 @@ export class RasterBotController {
     // ticks: who hit us last (the retaliation target) and whether any warhead
     // has flown yet this match (the cue to stand up SAM cover) — a short
     // flight between two throttled decisions must not go unnoticed.
-    const mine = snapshot.players.find((p) => p.playerId === this.myPlayerId);
+    // Players arrive sorted by id and ids are dense, so the direct index hit
+    // almost always lands — the O(players) find is only a fallback. With a
+    // 400-seat field, every bot scanning the player list every tick was
+    // O(seats²) per tick before its decision throttle even applied.
+    const guess = snapshot.players[this.myPlayerId - 1];
+    const mine = guess?.playerId === this.myPlayerId
+      ? guess
+      : snapshot.players.find((p) => p.playerId === this.myPlayerId);
     if (mine) this.lastAttackedBy = mine.lastAttackedBy;
     if (!this.nukesSeen && (snapshot.nukes.length > 0 || snapshot.nukeDetonations.length > 0)) {
       this.nukesSeen = true;
     }
     // Public player classes (as in OpenFront's player overlay): a nation farms
     // a bordering tribe with a proportional strike rather than its full army.
-    for (const p of snapshot.players) this.kindOf.set(p.playerId, p.kind);
+    // A seat's kind never changes, so only record ids we haven't seen.
+    if (this.kindOf.size !== snapshot.players.length) {
+      for (const p of snapshot.players) {
+        if (!this.kindOf.has(p.playerId)) this.kindOf.set(p.playerId, p.kind);
+      }
+    }
 
     // Throttle decisions (and the work behind them) to the personality cadence.
     if (snapshot.tick - this.lastDecisionTick < this.config.personality.decisionCooldownTicks) return;
@@ -474,8 +512,7 @@ export class RasterBotController {
 
     // 1) Defense posts where a non-allied rival presses our border.
     const alliances = session.peekAlliances();
-    const hostiles = grid
-      .frontierTargets(me)
+    const hostiles = this.cachedFrontierTargets(grid)
       .filter((t) => t.target !== NEUTRAL_PLAYER && !alliances.areAllied(me, t.target));
     if (hostiles.length > 0) {
       const samples = hostiles.map((t) => [map.x(t.sample), map.y(t.sample)] as const);
@@ -592,7 +629,7 @@ export class RasterBotController {
     const myPool = grid.troopsOf(me);
     let foe: PlayerId | null = null;
     let foePool = -1;
-    for (const t of grid.frontierTargets(me)) {
+    for (const t of this.cachedFrontierTargets(grid)) {
       if (!worthIt(t.target)) continue;
       const pool = grid.troopsOf(t.target);
       if (pool > foePool) {
@@ -631,11 +668,11 @@ export class RasterBotController {
   private pickNukeAim(grid: TerritoryGrid, map: GameMap, target: PlayerId): TileRef | null {
     const me = this.myPlayerId;
     if (me === null) return null;
-    const tiles = grid.tilesOf(target);
+    const tiles = grid.tilesViewOf(target);
     const total = grid.tileCountOf(target);
     if (total === 0) return null;
     // Our reference point: the shared frontier toward the victim, if any.
-    const front = grid.frontierTargets(me).find((t) => t.target === target);
+    const front = this.cachedFrontierTargets(grid).find((t) => t.target === target);
     const refX = front ? map.x(front.sample) : null;
     const refY = front ? map.y(front.sample) : null;
 
@@ -713,7 +750,7 @@ export class RasterBotController {
     }
     const minSq = STRUCTURE_MIN_DIST * STRUCTURE_MIN_DIST;
 
-    for (const ref of grid.tilesOf(me)) {
+    for (const ref of this.cachedMyTiles(grid)) {
       if (grid.hasBuilding(ref) || !eligible(ref)) continue;
       const x = map.x(ref);
       const y = map.y(ref);
@@ -797,7 +834,7 @@ export class RasterBotController {
     }
     if (kind === "bot") return;
 
-    const bordering = grid.frontierTargets(me).filter((t) => t.target !== NEUTRAL_PLAYER);
+    const bordering = this.cachedFrontierTargets(grid).filter((t) => t.target !== NEUTRAL_PLAYER);
 
     // 3) Defensive bots sue for peace with a clearly stronger bordering rival.
     if (p.aggression < 0.5) {
@@ -817,7 +854,7 @@ export class RasterBotController {
 
     // 4) Betrayal — only for the ruthless, and only when fully hemmed in by allies.
     if (p.aggression >= 0.9) {
-      const hasOpenTarget = grid.frontierTargets(me).some(
+      const hasOpenTarget = this.cachedFrontierTargets(grid).some(
         (t) => t.target === NEUTRAL_PLAYER || !alliances.areAllied(me, t.target),
       );
       if (hasOpenTarget) return;
@@ -881,7 +918,7 @@ export class RasterBotController {
     if (me === null || !session) return;
     const alliances = session.peekAlliances();
 
-    const targets = grid.frontierTargets(me);
+    const targets = this.cachedFrontierTargets(grid);
     if (targets.length === 0) return;
 
     // Prefer cheap neutral land whenever it borders us (OpenFront's terraNullius
@@ -964,7 +1001,7 @@ export class RasterBotController {
     const pool = grid.troopsOf(me);
     const alliances = session.peekAlliances();
 
-    const targets = grid.frontierTargets(me);
+    const targets = this.cachedFrontierTargets(grid);
     if (targets.length === 0) return; // Fully boxed in — nothing reachable; bank income.
 
     const neutral = targets.find((t) => t.target === NEUTRAL_PLAYER) ?? null;

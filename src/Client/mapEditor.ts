@@ -67,7 +67,6 @@ export interface MapEditorOptions {
 /** Wire the map-editor panel in the main menu. Safe no-op if the markup is absent. */
 export const initMapEditor = (options: MapEditorOptions): void => {
   const els = {
-    toggle: document.querySelector<HTMLButtonElement>("#editorToggleButton"),
     panel: document.querySelector<HTMLDivElement>("#editorPanel"),
     name: document.querySelector<HTMLInputElement>("#editorNameInput"),
     size: document.querySelector<HTMLSelectElement>("#editorSizeSelect"),
@@ -287,12 +286,6 @@ export const initMapEditor = (options: MapEditorOptions): void => {
   };
 
   // --- actions ---------------------------------------------------------------
-  els.toggle?.addEventListener("click", () => {
-    const hidden = els.panel!.classList.toggle("hidden");
-    els.toggle!.textContent = hidden ? "Open map editor" : "Close map editor";
-    if (!hidden) requestRender();
-  });
-
   els.exportBtn?.addEventListener("click", () => {
     try {
       const file = serializeValidated();
