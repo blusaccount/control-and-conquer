@@ -246,3 +246,51 @@ test("a coastal nation floats at most one patrol warship (the 1-in-50 roll)", ()
     assert.ok(session.peekWarshipCount(b.getPlayerId()!) <= 1, "no nation floats more than one patrol warship");
   }
 });
+
+test("the anti-human throttle: an easy nation holds back where hard does not", () => {
+  // OpenFront's shouldAttack: Easy follows through on 1-in-4 attack decisions
+  // against a human, Hard on all of them. Same board, same seed — the only
+  // variable is the difficulty, so the attack-order counts must sit far apart.
+  const countAttacks = (difficulty: "easy" | "hard"): number => {
+    const W = 60;
+    const H = 20;
+    const flat = buildTerrainFromMask({
+      width: W, height: H,
+      land: new Uint8Array(W * H).fill(1),
+      elevation: new Uint8Array(W * H),
+    });
+    const session = new RasterGameSession({ prebuiltMap: flat, spawnPhaseTicks: 0 });
+    session.subscribe("human", noop); // player 1
+    const bot = new RasterBotController({ botId: "throttle", kind: "nation", difficulty, seed: 5 });
+    bot.attach(session); // player 2
+    const p2 = bot.getPlayerId()!;
+    const grid = session.peekGrid();
+    session.tick();
+    for (let y = 0; y < H; y += 1) {
+      for (let x = 0; x < W; x += 1) grid.claim(y * W + x, x < 30 ? 1 : p2);
+    }
+
+    let attacks = 0;
+    const orig = session.queueExpand.bind(session);
+    (session as unknown as { queueExpand: typeof session.queueExpand }).queueExpand = (cid, intent) => {
+      if (cid === "throttle") attacks += 1;
+      return orig(cid, intent);
+    };
+    for (let i = 0; i < 4000; i += 1) {
+      // Hold the board stationary: the human stays weak but never dies, the
+      // nation always has the pool for a strike.
+      grid.setTroops(1, 5_000);
+      grid.setTroops(p2, 200_000);
+      if (i % 25 === 0) {
+        for (let y = 0; y < H; y += 1) for (let x = 0; x < 30; x += 1) grid.claim(y * W + x, 1);
+      }
+      session.tick();
+    }
+    return attacks;
+  };
+
+  const easy = countAttacks("easy");
+  const hard = countAttacks("hard");
+  assert.ok(easy >= 1, `even easy nations attack humans sometimes (saw ${easy})`);
+  assert.ok(easy * 2 < hard, `easy holds back vs hard (easy ${easy}, hard ${hard})`);
+});

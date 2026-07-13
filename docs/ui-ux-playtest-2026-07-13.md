@@ -154,6 +154,14 @@ idle-observe the economy) was attacked and fully eliminated by bots within
 reading the UI. Worth considering a grace period or gentler early aggression
 on easy.
 
+> **Post-script:** the AI has since been rebuilt on OpenFront's exact
+> balancing (see `docs/ai-openfront-parity.md`). Easy nations now follow
+> through on only ~1 in 4 attack decisions against humans (measured 21% vs
+> 90% on hard in a controlled scenario). A *tiny* idle nation can still fall
+> — tribes poke random neighbours and boat probes are unthrottled, exactly
+> as upstream — so this is now faithful behaviour rather than a local
+> balance quirk.
+
 ### 7. (Cosmetic) Eliminated player's HUD keeps a live troop pool
 After elimination the control panel shows the dead nation still regenerating
 troops ("1.74K / 10.0K (+266/s)" with Land 0.0%) — sim values for a seat that
