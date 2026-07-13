@@ -588,6 +588,27 @@ export class RasterConflict {
     return (this.traitorUntil.get(player) ?? 0) > this.tickCount;
   }
 
+  /**
+   * Active land attacks currently pressing `defender`: each front's attacker
+   * and its remaining committed troops. Drives the AI's retaliation pick
+   * (largest incoming attack), the "victim" pile-on check and the reactive
+   * defense-post trigger — the same reads OpenFront's `incomingAttacks()` serves.
+   */
+  incomingAttacksOf(defender: PlayerId): Array<{ attacker: PlayerId; troops: number }> {
+    const out: Array<{ attacker: PlayerId; troops: number }> = [];
+    for (const a of this.attacks) {
+      if (a.target === defender) out.push({ attacker: a.attacker, troops: a.committed });
+    }
+    return out;
+  }
+
+  /** Troops `attacker` currently has committed across all outgoing land fronts. */
+  outgoingAttackTroopsOf(attacker: PlayerId): number {
+    let sum = 0;
+    for (const a of this.attacks) if (a.attacker === attacker) sum += a.committed;
+    return sum;
+  }
+
   launchAttack(intent: AttackIntent): AttackRejectReason | null {
     const { attacker, target, troops } = intent;
 

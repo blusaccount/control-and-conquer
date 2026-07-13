@@ -3,316 +3,194 @@ import type { GameMap, TileRef } from "../Core/GameMap.js";
 import { NEUTRAL_PLAYER, type PlayerId, type TerritoryGrid } from "../Core/TerritoryGrid.js";
 import { maxTroops } from "../Core/rasterCombatConfig.js";
 import { ALLIANCE_RENEWAL_WINDOW_TICKS } from "../Core/alliances.js";
+import { Prng } from "../Core/prng.js";
+import {
+  ASSIST_FAVOR_COST,
+  RELATION_FRIENDLY,
+  RELATION_HOSTILE,
+  RELATION_NEUTRAL,
+} from "../Core/relations.js";
 import {
   buildingCost,
   costCounterTypes,
   RAIL_STATION_MAX_RANGE,
   RAIL_STATION_MIN_RANGE,
   STRUCTURE_MIN_DIST,
+  UPGRADABLE_BUILDING_TYPES,
   type BuildingType,
 } from "../Core/buildings.js";
 import { nukeCost, type NukeKind } from "../Core/nukes.js";
 import type { RasterServerMessage, RasterSnapshot } from "../Core/types.js";
-import type { RasterPlayerKind } from "./botField.js";
-
-/**
- * Behavioural knobs for a raster bot. A {@link RasterBotController}'s whole
- * personality lives here, so seating a varied field of opponents is just a
- * matter of handing each controller a different preset — no subclassing.
- *
- * Everything is deterministic: identical (terrain, intents) replays produce
- * identical games, matching the engine's no-`Math.random`/no-`Date.now`
- * guarantee. Variety between bots comes from these static numbers, not RNG.
- */
-export interface RasterBotPersonality {
-  /** Stable id used for logging and to seat a recognisable mix of opponents. */
-  readonly id: string;
-  /** Ticks between decisions. Lower = reacts faster and pushes more fronts. */
-  readonly decisionCooldownTicks: number;
-  /** The bot sits idle (banking income) until its pool reaches this. */
-  readonly minPool: number;
-  /** Only attack an enemy when `myPool >= theirPool * this`. Lower = braver. */
-  readonly attackPoolRatio: number;
-  /** Tendency to strike a beatable enemy even while neutral land remains (0..1).
-   * At >= 0.5 the bot opens a war the moment it holds a decisive edge. */
-  readonly aggression: number;
-}
-
-/**
- * The most betrayals a nation forgives when weighing an alliance offer: anyone
- * who has broken more pacts than this is refused outright, whatever the
- * personality — a serial traitor's word is worthless. (Reputation heuristic of
- * our own; OpenFront tracks a public betrayal count but doesn't document how
- * its nations weigh it.)
- */
-const NATION_BETRAYAL_TOLERANCE = 1;
+import type { RasterDifficulty } from "../Core/messages.js";
+import { BOT_DECISION_TICKS, NATION_DECISION_TICKS, type RasterPlayerKind } from "./botField.js";
 
 // ---------------------------------------------------------------------------
-// Nation military programme.
+// OpenFront AI, re-expressed for this engine.
 //
-// OpenFront's nations run dedicated late-game behaviours (its
-// NationStructureBehavior builds, NationWarshipBehavior floats patrols,
-// NationNukeBehavior + retaliation lead its target list) — the exact triggers
-// aren't publicly documented, so the gates below are our own readable
-// adaptation of that arc: economy first, then border forts, a coastal patrol,
-// a silo once the economy matures, warheads at threats, and SAM cover once
-// bombs start flying. All deterministic (no RNG).
+// OpenFront drives every AI seat through one shared attack brain
+// (`AiAttackBehavior`) plus, for Nations, a bundle of behaviours
+// (structures / alliances / warships / nukes) — there are NO per-seat
+// personalities. What varies per seat is a handful of ratios rolled once from
+// a seeded PRNG, and what varies per match is the difficulty, which reorders
+// the strategy list, throttles aggression against humans, and gates every
+// diplomatic judgement. This file mirrors that model: same ratios, same
+// odds, same strategy orders, same difficulty gates — implemented natively
+// against this engine's grid/session APIs (OpenFront is AGPL; behaviour
+// constants and decision rules are mirrored, code is not).
+//
+// Known simplifications (documented, not silent):
+//  · No MIRV programme (the 25M warhead is out of reach in typical matches;
+//    nations still *save* toward it, which is what shapes their spending).
+//  · Nuke aiming keeps this engine's deep-territory sampling instead of
+//    OpenFront's structure-scoring + SAM-trajectory avoidance.
+//  · The "island" strategy picks the weakest reachable enemy globally rather
+//    than sorting every player by bounding-box distance.
+//  · "afk" (disconnected humans) and team-game strategies don't apply here.
+//  · Captured buildings are demolished by this engine, so OpenFront's
+//    tribe-deletes-structures and steal-back-structures branches are moot.
 // ---------------------------------------------------------------------------
 
-/**
- * Defense posts a nation garrisons contested borders with: a base pair, plus
- * one more per {@link FORT_CAP_TILES_PER_EXTRA} tiles of territory (own
- * heuristic — OpenFront's exact structure counts aren't public, but its large
- * nations visibly field more posts than small ones). Capped so a sprawling
- * empire doesn't carpet its borders.
- */
-const FORT_CAP_BASE = 2;
-const FORT_CAP_TILES_PER_EXTRA = 25_000;
-const FORT_CAP_MAX = 6;
-/**
- * How close to a hostile border a fort must stand (Chebyshev tiles). Kept at
- * the structure-spacing distance so two forts fit around one contact point.
- */
-const FORT_BORDER_RANGE = 15;
-/** Base warship fleet for a coastal nation; aggressive admirals float one more. */
-const WARSHIP_CAP_BASE = 1;
-/** Base silo programme; the ruthless dig a second launch site. */
-const SILO_CAP_BASE = 1;
-/** SAM batteries a nation stands up once warheads are flying. */
-const SAM_CAP = 1;
-/** Don't spend a warhead on an empire smaller than this. */
-const NUKE_MIN_TARGET_TILES = 25;
-/** A bordering rival at this pool ratio over ours is a threat worth nuking. */
-const NUKE_THREAT_RATIO = 1.2;
-/** Rival tiles sampled when picking a warhead aim point (bounded for huge empires). */
-const NUKE_AIM_SAMPLE_BUDGET = 64;
+/** Per-seat ratio ranges every AI rolls once (OpenFront's nextInt bounds, /100). */
+const TRIGGER_RATIO_RANGE: readonly [number, number] = [50, 60];
+const RESERVE_RATIO_RANGE: readonly [number, number] = [30, 40];
+const EXPAND_RATIO_RANGE: readonly [number, number] = [10, 20];
 
-// Emoji indices into RASTER_EMOJIS (["👍","👎","😂","😡","🤝","🫡","💀","🔥"])
-// that nations flash as contextual reactions.
+/** Fraction of own troops below which an incoming attack isn't yet a defensive emergency. */
+const UNDER_ATTACK_THREAT_RATIO = 0.35;
+/** Hard/Impossible: one defense post allowed per this much incoming-to-own ratio. */
+const DEFENSE_POST_RATIO_PER_POST = 0.4;
+/** Forts garrison this close (Chebyshev tiles) to the pressed border. */
+const FORT_BORDER_RANGE = 15;
+/** Structures-per-tile density above which a nation upgrades instead of building. */
+const UPGRADE_DENSITY_THRESHOLD = 1 / 1500;
+/** Hard cap on missile silos per nation. */
+const MAX_MISSILE_SILOS = 3;
+/** Silos-per-city ratio (first silo uses the higher ratio so nuking starts earlier). */
+const SILO_RATIO = 0.2;
+const FIRST_SILO_RATIO = 0.4;
+/** Ports/factories per city; factories are rare when the coast already trades. */
+const PORT_RATIO = 0.75;
+const FACTORY_RATIO = 0.75;
+const FACTORY_COASTAL_MULTIPLIER = 0.33;
+/** SAM launchers per city, by difficulty. */
+const SAM_RATIO: Record<RasterDifficulty, number> = {
+  easy: 0.15,
+  medium: 0.2,
+  hard: 0.25,
+  impossible: 0.3,
+};
+/** Perceived-cost inflation per owned structure while saving for warheads. */
+const PERCEIVED_COST_INCREASE: Partial<Record<BuildingType, number>> = {
+  city: 1,
+  port: 1,
+  factory: 1,
+  silo: 1,
+  sam: 0.3,
+};
+/** Rival at (or below) this fraction of their troop ceiling reads as "very weak". */
+const VERY_WEAK_FRACTION = 0.15;
+/** Number of ±tile offsets a random-boat scan samples around a shore tile. */
+const RANDOM_BOAT_SCAN_RADIUS = 150;
+const RANDOM_BOAT_SCAN_TRIES = 200;
+
+// Emoji indices into RASTER_EMOJIS (["👍","👎","😂","😡","🤝","🫡","💀","🔥"]).
 const EMOJI_THUMBS_DOWN = 1;
 const EMOJI_ANGRY = 3;
 const EMOJI_HANDSHAKE = 4;
 
-/**
- * Odds a Tribe opens an attack on a bordering rival on a decision with no
- * neutral land left, mirroring OpenFront's `TribeExecution`/`AiAttackBehavior`
- * odds (~1/3 against a non-ally). The attack itself is sized by the OpenFront
- * ratio model (see {@link attackSizeTroops}) — a real strike down to the
- * tribe's reserve, not a token poke — but it only comes once the tribe has
- * banked past its trigger ratio, so tribes are farmable most of the time and
- * dangerous in bursts.
- */
-const TRIBE_POKE_ODDS = 1 / 3;
-
-// ---------------------------------------------------------------------------
-// OpenFront AI attack sizing (`AiAttackBehavior`, current upstream main).
-//
-// Both Tribes and Nations draw three per-seat ratios of their max population:
-//   triggerRatio 50–60% — bank until the pool crosses this before opening a
-//                          war (expansion into wilderness is exempt);
-//   reserveRatio 30–40% — a war strike sends `troops − maxTroops·reserve`;
-//   expandRatio  10–20% — a wilderness grab sends `troops − maxTroops·expand`
-//                          (nearly the whole pool — the OpenFront land rush).
-// Values are behaviour constants from the documented upstream behaviour, not
-// ported code; per-seat variation comes from a deterministic hash, standing in
-// for OpenFront's per-player seeded `nextInt` rolls.
-// ---------------------------------------------------------------------------
-export const AI_TRIGGER_RATIO: readonly [number, number] = [0.5, 0.6];
-export const AI_RESERVE_RATIO: readonly [number, number] = [0.3, 0.4];
-export const AI_EXPAND_RATIO: readonly [number, number] = [0.1, 0.2];
-
-/** Deterministic per-seat ratio inside `[lo, hi]` (stand-in for OF's seeded nextInt). */
-export const seatRatio = (playerId: number, salt: number, [lo, hi]: readonly [number, number]): number =>
-  lo + hash01(playerId, salt) * (hi - lo);
-
-// Hash salts separating the three per-seat ratio rolls (arbitrary, fixed).
-const SALT_EXPAND = 101;
-const SALT_RESERVE = 103;
-const SALT_TRIGGER = 107;
-
-/**
- * Cheap deterministic hash of two integers onto [0, 1) — the confusion roll.
- * No RNG anywhere in bot decisions, so identical (terrain, intents) replays
- * stay identical (same guarantee as the engine's fallout/SAM hashing).
- */
-const hash01 = (a: number, b: number): number => {
-  let h = (Math.imul(a, 374761393) + Math.imul(b, 668265263)) >>> 0;
-  h = (h ^ (h >>> 13)) >>> 0;
-  h = Math.imul(h, 1274126177) >>> 0;
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-};
-
-/**
- * A spread of opponent archetypes. {@link MatchRegistry} hands these out in
- * order so a solo match fields a recognisable mix — a land-grabber, a warmonger,
- * a measured all-rounder, an opportunist and a turtle — rather than five clones.
- */
-// Attack *sizing* is no longer a personality trait: every AI seat sends
-// OpenFront's ratio-model strikes (see {@link AI_EXPAND_RATIO} etc.), exactly
-// like upstream, where all nations share the same nextInt ratio ranges. What a
-// personality still shapes is *when and whom* to fight (`aggression`,
-// `attackPoolRatio`) and how often it acts. `decisionCooldownTicks` here is
-// only a fallback — the seat loop overrides it with a per-seat
-// `nationDecisionCadence` (Easy 65–100 … Impossible 30–50 ticks).
-export const RASTER_BOT_PERSONALITIES: readonly RasterBotPersonality[] = [
-  // Expander: races for neutral land to compound income, fights only when boxed in.
-  { id: "expander", decisionCooldownTicks: 80, minPool: 5, attackPoolRatio: 1.5, aggression: 0.2 },
-  // Aggressor: hunts the weakest neighbour early and commits harder to the kill.
-  { id: "aggressor", decisionCooldownTicks: 55, minPool: 5, attackPoolRatio: 1.0, aggression: 0.9 },
-  // Balanced: grabs land first, then turns on a clearly weaker rival.
-  { id: "balanced", decisionCooldownTicks: 65, minPool: 8, attackPoolRatio: 1.25, aggression: 0.5 },
-  // Opportunist: expands patiently but pounces on a lopsided advantage.
-  { id: "opportunist", decisionCooldownTicks: 65, minPool: 6, attackPoolRatio: 1.4, aggression: 0.6 },
-  // Turtle: banks a deep reserve, expands cautiously, rarely starts a war.
-  { id: "turtle", decisionCooldownTicks: 90, minPool: 12, attackPoolRatio: 1.8, aggression: 0.15 },
-];
-
-/**
- * The passive **Bot** ("Tribe") personality: OpenFront's low-threat map
- * filler. It shares the universal OpenFront attack-ratio model (bank to the
- * trigger, strike down to the reserve, dump the pool into wilderness), grabs
- * neutral land cheaply (OpenFront's `mag/10`; see the Bot
- * `neutralCostMultiplier`) and picks fights only by odds, never by strategy.
- * Paired with `kind: "bot"` (see {@link RasterBotConfig.kind}), which
- * additionally skips building and always accepts alliance offers rather than
- * weighing them — see {@link RasterBotController.maybeBuild}/
- * {@link RasterBotController.manageDiplomacy}. `decisionCooldownTicks` is a
- * fallback — the seat loop overrides it with a per-seat `botDecisionCadence`
- * (OpenFront's `nextInt(40, 80)`).
- */
-export const FILLER_PERSONALITY: RasterBotPersonality = {
-  id: "filler",
-  decisionCooldownTicks: 60,
-  minPool: 20,
-  attackPoolRatio: 2.5,
-  aggression: 0.05,
-};
-
 export interface RasterBotConfig {
   readonly botId: string;
-  readonly personality: RasterBotPersonality;
-  /**
-   * Which AI tier this seat plays as — a full-strategy **Nation** (the
-   * default; OpenFront-style difficulty handicaps, builds/allies/expands) or
-   * a passive **Bot** filler (flat handicap, no building, always-accept
-   * diplomacy). See {@link RasterPlayerKind}.
-   */
+  /** Which AI tier this seat plays: a full-strategy Nation or a passive Bot (Tribe). */
   readonly kind?: RasterPlayerKind;
-  /**
-   * Chance per decision that this nation **misdirects** its move at a
-   * different border target than the one it meant (OpenFront's "nation
-   * confusion", 10%/5%/2.5%/0% by difficulty — see `NATION_CONFUSION_CHANCE`).
-   * Rolled deterministically; 0/absent = never confused.
-   */
-  readonly confusionChance?: number;
-  /**
-   * Ticks to delay this seat's first decision, so a large field doesn't all
-   * decide on tick 0 (a thundering herd). Spread deterministically per seat by
-   * {@link seatPhaseOffset}; 0/absent = decide as soon as it has banked `minPool`.
-   */
-  readonly phaseOffset?: number;
+  /** Match difficulty — the single knob OpenFront's AI varies by. */
+  readonly difficulty?: RasterDifficulty;
+  /** Extra seed entropy (the seat index), so equal difficulties still differ per seat. */
+  readonly seed?: number;
 }
 
 export const DEFAULT_RASTER_BOT_CONFIG: RasterBotConfig = {
   botId: "raster-bot-1",
-  // Default to the all-rounder so a lone bot plays a sensible, readable game.
-  personality: RASTER_BOT_PERSONALITIES[2],
   kind: "nation",
+  difficulty: "medium",
+};
+
+/** FNV-1a over a string — the per-seat PRNG seed (stand-in for OF's simpleHash). */
+const hashString = (s: string): number => {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i += 1) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h | 0;
 };
 
 /**
- * Server-side AI opponent for raster (openfront-style) matches.
+ * Server-side AI opponent for raster (OpenFront-style) matches.
  *
  * Subscribes to a {@link RasterGameSession} exactly like a human client and
- * pushes its moves back through the same `queueExpand` channel — so every bot
- * action runs through the identical server-side validation a player's clicks do,
- * and the bot can never reach into engine state it shouldn't.
+ * pushes its moves back through the same command channel — so every bot action
+ * runs through the identical server-side validation a player's clicks do. It
+ * reads decision inputs straight off the session's authoritative grid
+ * (`peekGrid`) — the same public data every snapshot carries — plus the
+ * session's relations ledger, which is what OpenFront's nations consult too.
  *
- * It does, however, read decision inputs straight off the session's authoritative
- * grid (`peekGrid`) rather than re-decoding the wire snapshot. That state is the
- * same data the snapshot already carries to every client — each player's exact
- * troop pool and tile count is public — so the bot gains no hidden information;
- * it simply skips a redundant base64 decode. Crucially, reading the grid lets the
- * bot consult **water-component reachability**, so it can plan amphibious boat
- * assaults onto coasts across the sea instead of stranding itself on its home
- * landmass (the old land-only frontier scan's fatal flaw on water-heavy maps).
- *
- * ## Strategy
- * Every `decisionCooldownTicks`, once it has banked `minPool` troops, the bot:
- *  1. Enumerates the owners its border touches — neutral land and each rival —
- *     via {@link TerritoryGrid.frontierTargets} (land borders plus boat targets).
- *  2. Finds the weakest rival it can currently beat on troops
- *     (`myPool >= theirPool * attackPoolRatio`).
- *  3. Picks a move by personality:
- *       - **Attack** that rival when boxed in (no neutral land left) or when
- *         aggressive *and* holding a decisive edge.
- *       - Otherwise **expand** into neutral land — cheap tiles that compound into
- *         more income, the dominant early-game play.
- *       - If only stronger rivals border it and its pool is saturating (income
- *         would be wasted), it spends down on the least-strong neighbour rather
- *         than stagnate; otherwise it banks troops and waits.
- *  4. Commits a personality-scaled slice of its pool toward a deterministic
- *     sample tile of the chosen target (lowest `TileRef`), keeping a reserve.
- *
- * Deterministic throughout: no RNG, ties broken by ascending id / `TileRef`.
+ * All randomness comes from one per-seat seeded {@link Prng} (OpenFront seeds
+ * a `PseudoRandom` per execution the same way), so identical seatings replay
+ * identically: no `Math.random`, no wall clock.
  */
 export class RasterBotController {
   private myPlayerId: PlayerId | null = null;
-  private lastDecisionTick = Number.NEGATIVE_INFINITY;
   private session: RasterGameSession | null = null;
-  /** Latest attacker on this bot (0 = nobody yet), read off each snapshot — the retaliation target. */
-  private lastAttackedBy = 0;
-  /** True once any warhead has flown this match — the cue to stand up SAM cover. */
-  private nukesSeen = false;
-  /** Each seat's public player class, read off the snapshot (drives tribe-farming sizing). */
+  private readonly prng: Prng;
+  private readonly difficulty: RasterDifficulty;
+
+  /** Ticks between decisions and this seat's phase inside that cycle (OF's attackRate/attackTick). */
+  private readonly attackRate: number;
+  private readonly attackTick: number;
+  /** Per-seat ratios of the troop ceiling: when to open wars / what stays home. */
+  private readonly triggerRatio: number;
+  private readonly reserveRatio: number;
+  private readonly expandRatio: number;
+  /** A third of nations throw only hydrogen bombs (OpenFront's anti-atom-spam roll). */
+  private readonly isHydroNation: boolean;
+
+  /** True once the opening land-rush attack (half the pool at neutral land) went out. */
+  private openingMoveDone = false;
+  /** Tribes stop scanning for neutral land once none borders them (OF's latch). */
+  private neutralLatch = true;
+  /** Each seat's public player class, read off the snapshot (tribe farming / nuke targeting). */
   private readonly kindOf = new Map<PlayerId, RasterPlayerKind>();
+  /** Troops already allocated to parallel tribe-farming strikes this decision. */
+  private botAttackTroopsSent = 0;
+  /** Perceived warhead prices, inflated after each launch to simulate saving for a MIRV. */
+  private atomPerceivedCost = 0;
+  private hydroPerceivedCost = 0;
+  /** Number of structures this nation has placed (defense posts excluded). */
+  private placements = 0;
 
-  /**
-   * Per-decision memo of `grid.frontierTargets(me)` — a full perimeter walk
-   * plus a budgeted sea BFS that several decision helpers (attack choice,
-   * military builds, nuke targeting, diplomacy) each used to recompute. The
-   * grid can't change mid-decision (bot orders are queued, applied next tick),
-   * so one computation per decision is exact. Keyed by decision tick.
-   */
+  /** Per-decision memo of `grid.frontierTargets(me)` (perimeter walk + sea BFS). */
   private frontierCache: { tick: number; targets: Array<{ target: PlayerId; tiles: number; sample: TileRef }> } | null = null;
+  private lastDecisionTick = Number.NEGATIVE_INFINITY;
 
-  /** Per-decision memo of the bot's own sorted tile list (see {@link frontierCache}). */
-  private myTilesCache: { tick: number; tiles: TileRef[] } | null = null;
-
-  private cachedFrontierTargets(grid: TerritoryGrid): Array<{ target: PlayerId; tiles: number; sample: TileRef }> {
-    if (this.frontierCache?.tick !== this.lastDecisionTick) {
-      this.frontierCache = { tick: this.lastDecisionTick, targets: grid.frontierTargets(this.myPlayerId!) };
-    }
-    return this.frontierCache.targets;
+  public constructor(private readonly config: RasterBotConfig = DEFAULT_RASTER_BOT_CONFIG) {
+    this.difficulty = config.difficulty ?? "medium";
+    this.prng = new Prng(hashString(config.botId) + (config.seed ?? 0));
+    const kind = config.kind ?? "nation";
+    const [lo, hi] = kind === "bot" ? BOT_DECISION_TICKS : NATION_DECISION_TICKS[this.difficulty];
+    this.attackRate = this.prng.nextInt(lo, hi);
+    this.attackTick = this.prng.nextInt(0, this.attackRate);
+    this.triggerRatio = this.prng.nextInt(...TRIGGER_RATIO_RANGE) / 100;
+    this.reserveRatio = this.prng.nextInt(...RESERVE_RATIO_RANGE) / 100;
+    this.expandRatio = this.prng.nextInt(...EXPAND_RATIO_RANGE) / 100;
+    this.isHydroNation = this.prng.chance(3);
   }
-
-  private cachedMyTiles(grid: TerritoryGrid): TileRef[] {
-    if (this.myTilesCache?.tick !== this.lastDecisionTick) {
-      this.myTilesCache = { tick: this.lastDecisionTick, tiles: grid.tilesOf(this.myPlayerId!) };
-    }
-    return this.myTilesCache.tiles;
-  }
-
-  /**
-   * The bot reinvests in a city once it holds at least this much land — early
-   * game it pours everything into expansion; a maturing empire banks gold into
-   * structures that compound its economy.
-   */
-  private static readonly MIN_TILES_TO_BUILD = 8;
-
-  public constructor(private readonly config: RasterBotConfig = DEFAULT_RASTER_BOT_CONFIG) {}
 
   public attach(session: RasterGameSession): () => void {
     this.session = session;
-    // Seed the throttle so this seat's first decision fires after its
-    // `phaseOffset` ticks rather than every seat firing on tick 0 (a thundering
-    // herd on a crowded field). The throttle compares `tick - lastDecisionTick`.
-    this.lastDecisionTick = -(this.config.phaseOffset ?? 0);
+    this.atomPerceivedCost = nukeCost("atom", 0);
+    this.hydroPerceivedCost = nukeCost("hydrogen", 0);
     // Subscribe headless (wantsRaster=false): the bot reads engine state via
-    // peekGrid and never decodes the wire ownership, so the session skips the
-    // costly per-tick owner encoding for it.
-    // kind (default "nation") so the session applies the right AI handicap
-    // tier and the full conquer bounty when this seat is beaten.
+    // peekGrid and never decodes the wire ownership plane.
     const unsubscribe = session.subscribe(
       this.config.botId,
       (message) => this.onMessage(message),
@@ -322,17 +200,12 @@ export class RasterBotController {
       this.config.kind ?? "nation",
     );
     if (!unsubscribe) {
-      // The session is already full (e.g. exhausted MAX_PLAYERS seats) — this
-      // bot simply never takes the field rather than crashing the caller.
       this.session = null;
       return () => {};
     }
     return () => {
       this.session = null;
       this.myPlayerId = null;
-      this.lastDecisionTick = Number.NEGATIVE_INFINITY;
-      this.lastAttackedBy = 0;
-      this.nukesSeen = false;
       this.kindOf.clear();
       unsubscribe();
     };
@@ -344,10 +217,6 @@ export class RasterBotController {
 
   public getBotId(): string {
     return this.config.botId;
-  }
-
-  public getPersonality(): RasterBotPersonality {
-    return this.config.personality;
   }
 
   public getKind(): RasterPlayerKind {
@@ -369,186 +238,970 @@ export class RasterBotController {
   }
 
   private handleSnapshot(snapshot: RasterSnapshot): void {
-    if (this.myPlayerId === null || !this.session) return;
+    const me = this.myPlayerId;
+    const session = this.session;
+    if (me === null || !session) return;
     if (snapshot.winnerPlayerId !== null) return;
-    // During the opening start phase nobody may take territory yet — the bot
-    // simply holds its seat and waits for the game phase to begin.
     if (snapshot.phase !== "playing") return;
 
-    // Passive awareness runs on every snapshot (cheap), not just decision
-    // ticks: who hit us last (the retaliation target) and whether any warhead
-    // has flown yet this match (the cue to stand up SAM cover) — a short
-    // flight between two throttled decisions must not go unnoticed.
-    // Players arrive sorted by id and ids are dense, so the direct index hit
-    // almost always lands — the O(players) find is only a fallback. With a
-    // 400-seat field, every bot scanning the player list every tick was
-    // O(seats²) per tick before its decision throttle even applied.
-    const guess = snapshot.players[this.myPlayerId - 1];
-    const mine = guess?.playerId === this.myPlayerId
-      ? guess
-      : snapshot.players.find((p) => p.playerId === this.myPlayerId);
-    if (mine) this.lastAttackedBy = mine.lastAttackedBy;
-    if (!this.nukesSeen && (snapshot.nukes.length > 0 || snapshot.nukeDetonations.length > 0)) {
-      this.nukesSeen = true;
-    }
-    // Public player classes (as in OpenFront's player overlay): a nation farms
-    // a bordering tribe with a proportional strike rather than its full army.
-    // A seat's kind never changes, so only record ids we haven't seen.
+    // Public player classes: a nation farms a bordering tribe proportionally
+    // and never wastes a warhead on one. A seat's kind never changes.
     if (this.kindOf.size !== snapshot.players.length) {
       for (const p of snapshot.players) {
         if (!this.kindOf.has(p.playerId)) this.kindOf.set(p.playerId, p.kind);
       }
     }
 
-    // Throttle decisions (and the work behind them) to the personality cadence.
-    if (snapshot.tick - this.lastDecisionTick < this.config.personality.decisionCooldownTicks) return;
-    this.lastDecisionTick = snapshot.tick;
+    const grid = session.peekGrid();
+    const map = session.peekMap();
+    if (!grid.hasPlayer(me) || grid.tileCountOf(me) === 0) return;
 
-    const grid = this.session.peekGrid();
-    const map = this.session.peekMap();
+    const tick = snapshot.tick;
     const kind = this.config.kind ?? "nation";
+    const beat = tick % this.attackRate;
 
-    // Reinvest banked gold into structures independent of the troop decision
-    // below, so a maturing bot economy keeps compounding without stalling
-    // expansion. A passive Bot filler builds nothing — OpenFront's Tribe is a
-    // stationary map-filler, not an economic player.
-    if (kind !== "bot") {
-      this.maybeBuild(grid, map);
-      // The nuclear programme: once a silo stands and the war chest covers a
-      // warhead, a nation retaliates against its last attacker or deters the
-      // biggest bordering threat — OpenFront's late-game nuclear exchanges.
-      this.maybeNuke(grid, map);
-    }
-
-    // Diplomacy: answer pending offers, sue for peace with a dangerous rival, or
-    // (for the ruthless) betray a pact that has boxed it in. One move per tick.
-    // A Bot filler only ever does the first half of that — it auto-accepts
-    // any offer and never proposes or betrays (OpenFront's Tribe "accepts
-    // every incoming alliance request").
-    this.manageDiplomacy(grid, kind);
-
-    if (grid.troopsOf(this.myPlayerId) < this.config.personality.minPool) return;
-
-    // Tribes and Nations decide differently: a Tribe is a busy little map-filler
-    // (grab neutral land, else weakly poke a neighbour), a Nation plays the full
-    // strategy game.
-    if (kind === "bot") this.decideBot(grid, map);
-    else this.decide(grid, map);
-  }
-
-  /**
-   * Reinvest banked gold into one structure this decision. A coastal bot opens a
-   * **port** first — a steady trade dividend that compounds its economy — then
-   * arms up through the military ladder ({@link maybeBuildMilitary}), and pours
-   * whatever the war chest doesn't claim into **cities**. At most one structure
-   * per call so the bot doesn't dump its whole treasury at once. Deterministic
-   * throughout (lowest-`TileRef` eligible tile).
-   */
-  private maybeBuild(grid: TerritoryGrid, map: GameMap): void {
-    const me = this.myPlayerId;
-    if (me === null || !this.session) return;
-    if (grid.tileCountOf(me) < RasterBotController.MIN_TILES_TO_BUILD) return;
-    // One port for the coastal gold dividend, then the military ladder.
-    if (this.tryQueueBuild(grid, map, "port", (ref) => map.isShore(ref), 1)) return;
-    if (this.maybeBuildMilitary(grid, map)) return;
-    // Everything below spends out of the surplus above the war chest: once the
-    // nation is saving for a silo, its next warhead or SAM cover, civilian
-    // spending never raids that reserve.
-    const chest = this.warChest(grid, me);
-    const canSpend = (type: BuildingType): boolean =>
-      grid.goldOf(me) - this.nextBuildCost(grid, me, type) >= chest;
-    // A second port compounds the trade dividend, but only out of the surplus —
-    // unlike the factory it must never delay the silo programme.
-    if (canSpend("port") && this.tryQueueBuild(grid, map, "port", (ref) => map.isShore(ref), 2)) return;
-    // Cities are the default gold sink.
-    if (!canSpend("city")) return;
-    if (this.tryQueueBuild(grid, map, "city", () => true)) return;
-    // No legal spot left for a fresh city (structure spacing) — sink the
-    // surplus into **upgrading** one instead, so a boxed-in nation keeps
-    // climbing the same cost ramp (OpenFront's structure upgrades).
-    this.tryQueueUpgrade(grid, map, "city");
-  }
-
-  /**
-   * Gold this nation keeps aside for its military programme instead of sinking
-   * everything into cities: the next **silo** once the economy has matured
-   * (two cities), then the next **warhead** once a silo stands. Zero while the
-   * economy is still young, so the early build-up is untouched.
-   */
-  private warChest(grid: TerritoryGrid, me: PlayerId): number {
-    if ((this.config.kind ?? "nation") !== "nation") return 0;
-    if (grid.buildingCountOf(me, "city") < 2) return 0; // economy first
-    const silos = grid.buildingCountOf(me, "silo");
-    if (silos > 0) {
-      // Reserve the next warhead — and, once bombs are flying and we still
-      // have no cover, the SAM battery too (defence must outlast the urge to
-      // fire every reload, or no nation would ever field one).
-      let chest = nukeCost("atom", silos);
-      if (this.nukesSeen && grid.buildingCountOf(me, "sam") < SAM_CAP) {
-        chest += this.nextBuildCost(grid, me, "sam");
+    if (beat !== this.attackTick) {
+      // Between attack decisions a nation still places structures twice (at 1/3
+      // and 2/3 of the interval) so a rich economy never outruns its spending —
+      // OpenFront's exact off-beat structure cadence.
+      if (kind !== "bot") {
+        const oneThird = (this.attackTick + Math.floor(this.attackRate / 3)) % this.attackRate;
+        const twoThirds = (this.attackTick + Math.floor((this.attackRate * 2) / 3)) % this.attackRate;
+        if (beat === oneThird || beat === twoThirds) this.handleStructures(grid, map);
       }
-      return chest;
+      return;
     }
-    const siloCap = SILO_CAP_BASE + (this.config.personality.aggression >= 0.9 ? 1 : 0);
-    return silos < siloCap ? this.nextBuildCost(grid, me, "silo") : 0;
+
+    this.lastDecisionTick = tick;
+    this.frontierCache = null;
+
+    // The opening move: dump half the pool at neutral land the moment the seat
+    // goes live (OpenFront's forceSendAttack on first activation) — this is the
+    // land rush that fills the early map.
+    if (!this.openingMoveDone) {
+      this.openingMoveDone = true;
+      const neutral = this.frontier(grid).find((t) => t.target === NEUTRAL_PLAYER);
+      if (neutral) {
+        this.queueTroops(grid, map, me, neutral.sample, Math.floor(grid.troopsOf(me) / 2));
+      }
+      return;
+    }
+
+    if (kind === "bot") {
+      this.tribeTick(grid, map);
+      return;
+    }
+
+    this.handleAllianceRequests(grid);
+    this.handleAllianceExtensions(grid);
+    this.handleStructures(grid, map);
+    this.maybeSpawnWarship(grid, map);
+    this.handleEmbargoes(grid);
+    this.maybeAttack(grid, map);
+    this.maybeSendNuke(grid, map);
+  }
+
+  // -------------------------------------------------------------------------
+  // Shared attack brain (OpenFront's AiAttackBehavior).
+  // -------------------------------------------------------------------------
+
+  private frontier(grid: TerritoryGrid): Array<{ target: PlayerId; tiles: number; sample: TileRef }> {
+    if (this.frontierCache?.tick !== this.lastDecisionTick) {
+      this.frontierCache = { tick: this.lastDecisionTick, targets: grid.frontierTargets(this.myPlayerId!) };
+    }
+    return this.frontierCache.targets;
+  }
+
+  /** This seat's troop ceiling (territory-scaled, handicap-adjusted). */
+  private troopCapOf(grid: TerritoryGrid, id: PlayerId): number {
+    return maxTroops(grid.tileCountOf(id), grid.activeLevelsOf(id, "city")) * grid.modifiersOf(id).troopCapMultiplier;
+  }
+
+  private hasReserveRatioTroops(grid: TerritoryGrid, me: PlayerId): boolean {
+    return grid.troopsOf(me) >= this.troopCapOf(grid, me) * this.reserveRatio;
+  }
+
+  private hasTriggerRatioTroops(grid: TerritoryGrid, me: PlayerId): boolean {
+    return grid.troopsOf(me) >= this.troopCapOf(grid, me) * this.triggerRatio;
+  }
+
+  /** Bordering rivals sorted weakest-first, split allied / not. */
+  private borderSplit(grid: TerritoryGrid): { friends: Array<{ target: PlayerId; sample: TileRef }>; enemies: Array<{ target: PlayerId; sample: TileRef }> } {
+    const me = this.myPlayerId!;
+    const alliances = this.session!.peekAlliances();
+    const players = this.frontier(grid)
+      .filter((t) => t.target !== NEUTRAL_PLAYER)
+      .sort((a, b) => grid.troopsOf(a.target) - grid.troopsOf(b.target) || a.target - b.target);
+    return {
+      friends: players.filter((t) => alliances.areAllied(me, t.target)),
+      enemies: players.filter((t) => !alliances.areAllied(me, t.target)),
+    };
+  }
+
+  private maybeAttack(grid: TerritoryGrid, map: GameMap): void {
+    const me = this.myPlayerId!;
+    const { friends, enemies } = this.borderSplit(grid);
+
+    // Neutral land first, always — cheap tiles compound into income. Fallout
+    // ground is left alone here (the dedicated `nuked` strategy takes it).
+    const neutral = this.frontier(grid).find((t) => t.target === NEUTRAL_PLAYER);
+    if (neutral && !grid.hasFallout(neutral.sample)) {
+      if (this.sendAttackAt(grid, map, NEUTRAL_PLAYER, neutral.sample)) return;
+    }
+
+    if (enemies.length === 0) {
+      // Nobody to fight next door: occasionally probe across the sea.
+      if (this.prng.chance(5)) this.attackWithRandomBoat(grid, map, enemies);
+    } else {
+      if (this.prng.chance(10)) {
+        this.attackWithRandomBoat(grid, map, enemies);
+        return;
+      }
+      this.maybeSendAllianceRequests(grid, enemies);
+    }
+
+    this.attackBestTarget(grid, map, friends, enemies);
+  }
+
+  private attackBestTarget(
+    grid: TerritoryGrid,
+    map: GameMap,
+    friends: Array<{ target: PlayerId; sample: TileRef }>,
+    enemies: Array<{ target: PlayerId; sample: TileRef }>,
+  ): void {
+    const me = this.myPlayerId!;
+    // Bank to the war reserve before any deliberate strike…
+    if (!this.hasReserveRatioTroops(grid, me)) return;
+    // …and normally to the trigger ratio, with OpenFront's 10% early-strike roll.
+    if (!this.hasTriggerRatioTroops(grid, me) && !this.prng.chance(10)) return;
+
+    for (const strategy of this.strategiesFor(grid, map, friends, enemies)) {
+      if (strategy()) return;
+    }
   }
 
   /**
-   * One step of the build ladder, mirroring the arc of OpenFront's nation
-   * behaviours: **forts** on contested borders, then the **train-and-trade
-   * economy** (factory + second port) whose dividends bankroll everything
-   * dearer, a **warship** patrol for a coastal nation, a **missile silo** once
-   * the economy matures, and **SAM** cover once warheads are flying this
-   * match. Economy comes first (nothing before the first city); at most one
-   * order per decision. Returns whether a build was queued.
+   * The difficulty-ordered strategy list — OpenFront's exact orders: Easy runs
+   * the dumbest sequence, Impossible the sharpest. ("afk" and "donate" are
+   * team/disconnect features that don't exist here.)
    */
-  private maybeBuildMilitary(grid: TerritoryGrid, map: GameMap): boolean {
-    const me = this.myPlayerId;
-    const session = this.session;
-    if (me === null || !session) return false;
-    const p = this.config.personality;
-    const cities = grid.buildingCountOf(me, "city");
-    if (cities < 1) return false; // the first city always precedes the army
+  private strategiesFor(
+    grid: TerritoryGrid,
+    map: GameMap,
+    friends: Array<{ target: PlayerId; sample: TileRef }>,
+    enemies: Array<{ target: PlayerId; sample: TileRef }>,
+  ): Array<() => boolean> {
+    const me = this.myPlayerId!;
+    const session = this.session!;
+    const relations = session.peekRelations();
 
-    // 1) Defense posts where a non-allied rival presses our border.
-    const alliances = session.peekAlliances();
-    const hostiles = this.cachedFrontierTargets(grid)
-      .filter((t) => t.target !== NEUTRAL_PLAYER && !alliances.areAllied(me, t.target));
-    if (hostiles.length > 0) {
-      const samples = hostiles.map((t) => [map.x(t.sample), map.y(t.sample)] as const);
-      const nearHostileBorder = (ref: TileRef): boolean => {
-        const x = map.x(ref);
-        const y = map.y(ref);
-        return samples.some(([sx, sy]) => Math.max(Math.abs(sx - x), Math.abs(sy - y)) <= FORT_BORDER_RANGE);
-      };
-      const fortCap = Math.min(
-        FORT_CAP_MAX,
-        FORT_CAP_BASE + Math.floor(grid.tileCountOf(me) / FORT_CAP_TILES_PER_EXTRA),
+    const retaliate = (): boolean => {
+      const attacker = this.findIncomingAttacker(grid);
+      return attacker !== null && this.sendAttack(grid, map, attacker, true);
+    };
+
+    const bots = (): boolean => this.attackBots(grid, map, enemies);
+
+    const assist = (): boolean => this.assistAllies(grid, map);
+
+    const traitor = (): boolean => {
+      const t = enemies.find(
+        (e) => this.isTraitor(e.target) && grid.troopsOf(e.target) < grid.troopsOf(me) * 1.2,
       );
-      if (this.tryQueueBuild(grid, map, "fort", nearHostileBorder, fortCap)) return true;
+      return t !== undefined && this.sendAttack(grid, map, t.target);
+    };
+
+    const betray = (): boolean => {
+      for (const friend of friends) {
+        if (this.maybeBetray(grid, friend.target, friends.length + enemies.length)) {
+          return this.sendAttack(grid, map, friend.target, true);
+        }
+      }
+      return false;
+    };
+
+    const nuked = (): boolean => {
+      // Fallout ground is still capturable — once ordinary land runs out the
+      // AI walks into the glow rather than stalling.
+      const neutral = this.frontier(grid).find((t) => t.target === NEUTRAL_PLAYER);
+      if (neutral && grid.hasFallout(neutral.sample)) {
+        return this.sendAttackAt(grid, map, NEUTRAL_PLAYER, neutral.sample);
+      }
+      return false;
+    };
+
+    const victim = (): boolean => {
+      const v = enemies.find((e) => {
+        if (grid.troopsOf(e.target) > grid.troopsOf(me) * 1.2) return false;
+        const incoming = session.peekIncomingAttacks(e.target).reduce((s, a) => s + a.troops, 0);
+        return incoming > grid.troopsOf(e.target) * 0.5;
+      });
+      return v !== undefined && this.sendAttack(grid, map, v.target);
+    };
+
+    const hated = (): boolean => {
+      for (const entry of relations.sortedOf(me)) {
+        if (entry.tier !== RELATION_HOSTILE) continue;
+        const other = entry.other;
+        if (!grid.hasPlayer(other) || other === me) continue;
+        if (session.peekAlliances().areAllied(me, other)) continue;
+        if (grid.troopsOf(other) > grid.troopsOf(me) * 3) continue;
+        return this.sendAttack(grid, map, other);
+      }
+      return false;
+    };
+
+    const veryWeak = (): boolean => {
+      const w = enemies.find(
+        (e) =>
+          grid.troopsOf(e.target) < this.troopCapOf(grid, e.target) * VERY_WEAK_FRACTION &&
+          grid.troopsOf(e.target) < grid.troopsOf(me) * 1.2,
+      );
+      return w !== undefined && this.sendAttack(grid, map, w.target);
+    };
+
+    const weakest = (): boolean => {
+      if (enemies.length === 0) return false;
+      const w = enemies[0];
+      if (grid.troopsOf(w.target) >= grid.troopsOf(me)) return false;
+      return this.sendAttack(grid, map, w.target);
+    };
+
+    const island = (): boolean => {
+      if (enemies.length > 0) return false;
+      return this.attackNearestIslandEnemy(grid, map);
+    };
+
+    switch (this.difficulty) {
+      case "easy":
+        return [nuked, bots, retaliate, assist, betray, hated, weakest];
+      case "medium":
+        return [bots, nuked, retaliate, assist, betray, hated, traitor, weakest, island];
+      case "hard":
+        return [bots, retaliate, assist, betray, nuked, traitor, hated, veryWeak, victim, weakest, island];
+      case "impossible":
+        return [retaliate, bots, veryWeak, assist, traitor, betray, victim, nuked, hated, weakest, island];
+    }
+  }
+
+  /** Largest non-allied incoming land attack's owner — nations ignore tribe raids. */
+  private findIncomingAttacker(grid: TerritoryGrid): PlayerId | null {
+    const me = this.myPlayerId!;
+    const session = this.session!;
+    const alliances = session.peekAlliances();
+    let best: PlayerId | null = null;
+    let bestTroops = 0;
+    for (const a of session.peekIncomingAttacks(me)) {
+      if (alliances.areAllied(me, a.attacker)) continue;
+      if ((this.config.kind ?? "nation") !== "bot" && this.kindOf.get(a.attacker) === "bot") continue;
+      if (a.troops > bestTroops) {
+        bestTroops = a.troops;
+        best = a.attacker;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Farm neighbouring tribes: weakest-density first, several in parallel on
+   * harder tiers (Easy 1, Medium 1–2, Hard 3, Impossible all).
+   */
+  private attackBots(grid: TerritoryGrid, map: GameMap, enemies: Array<{ target: PlayerId; sample: TileRef }>): boolean {
+    const tribes = enemies.filter((e) => this.kindOf.get(e.target) === "bot");
+    if (tribes.length === 0) return false;
+    this.botAttackTroopsSent = 0;
+    const density = (id: PlayerId): number => grid.troopsOf(id) / Math.max(1, grid.tileCountOf(id));
+    const sorted = [...tribes].sort((a, b) => density(a.target) - density(b.target) || a.target - b.target);
+    let parallelism: number;
+    switch (this.difficulty) {
+      case "easy": parallelism = 1; break;
+      case "medium": parallelism = this.prng.chance(2) ? 1 : 2; break;
+      case "hard": parallelism = 3; break;
+      case "impossible": parallelism = sorted.length; break;
+    }
+    for (const tribe of sorted.slice(0, parallelism)) {
+      this.sendAttack(grid, map, tribe.target);
+    }
+    return this.botAttackTroopsSent > 0;
+  }
+
+  /** Honour an ally's target request (relation permitting) — the favour costs goodwill. */
+  private assistAllies(grid: TerritoryGrid, map: GameMap): boolean {
+    const me = this.myPlayerId!;
+    const session = this.session!;
+    const alliances = session.peekAlliances();
+    const relations = session.peekRelations();
+    for (const req of alliances.targetRequestsFor(me)) {
+      const ally = req.from;
+      if (relations.tierOf(me, ally) < RELATION_FRIENDLY) continue;
+      const target = req.target;
+      if (target === me || !grid.hasPlayer(target)) continue;
+      if (alliances.areAllied(me, target)) continue;
+      if (!this.sendAttack(grid, map, target)) continue;
+      relations.update(me, ally, ASSIST_FAVOR_COST);
+      return true;
+    }
+    return false;
+  }
+
+  /** OpenFront's betrayal judgement, per difficulty (see NationAllianceBehavior.maybeBetray). */
+  private maybeBetray(grid: TerritoryGrid, friend: PlayerId, borderingPlayerCount: number): boolean {
+    const me = this.myPlayerId!;
+    const session = this.session!;
+    const myTroops = grid.troopsOf(me);
+    const friendTroops = grid.troopsOf(friend);
+    const diff = this.difficulty;
+
+    // Hard/Impossible read the real strength: a friend under 20% of their
+    // ceiling (counting troops already marching) who is weaker than us is prey.
+    if (diff === "hard" || diff === "impossible") {
+      const friendTotal = friendTroops + session.peekOutgoingAttackTroops(friend);
+      if (friendTotal < this.troopCapOf(grid, friend) * 0.2 && friendTroops < myTroops) {
+        return this.betray(friend);
+      }
+    }
+    // Easy/Medium use the blunt 10× rule — but an Easy nation never betrays a human.
+    if (
+      (diff === "easy" || diff === "medium") &&
+      !(diff === "easy" && this.kindOf.get(friend) === "human") &&
+      myTroops >= friendTroops * 10
+    ) {
+      return this.betray(friend);
+    }
+    // A traitor ally who isn't clearly stronger deserves what's coming (not on Easy).
+    if (diff !== "easy" && this.isTraitor(friend) && friendTroops < myTroops * 1.2) {
+      return this.betray(friend);
+    }
+    // Our only neighbour, three times weaker: the pact is the only thing saving them.
+    if (diff !== "easy" && borderingPlayerCount === 1 && friendTroops * 3 < myTroops) {
+      return this.betray(friend);
+    }
+    return false;
+  }
+
+  private betray(friend: PlayerId): boolean {
+    const session = this.session!;
+    session.breakAlliance(this.config.botId, friend);
+    session.sendEmoji(this.config.botId, friend, EMOJI_ANGRY);
+    return true;
+  }
+
+  private isTraitor(id: PlayerId): boolean {
+    // The conflict engine owns the 30-second traitor mark.
+    return this.session!.peekConflictTraitor(id);
+  }
+
+  /**
+   * No bordering enemies at all: take the fight across the water to the
+   * weakest living rival a boat can reach (approximation of OpenFront's
+   * nearest-island search; 1-in-3 the second choice for variety).
+   */
+  private attackNearestIslandEnemy(grid: TerritoryGrid, map: GameMap): boolean {
+    const me = this.myPlayerId!;
+    const alliances = this.session!.peekAlliances();
+    const candidates = grid
+      .players()
+      .filter(
+        (p) =>
+          p !== me &&
+          grid.tileCountOf(p) > 0 &&
+          !alliances.areAllied(me, p) &&
+          grid.troopsOf(p) < grid.troopsOf(me),
+      )
+      .sort((a, b) => grid.troopsOf(a) - grid.troopsOf(b) || a - b);
+    if (candidates.length === 0) return false;
+    const pick = candidates.length >= 2 && this.prng.chance(3) ? candidates[1] : candidates[0];
+    return this.sendAttack(grid, map, pick);
+  }
+
+  /**
+   * Occasionally probe a random spot across the sea (OpenFront's random boat):
+   * scan around a random own shore tile for land we don't own — preferring
+   * unowned or tribe coast — and ship a fifth of the pool at it. Never at a
+   * player we already border, never (in FFA) at someone stronger.
+   */
+  private attackWithRandomBoat(grid: TerritoryGrid, map: GameMap, enemies: Array<{ target: PlayerId; sample: TileRef }>): void {
+    const me = this.myPlayerId!;
+    const session = this.session!;
+    const shore = this.sampleOwnShoreTile(grid, map);
+    if (shore === null) return;
+    const bordering = new Set(enemies.map((e) => e.target));
+    const sx = map.x(shore);
+    const sy = map.y(shore);
+
+    const scan = (highInterestOnly: boolean): TileRef | null => {
+      for (let i = 0; i < RANDOM_BOAT_SCAN_TRIES; i += 1) {
+        const x = this.prng.nextInt(sx - RANDOM_BOAT_SCAN_RADIUS, sx + RANDOM_BOAT_SCAN_RADIUS);
+        const y = this.prng.nextInt(sy - RANDOM_BOAT_SCAN_RADIUS, sy + RANDOM_BOAT_SCAN_RADIUS);
+        if (!map.inBounds(x, y)) continue;
+        const ref = map.ref(x, y);
+        if (!grid.isCapturable(ref)) continue;
+        const owner = grid.ownerOf(ref);
+        if (owner === me) continue;
+        if (owner !== NEUTRAL_PLAYER) {
+          if (bordering.has(owner)) continue;
+          if (grid.troopsOf(owner) > grid.troopsOf(me)) continue;
+          if (this.session!.peekAlliances().areAllied(me, owner)) continue;
+          if (highInterestOnly && this.kindOf.get(owner) !== "bot") continue;
+        }
+        return ref;
+      }
+      return null;
+    };
+
+    const dst = scan(true) ?? scan(false);
+    if (dst === null) return;
+    const owner = grid.ownerOf(dst);
+    let troops = Math.floor(grid.troopsOf(me) / 5);
+    if (owner !== NEUTRAL_PLAYER) {
+      troops = Math.min(troops, this.troopSendCap(grid));
+      if (this.isAttackTooWeak(grid, troops, owner)) return;
+    }
+    if (troops < 1) return;
+    session.queueExpand(this.config.botId, {
+      targetX: map.x(dst),
+      targetY: map.y(dst),
+      percent: this.troopsToPercent(grid, troops),
+      mode: "sea",
+    });
+  }
+
+  /** A deterministic-random own shore tile (strided sampling keeps it O(sample)). */
+  private sampleOwnShoreTile(grid: TerritoryGrid, map: GameMap): TileRef | null {
+    const me = this.myPlayerId!;
+    const tiles = grid.tilesOf(me);
+    if (tiles.length === 0) return null;
+    for (let i = 0; i < 40; i += 1) {
+      const ref = tiles[this.prng.nextInt(0, tiles.length)];
+      if (map.isShore(ref)) return ref;
+    }
+    return null;
+  }
+
+  // --- attack dispatch / sizing (OpenFront's sendAttack + calculateAttackTroops) ---
+
+  /**
+   * Difficulty throttle on aggression against HUMANS (OpenFront's
+   * `shouldAttack`) — the single biggest "easy feels easy" rule: an Easy
+   * nation follows through on only 1 in 4 attack decisions against a human,
+   * Medium on 3 in 4; neutral land, tribes and traitors are always fair game,
+   * and a tribe never holds back.
+   */
+  private shouldAttack(target: PlayerId): boolean {
+    if (target === NEUTRAL_PLAYER) return true;
+    if ((this.config.kind ?? "nation") === "bot") return true;
+    if (this.kindOf.get(target) !== "human") return true;
+    if (this.isTraitor(target)) return true;
+    if (this.difficulty === "easy") return this.prng.nextInt(0, 4) === 0;
+    if (this.difficulty === "medium") return !this.prng.chance(4);
+    return true;
+  }
+
+  /**
+   * Hard/Impossible keep a strategic home guard: never let the pool drop below
+   * 75% (Hard) / 90% (Impossible) of the strongest non-allied, non-tribe
+   * neighbour — except that a nation under attack may always answer with at
+   * least the incoming force.
+   */
+  private troopSendCap(grid: TerritoryGrid): number {
+    if ((this.config.kind ?? "nation") === "bot") return Number.POSITIVE_INFINITY;
+    let retain: number;
+    if (this.difficulty === "hard") retain = 0.75;
+    else if (this.difficulty === "impossible") retain = 0.9;
+    else return Number.POSITIVE_INFINITY;
+
+    const me = this.myPlayerId!;
+    const session = this.session!;
+    const alliances = session.peekAlliances();
+    let strongest = 0;
+    for (const t of this.frontier(grid)) {
+      if (t.target === NEUTRAL_PLAYER) continue;
+      if (alliances.areAllied(me, t.target)) continue;
+      if (this.kindOf.get(t.target) === "bot") continue;
+      strongest = Math.max(strongest, grid.troopsOf(t.target));
+    }
+    let cap = strongest === 0
+      ? Number.POSITIVE_INFINITY
+      : Math.max(0, grid.troopsOf(me) - Math.ceil(strongest * retain));
+    const incoming = session.peekIncomingAttacks(me).reduce((s, a) => s + a.troops, 0);
+    if (incoming > 0) cap = Math.max(cap, incoming);
+    return cap;
+  }
+
+  /** Hard/Impossible skip strikes under 20% of the target's troops (retaliation exempt). */
+  private isAttackTooWeak(grid: TerritoryGrid, troops: number, target: PlayerId): boolean {
+    if ((this.config.kind ?? "nation") === "bot") return false;
+    if (this.difficulty !== "hard" && this.difficulty !== "impossible") return false;
+    if (this.session!.peekIncomingAttacks(this.myPlayerId!).length > 0) return false;
+    return troops < grid.troopsOf(target) * 0.2;
+  }
+
+  /**
+   * Troops a strike on `target` commits: everything above the war reserve
+   * (`maxTroops × reserveRatio`; the smaller expand reserve for neutral land) —
+   * except that a nation FARMS a tribe with `4 × the tribe's pool`, skipping
+   * the strike entirely when the budget can't spare `2×` (Easy nations dump
+   * the whole budget instead; OpenFront's calculateBotAttackTroops).
+   */
+  private attackTroopsFor(grid: TerritoryGrid, target: PlayerId): number | null {
+    const me = this.myPlayerId!;
+    const reserveRatio = target === NEUTRAL_PLAYER ? this.expandRatio : this.reserveRatio;
+    const reserve = this.troopCapOf(grid, me) * reserveRatio;
+
+    let troops: number;
+    if (target !== NEUTRAL_PLAYER && this.kindOf.get(target) === "bot" && (this.config.kind ?? "nation") !== "bot") {
+      const budget = Math.floor(grid.troopsOf(me) - reserve - this.botAttackTroopsSent);
+      if (this.difficulty === "easy") {
+        troops = budget;
+      } else {
+        troops = Math.floor(grid.troopsOf(target) * 4);
+        if (troops > budget) troops = budget < grid.troopsOf(target) * 2 ? 0 : budget;
+      }
+      this.botAttackTroopsSent += Math.max(0, troops);
+    } else {
+      troops = Math.floor(grid.troopsOf(me) - reserve);
     }
 
-    if (cities < 2) return false; // the dearer tiers wait for a second city
+    if (target !== NEUTRAL_PLAYER) {
+      troops = Math.min(troops, this.troopSendCap(grid));
+    }
+    if (troops < 1) return null;
+    if (target !== NEUTRAL_PLAYER && this.isAttackTooWeak(grid, troops, target)) return null;
+    return troops;
+  }
 
-    // 2) The train-and-trade economy that funds the arms race: one factory
-    //    (its trains pay a steady gold dividend) and a second port (each trade
-    //    arrival pays both endpoints). These are income *multipliers*, so they
-    //    spend raw gold ahead of the war chest — a nation that saved for its
-    //    silo on the flat trickle alone would never afford the warheads after.
-    //    The factory must land where rails can actually serve it: a city/port
-    //    becomes a station only within [RAIL_STATION_MIN_RANGE,
-    //    RAIL_STATION_MAX_RANGE] straight-line tiles of the factory (see
-    //    railNetwork) — anywhere else the factory would earn nothing.
-    if (grid.buildingCountOf(me, "factory") < 1) {
+  /** Send a sized attack at `target` (frontier sample; falls back to any tile of theirs). */
+  private sendAttack(grid: TerritoryGrid, map: GameMap, target: PlayerId, force = false): boolean {
+    const sample =
+      this.frontier(grid).find((t) => t.target === target)?.sample ??
+      (target === NEUTRAL_PLAYER ? undefined : grid.anyTileOf(target));
+    if (sample === undefined) return false;
+    return this.sendAttackAt(grid, map, target, sample, force);
+  }
+
+  private sendAttackAt(grid: TerritoryGrid, map: GameMap, target: PlayerId, sample: TileRef, force = false): boolean {
+    if (!force && !this.shouldAttack(target)) return false;
+    const troops = this.attackTroopsFor(grid, target);
+    if (troops === null) return false;
+    this.queueTroops(grid, map, this.myPlayerId!, sample, troops);
+    return true;
+  }
+
+  /** Convert an absolute troop commitment to the wire's percent-of-pool. */
+  private troopsToPercent(grid: TerritoryGrid, troops: number): number {
+    const pool = Math.max(1, grid.troopsOf(this.myPlayerId!));
+    return Math.min(100, Math.max(1, Math.round((troops / pool) * 100)));
+  }
+
+  /** Queue an expand order committing `troops` toward `sample` (auto land/sea routing). */
+  private queueTroops(grid: TerritoryGrid, map: GameMap, me: PlayerId, sample: TileRef, troops: number): void {
+    const session = this.session;
+    if (!session || troops < 1) return;
+    session.queueExpand(this.config.botId, {
+      targetX: map.x(sample),
+      targetY: map.y(sample),
+      percent: this.troopsToPercent(grid, troops),
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Tribe (passive Bot) brain — OpenFront's TribeExecution.
+  // -------------------------------------------------------------------------
+
+  private tribeTick(grid: TerritoryGrid, map: GameMap): void {
+    const me = this.myPlayerId!;
+    const session = this.session!;
+    const alliances = session.peekAlliances();
+
+    // A tribe welcomes every offer and every renewal, no judgement at all.
+    for (const from of alliances.incomingProposals(me)) {
+      session.respondAlliance(this.config.botId, from, true);
+      session.sendEmoji(this.config.botId, from, EMOJI_HANDSHAKE);
+    }
+    const now = session.peekTick();
+    for (const ally of alliances.alliesOf(me)) {
+      const left = alliances.ticksLeft(me, ally, now);
+      if (left === null || left > ALLIANCE_RENEWAL_WINDOW_TICKS) continue;
+      // Only second the extension once the partner has asked for it (OpenFront's
+      // tribes never initiate a renewal on their own).
+      if (!alliances.hasRenewVote(ally, me) || alliances.hasRenewVote(me, ally)) continue;
+      session.renewAlliance(this.config.botId, ally);
+    }
+
+    // A bordering traitor gets punished at 1/3 odds (1/6 for a traitor *ally*,
+    // pact broken first).
+    const { friends, enemies } = this.borderSplit(grid);
+    const traitorFoe = enemies.find((e) => this.isTraitor(e.target));
+    const traitorFriend = friends.find((f) => this.isTraitor(f.target));
+    const mark = traitorFoe ?? traitorFriend;
+    if (mark && this.prng.chance(traitorFriend && mark === traitorFriend ? 6 : 3)) {
+      if (mark === traitorFriend) session.breakAlliance(this.config.botId, mark.target);
+      if (this.sendAttack(grid, map, mark.target)) return;
+    }
+
+    // The land rush: blanket bordering neutral land until none is left, then
+    // latch off the scan for good (OpenFront's neighborsTerraNullius flag).
+    if (this.neutralLatch) {
+      const neutral = this.frontier(grid).find((t) => t.target === NEUTRAL_PLAYER);
+      if (neutral) {
+        if (this.sendAttackAt(grid, map, NEUTRAL_PLAYER, neutral.sample)) return;
+      } else {
+        this.neutralLatch = false;
+      }
+    }
+
+    this.attackRandomTarget(grid, map, enemies);
+  }
+
+  /** Boxed-in tribe: bank to the trigger, then hit back / punish / poke someone random. */
+  private attackRandomTarget(grid: TerritoryGrid, map: GameMap, enemies: Array<{ target: PlayerId; sample: TileRef }>): void {
+    const me = this.myPlayerId!;
+    if (!this.hasTriggerRatioTroops(grid, me)) return;
+
+    // Retaliate against the largest incoming attack (tribes answer anyone).
+    const attacker = this.findIncomingAttacker(grid);
+    if (attacker !== null && this.sendAttack(grid, map, attacker, true)) return;
+
+    const traitorFoe = enemies.find((e) => this.isTraitor(e.target));
+    if (traitorFoe && this.prng.chance(3)) {
+      if (this.sendAttack(grid, map, traitorFoe.target)) return;
+    }
+
+    // A random neighbour — but nations and humans are skipped half the time
+    // (tribes mostly squabble among themselves).
+    for (const e of this.prng.shuffled(enemies)) {
+      const kind = this.kindOf.get(e.target);
+      if ((kind === "nation" || kind === "human") && this.prng.chance(2)) continue;
+      if (this.sendAttack(grid, map, e.target)) return;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Nation diplomacy — OpenFront's NationAllianceBehavior.
+  // -------------------------------------------------------------------------
+
+  private handleAllianceRequests(grid: TerritoryGrid): void {
+    const me = this.myPlayerId!;
+    const session = this.session!;
+    for (const from of session.peekAlliances().incomingProposals(me)) {
+      const accept = this.allianceDecision(grid, from, true);
+      session.respondAlliance(this.config.botId, from, accept);
+      session.sendEmoji(this.config.botId, from, accept ? EMOJI_HANDSHAKE : EMOJI_THUMBS_DOWN);
+    }
+  }
+
+  private handleAllianceExtensions(grid: TerritoryGrid): void {
+    const me = this.myPlayerId!;
+    const session = this.session!;
+    const alliances = session.peekAlliances();
+    const now = session.peekTick();
+    for (const ally of alliances.alliesOf(me)) {
+      const left = alliances.ticksLeft(me, ally, now);
+      if (left === null || left > ALLIANCE_RENEWAL_WINDOW_TICKS) continue;
+      // Respond only once the partner has asked (OpenFront nations never
+      // initiate an extension), and judge them like a fresh offer.
+      if (!alliances.hasRenewVote(ally, me) || alliances.hasRenewVote(me, ally)) continue;
+      if (!this.allianceDecision(grid, ally, true)) continue;
+      session.renewAlliance(this.config.botId, ally);
+    }
+  }
+
+  /** 1-in-30 per bordering enemy: consider offering peace (Easy may even court tribes). */
+  private maybeSendAllianceRequests(grid: TerritoryGrid, enemies: Array<{ target: PlayerId; sample: TileRef }>): void {
+    const me = this.myPlayerId!;
+    const session = this.session!;
+    const alliances = session.peekAlliances();
+    for (const e of enemies) {
+      if (!this.prng.chance(30)) continue;
+      const isTribe = this.kindOf.get(e.target) === "bot";
+      if (isTribe && this.difficulty !== "easy") continue;
+      if (alliances.hasProposal(me, e.target) || alliances.hasProposal(e.target, me)) continue;
+      if (!this.allianceDecision(grid, e.target, false)) continue;
+      session.proposeAlliance(this.config.botId, e.target);
+    }
+  }
+
+  /**
+   * OpenFront's alliance judgement, gate by gate: confusion → traitor →
+   * over-allied → threat → bad relation → friendly relation → enough allies →
+   * earlygame honeymoon → similar strength. Every threshold per difficulty.
+   */
+  private allianceDecision(grid: TerritoryGrid, other: PlayerId, isResponse: boolean): boolean {
+    const me = this.myPlayerId!;
+    const session = this.session!;
+    const relations = session.peekRelations();
+    const alliances = session.peekAlliances();
+
+    // Dumber tiers sometimes just flip a coin (Easy 10%, Medium 5%, Hard 2.5%).
+    const confusionOdds = this.difficulty === "easy" ? 10 : this.difficulty === "medium" ? 20 : this.difficulty === "hard" ? 40 : 0;
+    if (confusionOdds > 0 && this.prng.chance(confusionOdds)) return this.prng.chance(2);
+
+    // A marked traitor is refused 90% of the time, whoever they are.
+    if (this.isTraitor(other) && this.prng.nextInt(0, 100) >= 10) return false;
+
+    // Hard/Impossible refuse anyone already allied with much of the field.
+    if (this.difficulty === "hard" || this.difficulty === "impossible") {
+      let nonTribes = 0;
+      for (const p of grid.players()) {
+        if (grid.tileCountOf(p) > 0 && this.kindOf.get(p) !== "bot") nonTribes += 1;
+      }
+      const cap = this.difficulty === "hard" ? nonTribes * 0.5 : nonTribes * 0.25;
+      if (alliances.alliesOf(other).length >= cap) return false;
+    }
+
+    // A genuine threat is worth appeasing — each tier reads "threat" differently.
+    if (this.isAlliancePartnerThreat(grid, other)) return true;
+
+    // Grudges close the door outright.
+    if (relations.tierOf(me, other) < RELATION_NEUTRAL) return false;
+
+    // Standing goodwill mostly opens it (Hard/Impossible stay pickier).
+    if (relations.tierOf(me, other) >= RELATION_FRIENDLY) {
+      if (this.difficulty === "hard") return this.prng.nextInt(0, 100) >= 17;
+      if (this.difficulty === "impossible") return this.prng.nextInt(0, 100) >= 33;
+      return true;
+    }
+
+    if (this.hasEnoughAlliances(grid, other)) return false;
+
+    // The early game is a honeymoon: most offers are welcome while the map is young.
+    if (this.isEarlygame()) return true;
+
+    return this.isSimilarlyStrong(grid, other);
+  }
+
+  private isAlliancePartnerThreat(grid: TerritoryGrid, other: PlayerId): boolean {
+    const me = this.myPlayerId!;
+    const myTroops = grid.troopsOf(me);
+    const otherTroops = grid.troopsOf(other);
+    switch (this.difficulty) {
+      case "easy":
+        return false; // too dumb to see threats
+      case "medium":
+        return otherTroops > myTroops * 2.5;
+      case "hard":
+        return otherTroops > myTroops && this.troopCapOf(grid, other) > this.troopCapOf(grid, me) * 2;
+      case "impossible": {
+        const moreTroops = otherTroops > myTroops * 1.5;
+        const moreCap = otherTroops > myTroops && this.troopCapOf(grid, other) > this.troopCapOf(grid, me) * 1.5;
+        const moreTiles = otherTroops > myTroops && grid.tileCountOf(other) > grid.tileCountOf(me) * 1.5;
+        return moreTroops || moreCap || moreTiles;
+      }
+    }
+  }
+
+  private isEarlygame(): boolean {
+    const tick = this.session!.peekTick();
+    switch (this.difficulty) {
+      case "easy":
+        return tick < 3000 && this.prng.nextInt(0, 100) >= 10;
+      case "medium":
+        return tick < 1800 && this.prng.nextInt(0, 100) >= 30;
+      case "hard":
+        return tick < 1800 && this.prng.nextInt(0, 100) >= 50;
+      case "impossible":
+        return tick < 600 && this.prng.nextInt(0, 100) >= 70;
+    }
+  }
+
+  private hasEnoughAlliances(grid: TerritoryGrid, other: PlayerId): boolean {
+    const me = this.myPlayerId!;
+    const alliances = this.session!.peekAlliances();
+    const count = alliances.alliesOf(me).length;
+    switch (this.difficulty) {
+      case "easy":
+        return false; // an Easy nation never turns down company
+      case "medium":
+        return count >= this.prng.nextInt(4, 6);
+      case "hard":
+      case "impossible": {
+        // Keep at least one non-friendly neighbour when there are 2+ of them.
+        const bordering = this.frontier(grid)
+          .filter((t) => t.target !== NEUTRAL_PLAYER && this.kindOf.get(t.target) !== "bot")
+          .map((t) => t.target);
+        const borderingFriends = bordering.filter((id) => alliances.areAllied(me, id));
+        if (bordering.length >= 2 && bordering.includes(other)) {
+          return bordering.length <= borderingFriends.length + 1;
+        }
+        return count >= (this.difficulty === "hard" ? this.prng.nextInt(3, 5) : this.prng.nextInt(2, 4));
+      }
+    }
+  }
+
+  private isSimilarlyStrong(grid: TerritoryGrid, other: PlayerId): boolean {
+    const me = this.myPlayerId!;
+    const session = this.session!;
+    const troopBand: Record<RasterDifficulty, readonly [number, number]> = {
+      easy: [60, 70],
+      medium: [70, 80],
+      hard: [75, 85],
+      impossible: [80, 90],
+    };
+    const tileBand: Record<RasterDifficulty, readonly [number, number]> = {
+      easy: [70, 80],
+      medium: [80, 90],
+      hard: [85, 95],
+      impossible: [90, 100],
+    };
+    const myTotal = grid.troopsOf(me) + session.peekOutgoingAttackTroops(me);
+    const otherTotal = grid.troopsOf(other) + session.peekOutgoingAttackTroops(other);
+    const troopThreshold = myTotal * (this.prng.nextInt(...troopBand[this.difficulty]) / 100);
+    const tileThreshold = grid.tileCountOf(me) * (this.prng.nextInt(...tileBand[this.difficulty]) / 100);
+    const comparableTroops = otherTotal > troopThreshold;
+    const comparableTiles = grid.tileCountOf(other) > tileThreshold && otherTotal > myTotal * 0.5;
+    return comparableTroops || comparableTiles;
+  }
+
+  /**
+   * Embargo automation (OpenFront's NationExecution): a hostile rival is cut
+   * off from trade; the embargo lifts once tempers cool to neutral — but Hard
+   * holds it until *friendly*, and Impossible never forgives at all.
+   */
+  private handleEmbargoes(grid: TerritoryGrid): void {
+    const me = this.myPlayerId!;
+    const session = this.session!;
+    const alliances = session.peekAlliances();
+    const relations = session.peekRelations();
+    for (const other of grid.players()) {
+      if (other === me || grid.tileCountOf(other) === 0) continue;
+      const tier = relations.tierOf(me, other);
+      const embargoed = alliances.hasEmbargo(me, other);
+      if (tier <= RELATION_HOSTILE && !embargoed) {
+        session.setEmbargo(this.config.botId, other, true);
+      } else if (
+        embargoed &&
+        ((tier >= RELATION_NEUTRAL && this.difficulty !== "hard" && this.difficulty !== "impossible") ||
+          (tier >= RELATION_FRIENDLY && this.difficulty !== "impossible"))
+      ) {
+        session.setEmbargo(this.config.botId, other, false);
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Nation structures — OpenFront's NationStructureBehavior (ratio system).
+  // -------------------------------------------------------------------------
+
+  private handleStructures(grid: TerritoryGrid, map: GameMap): void {
+    const me = this.myPlayerId!;
+    if (grid.tileCountOf(me) === 0) return;
+
+    // Reactive defense posts run outside the normal pacing: when incoming land
+    // attacks reach 35% of our pool, forts go up near the pressed border —
+    // never on Easy; Medium manages one post half the time; Hard/Impossible
+    // one per 40% of the incoming ratio.
+    if (this.placements > 0 && this.tryBuildDefensePost(grid, map)) return;
+    if (this.defensePostNeeded(grid)) return; // hold other spending while the wall is due
+
+    if (this.doHandleStructures(grid, map)) this.placements += 1;
+  }
+
+  private incomingLandRatio(grid: TerritoryGrid): number {
+    const me = this.myPlayerId!;
+    const myTroops = grid.troopsOf(me);
+    if (myTroops <= 0) return 0;
+    const incoming = this.session!.peekIncomingAttacks(me).reduce((s, a) => s + a.troops, 0);
+    return incoming / myTroops;
+  }
+
+  private defensePostNeeded(grid: TerritoryGrid): boolean {
+    if (this.difficulty === "easy") return false;
+    return this.incomingLandRatio(grid) >= UNDER_ATTACK_THREAT_RATIO;
+  }
+
+  private tryBuildDefensePost(grid: TerritoryGrid, map: GameMap): boolean {
+    if (this.difficulty === "easy") return false;
+    if (this.difficulty === "medium" && !this.prng.chance(2)) return false;
+    const ratio = this.incomingLandRatio(grid);
+    if (ratio < UNDER_ATTACK_THREAT_RATIO) return false;
+    const allowed = this.difficulty === "medium" ? 1 : Math.ceil(ratio / DEFENSE_POST_RATIO_PER_POST);
+    const me = this.myPlayerId!;
+    if (grid.buildingCountOf(me, "fort") >= allowed) return false;
+
+    // Place near the border pressed by an attacker.
+    const session = this.session!;
+    const attackers = new Set(session.peekIncomingAttacks(me).map((a) => a.attacker));
+    const fronts = this.frontier(grid).filter((t) => attackers.has(t.target));
+    if (fronts.length === 0) return false;
+    const samples = fronts.map((t) => [map.x(t.sample), map.y(t.sample)] as const);
+    const nearFront = (ref: TileRef): boolean => {
+      const x = map.x(ref);
+      const y = map.y(ref);
+      return samples.some(([sx, sy]) => Math.max(Math.abs(sx - x), Math.abs(sy - y)) <= FORT_BORDER_RANGE);
+    };
+    return this.tryQueueBuild(grid, map, "fort", nearFront, allowed);
+  }
+
+  private doHandleStructures(grid: TerritoryGrid, map: GameMap): boolean {
+    const me = this.myPlayerId!;
+    const cities = grid.buildingCountOf(me, "city");
+
+    // Non-city structures follow their per-city ratios, in priority order.
+    const order: Array<{ type: BuildingType; ratio: number }> = [
+      { type: "port", ratio: PORT_RATIO },
+      { type: "factory", ratio: FACTORY_RATIO * (grid.buildingCountOf(me, "port") > 0 ? FACTORY_COASTAL_MULTIPLIER : 1) },
+      { type: "sam", ratio: SAM_RATIO[this.difficulty] },
+      { type: "silo", ratio: grid.buildingCountOf(me, "silo") === 0 ? FIRST_SILO_RATIO : SILO_RATIO },
+    ];
+    for (const { type, ratio } of order) {
+      const owned = grid.buildingCountOf(me, type);
+      if (type === "silo" && owned >= MAX_MISSILE_SILOS) continue;
+      if (owned >= Math.floor(cities * ratio)) continue;
+      if (this.maybeSpawnStructure(grid, map, type)) return true;
+    }
+
+    // Cities are the default gold sink.
+    return this.maybeSpawnStructure(grid, map, "city");
+  }
+
+  /**
+   * Buy one structure of `type` if the *perceived* price clears: while the
+   * treasury is still short of the warhead stockpile target, each owned
+   * structure of a type inflates the next one's felt cost, so nations
+   * organically save toward their nuclear programme (OpenFront's perceived
+   * costs). Above the structure-density threshold, upgrade instead of build.
+   */
+  private maybeSpawnStructure(grid: TerritoryGrid, map: GameMap, type: BuildingType): boolean {
+    const me = this.myPlayerId!;
+    const owned = grid.buildingCountOf(me, type);
+    const realCost = this.nextBuildCost(grid, me, type);
+    let perceived = realCost;
+    if (grid.goldOf(me) < this.saveUpTarget(grid, me)) {
+      const inflate = PERCEIVED_COST_INCREASE[type] ?? 0.1;
+      perceived = Math.ceil(realCost * (1 + inflate * owned));
+    }
+    if (grid.goldOf(me) < perceived) return false;
+
+    // Dense territory: climb levels instead of carpeting tiles.
+    let structures = 0;
+    for (const [ref] of grid.buildingEntries()) if (grid.ownerOf(ref) === me) structures += 1;
+    if (
+      structures / Math.max(1, grid.tileCountOf(me)) > UPGRADE_DENSITY_THRESHOLD &&
+      (UPGRADABLE_BUILDING_TYPES as readonly BuildingType[]).includes(type)
+    ) {
+      if (this.tryQueueUpgrade(grid, map, type)) return true;
+      if (owned > 0) return false;
+      // No structure of the type yet — fall through and place the first one.
+    }
+
+    const eligible = this.eligibilityFor(grid, map, type);
+    return this.tryQueueBuild(grid, map, type, eligible);
+  }
+
+  /** Placement predicate per type (shore for ports, rail-served for factories). */
+  private eligibilityFor(grid: TerritoryGrid, map: GameMap, type: BuildingType): (ref: TileRef) => boolean {
+    if (type === "port") return (ref) => map.isShore(ref);
+    if (type === "factory") {
+      const me = this.myPlayerId!;
       const stations: Array<readonly [number, number]> = [];
-      for (const [ref, type] of grid.buildingEntries()) {
-        if ((type === "city" || type === "port") && grid.ownerOf(ref) === me) {
+      for (const [ref, t] of grid.buildingEntries()) {
+        if ((t === "city" || t === "port") && grid.ownerOf(ref) === me) {
           stations.push([map.x(ref), map.y(ref)] as const);
         }
       }
       const minSq = RAIL_STATION_MIN_RANGE * RAIL_STATION_MIN_RANGE;
       const maxSq = RAIL_STATION_MAX_RANGE * RAIL_STATION_MAX_RANGE;
-      const railServed = (ref: TileRef): boolean => {
+      return (ref) => {
         const x = map.x(ref);
         const y = map.y(ref);
         return stations.some(([sx, sy]) => {
@@ -556,150 +1209,20 @@ export class RasterBotController {
           return dSq >= minSq && dSq <= maxSq;
         });
       };
-      if (this.tryQueueBuild(grid, map, "factory", railServed, 1)) return true;
     }
-
-    // 3) A coastal nation floats a warship to patrol the water off its port.
-    const warshipCap = WARSHIP_CAP_BASE + (p.aggression >= 0.6 ? 1 : 0);
-    if (this.tryQueueWarship(grid, map, warshipCap)) return true;
-
-    // 4) The silo — the war chest has been reserving for it (see warChest).
-    const siloCap = SILO_CAP_BASE + (p.aggression >= 0.9 ? 1 : 0);
-    if (this.tryQueueBuild(grid, map, "silo", () => true, siloCap)) return true;
-
-    // 5) SAM cover, once anyone's warheads have flown this match.
-    if (this.nukesSeen && this.tryQueueBuild(grid, map, "sam", () => true, SAM_CAP)) return true;
-
-    return false;
+    return () => true;
   }
 
   /**
-   * Launch a warhead when the programme is ready: an active silo, a war chest
-   * that covers the bomb, and a target worth it — the **last attacker**
-   * (retaliation, OpenFront's lead trigger), else the biggest **bordering
-   * threat** (deterrence), else — for the ruthless — the run-away leader. The
-   * aim point is picked deep in the victim's territory, away from our own
-   * shared border, so the fallout doesn't poison the ground we'd take next.
-   * The session still validates silo cooldown/gold, so a premature attempt is
-   * merely rejected.
+   * The stockpile the treasury aims for before spending freely: a MIRV plus a
+   * hydrogen bomb (OpenFront's FFA save-up target). While short of it,
+   * perceived structure costs inflate.
    */
-  private maybeNuke(grid: TerritoryGrid, map: GameMap): void {
-    const me = this.myPlayerId;
-    const session = this.session;
-    if (me === null || !session) return;
-    if (grid.activeLevelsOf(me, "silo") === 0) return; // no finished launch site
+  private saveUpTarget(grid: TerritoryGrid, me: PlayerId): number {
     const silos = grid.buildingCountOf(me, "silo");
-    // The dearest warhead the treasury affords: hydrogen when rich, else atom.
-    const kind: NukeKind = grid.goldOf(me) >= nukeCost("hydrogen", silos) ? "hydrogen" : "atom";
-    if (grid.goldOf(me) < nukeCost(kind, silos)) return;
-    // Defence before the next salvo: once bombs are flying and we still lack
-    // SAM cover, hold fire until the treasury covers warhead + battery — the
-    // build ladder stands the SAM up on the next decision, then firing resumes.
-    if (this.nukesSeen && grid.buildingCountOf(me, "sam") < SAM_CAP) {
-      if (grid.goldOf(me) < nukeCost(kind, silos) + this.nextBuildCost(grid, me, "sam")) return;
-    }
-
-    const target = this.pickNukeTarget(grid);
-    if (target === null) return;
-    const aim = this.pickNukeAim(grid, map, target);
-    if (aim === null) return;
-    session.queueNuke(this.config.botId, { targetX: map.x(aim), targetY: map.y(aim), kind });
+    return nukeCost("mirv", silos) + nukeCost("hydrogen", silos);
   }
 
-  /** The player this nation's next warhead goes to, or null when nobody deserves one. */
-  private pickNukeTarget(grid: TerritoryGrid): PlayerId | null {
-    const me = this.myPlayerId;
-    const session = this.session;
-    if (me === null || !session) return null;
-    const alliances = session.peekAlliances();
-    const worthIt = (id: PlayerId): boolean =>
-      id !== me &&
-      id !== NEUTRAL_PLAYER &&
-      grid.hasPlayer(id) &&
-      grid.tileCountOf(id) >= NUKE_MIN_TARGET_TILES &&
-      !alliances.areAllied(me, id);
-
-    // 1) Retaliation: whoever hit us last eats the warhead.
-    if (this.lastAttackedBy !== 0 && worthIt(this.lastAttackedBy)) return this.lastAttackedBy;
-
-    // 2) The border war: the strongest non-allied rival pressing our border.
-    //    A rival outgrowing our pool is a threat everyone deters; a mere war
-    //    rival gets the warhead only from the aggressive half of the
-    //    personalities — a turtle keeps its powder for real danger.
-    const myPool = grid.troopsOf(me);
-    let foe: PlayerId | null = null;
-    let foePool = -1;
-    for (const t of this.cachedFrontierTargets(grid)) {
-      if (!worthIt(t.target)) continue;
-      const pool = grid.troopsOf(t.target);
-      if (pool > foePool) {
-        foePool = pool;
-        foe = t.target;
-      }
-    }
-    if (foe !== null && (foePool >= myPool * NUKE_THREAT_RATIO || this.config.personality.aggression >= 0.5)) {
-      return foe;
-    }
-
-    // 3) The ruthless also decapitate a run-away leader (bigger than us).
-    if (this.config.personality.aggression >= 0.6) {
-      const myTiles = grid.tileCountOf(me);
-      let leader: PlayerId | null = null;
-      let leaderTiles = myTiles;
-      for (const id of grid.players()) {
-        if (!worthIt(id)) continue;
-        const tiles = grid.tileCountOf(id);
-        if (tiles > leaderTiles) {
-          leaderTiles = tiles;
-          leader = id;
-        }
-      }
-      return leader;
-    }
-    return null;
-  }
-
-  /**
-   * The tile the warhead aims at: a bounded, deterministic sample of the
-   * victim's territory, preferring ground **far from our shared border** so
-   * the blast's fallout doesn't sterilise the land we would conquer next. When
-   * the victim doesn't border us at all, any sampled tile serves.
-   */
-  private pickNukeAim(grid: TerritoryGrid, map: GameMap, target: PlayerId): TileRef | null {
-    const me = this.myPlayerId;
-    if (me === null) return null;
-    const tiles = grid.tilesViewOf(target);
-    const total = grid.tileCountOf(target);
-    if (total === 0) return null;
-    // Our reference point: the shared frontier toward the victim, if any.
-    const front = this.cachedFrontierTargets(grid).find((t) => t.target === target);
-    const refX = front ? map.x(front.sample) : null;
-    const refY = front ? map.y(front.sample) : null;
-
-    const stride = Math.max(1, Math.floor(total / NUKE_AIM_SAMPLE_BUDGET));
-    let best: TileRef | null = null;
-    let bestDist = -1;
-    let i = 0;
-    for (const ref of tiles) {
-      if (i++ % stride !== 0) continue;
-      if (refX === null || refY === null) return ref; // no shared border — any tile serves
-      const d = Math.max(Math.abs(map.x(ref) - refX), Math.abs(map.y(ref) - refY));
-      if (d > bestDist) {
-        bestDist = d;
-        best = ref;
-      }
-    }
-    return best;
-  }
-
-  /**
-   * Queue a build of `type` on the lowest-`TileRef` owned, unbuilt, `eligible`
-   * tile that also honours the structure-spacing rule (so the order isn't
-   * doomed to a server rejection), when the bot can afford its next one and
-   * owns fewer than `cap` of the type. Returns whether an order was queued, so
-   * the caller can fall through to the next building choice. Deterministic, so
-   * replays stay identical.
-   */
   /** The next ramp price of `type` for this bot (cost group's summed levels). */
   private nextBuildCost(grid: TerritoryGrid, me: PlayerId, type: BuildingType): number {
     const ramp = costCounterTypes(type).reduce((sum, t) => sum + grid.totalLevelsOf(me, t), 0);
@@ -707,29 +1230,9 @@ export class RasterBotController {
   }
 
   /**
-   * Buy a warship when under `cap` and affordable: the patrol point is the
-   * water off the bot's first active port (warships are units bought against a
-   * water target and launched from a port — the session validates the rest).
-   * The cost ramp runs over the ships currently afloat.
+   * Queue a build of `type` on the lowest-`TileRef` owned, unbuilt, `eligible`
+   * tile that honours structure spacing. Deterministic (replays identical).
    */
-  private tryQueueWarship(grid: TerritoryGrid, map: GameMap, cap: number): boolean {
-    const me = this.myPlayerId;
-    const session = this.session;
-    if (me === null || !session) return false;
-    const afloat = session.peekWarshipCount(me);
-    if (afloat >= cap) return false;
-    if (grid.goldOf(me) < buildingCost("warship", afloat)) return false;
-    for (const [ref, type] of grid.activeBuildingEntries()) {
-      if (type !== "port" || grid.ownerOf(ref) !== me) continue;
-      for (const n of map.neighbors(ref)) {
-        if (!map.isWater(n)) continue;
-        session.queueBuild(this.config.botId, { targetX: map.x(n), targetY: map.y(n), building: "warship" });
-        return true;
-      }
-    }
-    return false;
-  }
-
   private tryQueueBuild(
     grid: TerritoryGrid,
     map: GameMap,
@@ -737,20 +1240,19 @@ export class RasterBotController {
     eligible: (ref: TileRef) => boolean,
     cap = Number.POSITIVE_INFINITY,
   ): boolean {
-    const me = this.myPlayerId;
+    const me = this.myPlayerId!;
     const session = this.session;
-    if (me === null || !session) return false;
+    if (!session) return false;
     if (grid.buildingCountOf(me, type) >= cap) return false;
     if (grid.goldOf(me) < this.nextBuildCost(grid, me, type)) return false;
 
-    // The bot's own structures, for the spacing check (a handful at most).
     const mine: Array<[number, number]> = [];
     for (const [ref] of grid.buildingEntries()) {
       if (grid.ownerOf(ref) === me) mine.push([map.x(ref), map.y(ref)]);
     }
     const minSq = STRUCTURE_MIN_DIST * STRUCTURE_MIN_DIST;
 
-    for (const ref of this.cachedMyTiles(grid)) {
+    for (const ref of grid.tilesOf(me)) {
       if (grid.hasBuilding(ref) || !eligible(ref)) continue;
       const x = map.x(ref);
       const y = map.y(ref);
@@ -761,15 +1263,11 @@ export class RasterBotController {
     return false;
   }
 
-  /**
-   * Queue an **upgrade** of the bot's lowest-`TileRef` finished `type`
-   * structure (a build order on its own tile), when the next ramp step is
-   * affordable. Returns whether an order was queued. Deterministic.
-   */
+  /** Queue an upgrade of the lowest-ref finished `type` structure, if affordable. */
   private tryQueueUpgrade(grid: TerritoryGrid, map: GameMap, type: BuildingType): boolean {
-    const me = this.myPlayerId;
+    const me = this.myPlayerId!;
     const session = this.session;
-    if (me === null || !session) return false;
+    if (!session) return false;
     if (grid.goldOf(me) < this.nextBuildCost(grid, me, type)) return false;
     for (const [ref, t] of grid.buildingEntries()) {
       if (t !== type || grid.ownerOf(ref) !== me || grid.isUnderConstruction(ref)) continue;
@@ -780,337 +1278,178 @@ export class RasterBotController {
   }
 
   /**
-   * Run at most one diplomacy move per decision, in priority order:
-   *  1. **Answer** the lowest-id pending alliance offer. Defensive personalities
-   *     welcome any ally; aggressive ones accept only an offer from someone at
-   *     least as strong (never a weakling they could simply eat). A nation
-   *     refuses anyone who has betrayed more than {@link NATION_BETRAYAL_TOLERANCE}
-   *     pacts — a serial traitor's word is worthless.
-   *  2. **Renew** a pact inside its renewal window: tribes and defensive
-   *     nations always vote to extend; aggressive ones only keep an ally still
-   *     worth having (at least as strong as themselves).
-   *  3. **Propose** peace to the strongest rival on its border that clearly
-   *     outguns it — only defensive bots sue for peace, and only against a real
-   *     threat.
-   *  4. **Betray:** a ruthless bot hemmed in *only* by allies (no neutral land,
-   *     no other rival to fight) turns on the weakest ally it decisively outguns
-   *     rather than stagnate behind its own pacts.
-   * A passive Bot filler (`kind: "bot"`) only ever does steps 1–2, and
-   * unconditionally accepts/renews — OpenFront's Tribe welcomes every offer and
-   * never proposes or betrays on its own.
-   * Deterministic throughout (ascending-id tiebreaks, no RNG).
+   * A nation floats at most ONE patrol warship, checked at 1-in-50 odds per
+   * decision (OpenFront's maybeSpawnWarship) — the patrol point is the water
+   * off one of its ports.
    */
-  private manageDiplomacy(grid: TerritoryGrid, kind: RasterPlayerKind): void {
-    const me = this.myPlayerId;
-    const session = this.session;
-    if (me === null || !session) return;
-    const alliances = session.peekAlliances();
-    const p = this.config.personality;
-    const myPool = grid.troopsOf(me);
-
-    // 1) Respond to a pending offer.
-    const incoming = alliances.incomingProposals(me);
-    if (incoming.length > 0) {
-      const from = incoming[0];
-      const trusted = alliances.betrayalsOf(from) <= NATION_BETRAYAL_TOLERANCE;
-      const accept =
-        kind === "bot" || (trusted && (p.aggression < 0.5 || grid.troopsOf(from) >= myPool));
-      session.respondAlliance(this.config.botId, from, accept);
-      // React like an OpenFront nation: 🤝 on a new pact, 👎 on a snub. The
-      // session rate-limits emoji, so this never spams.
-      session.sendEmoji(this.config.botId, from, accept ? EMOJI_HANDSHAKE : EMOJI_THUMBS_DOWN);
-      return;
-    }
-
-    // 2) Renew an expiring pact (one vote per decision, lowest ally id first).
-    const now = session.peekTick();
-    for (const ally of alliances.alliesOf(me)) {
-      const left = alliances.ticksLeft(me, ally, now);
-      if (left === null || left > ALLIANCE_RENEWAL_WINDOW_TICKS) continue;
-      const wants = kind === "bot" || p.aggression < 0.5 || grid.troopsOf(ally) >= myPool;
-      if (!wants || alliances.hasRenewVote(me, ally)) continue;
-      session.renewAlliance(this.config.botId, ally);
-      return;
-    }
-    if (kind === "bot") return;
-
-    const bordering = this.cachedFrontierTargets(grid).filter((t) => t.target !== NEUTRAL_PLAYER);
-
-    // 3) Defensive bots sue for peace with a clearly stronger bordering rival.
-    if (p.aggression < 0.5) {
-      let threat: PlayerId | null = null;
-      let threatPool = -1;
-      for (const t of bordering) {
-        if (alliances.areAllied(me, t.target) || alliances.hasProposal(me, t.target)) continue;
-        const theirPool = grid.troopsOf(t.target);
-        if (theirPool > myPool * 1.5 && theirPool > threatPool) {
-          threatPool = theirPool;
-          threat = t.target;
-        }
-      }
-      if (threat !== null) session.proposeAlliance(this.config.botId, threat);
-      return;
-    }
-
-    // 4) Betrayal — only for the ruthless, and only when fully hemmed in by allies.
-    if (p.aggression >= 0.9) {
-      const hasOpenTarget = this.cachedFrontierTargets(grid).some(
-        (t) => t.target === NEUTRAL_PLAYER || !alliances.areAllied(me, t.target),
-      );
-      if (hasOpenTarget) return;
-      let prey: PlayerId | null = null;
-      let preyPool = Infinity;
-      for (const t of bordering) {
-        if (!alliances.areAllied(me, t.target)) continue;
-        const theirPool = grid.troopsOf(t.target);
-        if (myPool >= theirPool * (p.attackPoolRatio + 0.5) && theirPool < preyPool) {
-          preyPool = theirPool;
-          prey = t.target;
-        }
-      }
-      if (prey !== null) {
-        session.breakAlliance(this.config.botId, prey);
-        session.sendEmoji(this.config.botId, prey, EMOJI_ANGRY); // 😡 at the ally it just stabbed
-      }
-    }
-  }
-
-  /** This seat's max troop pool (its territory-scaled, handicap-adjusted ceiling). */
-  private troopCapOf(grid: TerritoryGrid, me: PlayerId): number {
-    return (
-      maxTroops(grid.tileCountOf(me), grid.activeLevelsOf(me, "city")) *
-      grid.modifiersOf(me).troopCapMultiplier
-    );
-  }
-
-  /**
-   * OpenFront's AI attack sizing (`AiAttackBehavior.calculateAttackTroops`):
-   * everything above `maxTroops × ratio` marches — the ratio names what stays
-   * *home*, not what is sent. A wilderness grab keeps only the small
-   * {@link AI_EXPAND_RATIO} (near-full commitment, the OpenFront land rush); a
-   * war strike keeps the deeper {@link AI_RESERVE_RATIO}. Returns 0 when the
-   * pool sits at or below the reserve (OpenFront skips the attack entirely).
-   */
-  private attackSizeTroops(grid: TerritoryGrid, me: PlayerId, ratio: readonly [number, number], salt: number): number {
-    const reserve = this.troopCapOf(grid, me) * seatRatio(me, salt, ratio);
-    return Math.max(0, Math.floor(grid.troopsOf(me) - reserve));
-  }
-
-  /** OpenFront's war gate: bank until the pool crosses `triggerRatio × maxTroops`. */
-  private hasTriggerTroops(grid: TerritoryGrid, me: PlayerId): boolean {
-    return grid.troopsOf(me) >= this.troopCapOf(grid, me) * seatRatio(me, SALT_TRIGGER, AI_TRIGGER_RATIO);
-  }
-
-  /**
-   * A passive **Bot** (Tribe)'s move, mirroring OpenFront's current
-   * `TribeExecution`/`AiAttackBehavior`: while **neutral** land borders it,
-   * dump the pool (minus the small expand reserve) into the wilderness — the
-   * early-game blanket. Once boxed in, **bank to the trigger ratio**, then
-   * strike: first back at whoever attacked it last (OpenFront retaliates
-   * against the largest incoming attack), else the weakest bordering non-ally
-   * at ~1/3 odds — a real strike down to the war reserve, so tribes are
-   * farmable between bursts but genuinely bite back.
-   * Deterministic (the odds roll is a per-tick/-seat hash, no RNG).
-   */
-  private decideBot(grid: TerritoryGrid, map: GameMap): void {
-    const me = this.myPlayerId;
-    const session = this.session;
-    if (me === null || !session) return;
-    const alliances = session.peekAlliances();
-
-    const targets = this.cachedFrontierTargets(grid);
-    if (targets.length === 0) return;
-
-    // Prefer cheap neutral land whenever it borders us (OpenFront's terraNullius
-    // preference) — this is what makes tribes blanket the empty map so fast.
-    const neutral = targets.find((t) => t.target === NEUTRAL_PLAYER) ?? null;
-    if (neutral) {
-      this.queueSizedAttack(grid, map, me, neutral.sample, AI_EXPAND_RATIO, SALT_EXPAND);
-      return;
-    }
-
-    // No neutral land left: bank until the trigger ratio, then strike.
-    if (!this.hasTriggerTroops(grid, me)) return;
-    const enemies = targets.filter((t) => t.target !== NEUTRAL_PLAYER && !alliances.areAllied(me, t.target));
-    if (enemies.length === 0) return;
-    // Retaliation first (OpenFront answers the largest incoming attack), no
-    // odds roll — someone is already on our soil.
-    const retaliate = this.lastAttackedBy !== 0 ? enemies.find((e) => e.target === this.lastAttackedBy) : undefined;
-    if (retaliate) {
-      this.queueSizedAttack(grid, map, me, retaliate.sample, AI_RESERVE_RATIO, SALT_RESERVE);
-      return;
-    }
-    // Otherwise open a fight only at OpenFront's ~1/3 odds per decision, on the
-    // weakest bordering rival — a Tribe attacks by odds, not strategy.
-    if (hash01(session.peekTick(), me) >= TRIBE_POKE_ODDS) return;
-    const prey = enemies.reduce((a, b) => (grid.troopsOf(b.target) < grid.troopsOf(a.target) ? b : a));
-    this.queueSizedAttack(grid, map, me, prey.sample, AI_RESERVE_RATIO, SALT_RESERVE);
-  }
-
-  /** Queue an OpenFront ratio-model strike toward `sample` (no-op when the pool is spent). */
-  private queueSizedAttack(
-    grid: TerritoryGrid,
-    map: GameMap,
-    me: PlayerId,
-    sample: TileRef,
-    ratio: readonly [number, number],
-    salt: number,
-  ): void {
-    this.queueTroops(grid, map, me, sample, this.attackSizeTroops(grid, me, ratio, salt));
-  }
-
-  /** Queue an expand order committing `troops` toward `sample` (no-op below 1). */
-  private queueTroops(grid: TerritoryGrid, map: GameMap, me: PlayerId, sample: TileRef, troops: number): void {
-    const session = this.session;
-    if (!session || troops < 1) return;
-    const pool = grid.troopsOf(me);
-    session.queueExpand(this.config.botId, {
-      targetX: map.x(sample),
-      targetY: map.y(sample),
-      percent: Math.min(100, Math.max(1, Math.round((troops / Math.max(1, pool)) * 100))),
-    });
-  }
-
-  /**
-   * Troops a **war** strike on `target` commits, mirroring OpenFront's
-   * `calculateAttackTroops`: normally everything above the war reserve; but a
-   * *nation* attacking a *tribe* farms it proportionally
-   * (`calculateBotAttackTroops`) — send `4× the tribe's pool`, capped by the
-   * above-reserve budget, and skip entirely when the budget can't spare at
-   * least `2×` (too weak a strike would just bleed). This is why OpenFront
-   * nations graze on bots for the whole match instead of emptying their army
-   * into every tribal border.
-   */
-  private warStrikeTroops(grid: TerritoryGrid, me: PlayerId, target: PlayerId): number {
-    const budget = this.attackSizeTroops(grid, me, AI_RESERVE_RATIO, SALT_RESERVE);
-    if ((this.config.kind ?? "nation") === "nation" && this.kindOf.get(target) === "bot") {
-      const tribePool = Math.max(0, grid.troopsOf(target));
-      const wanted = Math.floor(tribePool * 4);
-      if (wanted <= budget) return wanted;
-      return budget < tribePool * 2 ? 0 : budget;
-    }
-    return budget;
-  }
-
-  /** Pick and queue one expand intent for this decision tick (or bank troops). */
-  private decide(grid: TerritoryGrid, map: GameMap): void {
-    const me = this.myPlayerId;
-    const session = this.session;
-    if (me === null || !session) return;
-    const p = this.config.personality;
-    const pool = grid.troopsOf(me);
-    const alliances = session.peekAlliances();
-
-    const targets = this.cachedFrontierTargets(grid);
-    if (targets.length === 0) return; // Fully boxed in — nothing reachable; bank income.
-
-    const neutral = targets.find((t) => t.target === NEUTRAL_PLAYER) ?? null;
-    // Allies are off the table — a pact bars attacking them, so they never enter
-    // the target-selection maths (the engine would reject such an intent anyway).
-    const enemies = targets.filter(
-      (t) => t.target !== NEUTRAL_PLAYER && !alliances.areAllied(me, t.target),
-    );
-
-    // Retaliation first: a nation under attack FIGHTS BACK. While the most
-    // recent attacker still presses our border, it is the preferred
-    // conventional target — no strength gate and no war-trigger banking
-    // (defence can't wait); rolling over passively because the aggressor
-    // "wasn't the weakest beatable rival" is exactly the unresponsive-AI feel
-    // OpenFront's nations never give. Sized like any war strike (the deep
-    // reserve stays home; a tribe aggressor is farmed proportionally). The
-    // same signal already drives the nuclear doctrine's lead trigger.
-    if (this.lastAttackedBy !== 0) {
-      const foe = enemies.find((e) => e.target === this.lastAttackedBy);
-      if (foe) {
-        this.queueTroops(grid, map, me, foe.sample, this.warStrikeTroops(grid, me, foe.target));
+  private maybeSpawnWarship(grid: TerritoryGrid, map: GameMap): void {
+    const me = this.myPlayerId!;
+    const session = this.session!;
+    if (!this.prng.chance(50)) return;
+    if (grid.buildingCountOf(me, "port") === 0) return;
+    if (session.peekWarshipCount(me) > 0) return;
+    if (grid.goldOf(me) < buildingCost("warship", 0)) return;
+    for (const [ref, type] of grid.activeBuildingEntries()) {
+      if (type !== "port" || grid.ownerOf(ref) !== me) continue;
+      for (const n of map.neighbors(ref)) {
+        if (!map.isWater(n)) continue;
+        session.queueBuild(this.config.botId, { targetX: map.x(n), targetY: map.y(n), building: "warship" });
         return;
       }
     }
+  }
 
-    // Honour an ally's target request (OpenFront): if an ally has asked us to
-    // attack someone we border and can plausibly beat, oblige at once — a
-    // nation is a helpful ally. Deterministic (lowest requester/target first).
-    const requested = new Set(alliances.targetRequestsFor(me).map((r) => r.target));
-    if (requested.size > 0) {
-      const ask = enemies.find((e) => requested.has(e.target) && pool >= grid.troopsOf(e.target) * p.attackPoolRatio);
-      if (ask) {
-        this.queueTroops(grid, map, me, ask.sample, this.warStrikeTroops(grid, me, ask.target));
-        return;
-      }
-    }
+  // -------------------------------------------------------------------------
+  // Nation nukes — OpenFront's NationNukeBehavior (targeting + save-up pacing).
+  // -------------------------------------------------------------------------
 
-    // Weakest rival we can currently beat on troop pool (deterministic tiebreak:
-    // lowest pool, then lowest target id thanks to ascending `targets` order).
-    let beatable: { target: PlayerId; sample: TileRef } | null = null;
-    let beatablePool = Infinity;
-    for (const enemy of enemies) {
-      const enemyPool = grid.troopsOf(enemy.target);
-      if (pool >= enemyPool * p.attackPoolRatio && enemyPool < beatablePool) {
-        beatablePool = enemyPool;
-        beatable = { target: enemy.target, sample: enemy.sample };
-      }
-    }
+  private maybeSendNuke(grid: TerritoryGrid, map: GameMap): void {
+    const me = this.myPlayerId!;
+    const session = this.session!;
+    if (grid.activeLevelsOf(me, "silo") === 0) return;
 
-    let sample: TileRef;
-    /** The player a war strike aims at (drives OpenFront's tribe-farming sizing); null = wilderness grab. */
-    let warTarget: PlayerId | null;
-    // A "decisive" edge is well beyond the bare ratio — enough to be worth opening
-    // a war over while cheap neutral land is still on the table.
-    const decisive = beatable !== null && pool >= beatablePool * (p.attackPoolRatio + 0.5);
-    // OpenFront's war gate: attacks on players wait until the pool has banked
-    // past the seat's trigger ratio (expansion into wilderness is exempt) —
-    // nations strike in deliberate, weighty pushes instead of a constant drip.
-    const warReady = this.hasTriggerTroops(grid, me);
+    const target = this.findBestNukeTarget(grid);
+    if (target === null) return;
+    // Never a tribe (a warhead on a map-filler is a waste), never an ally, and
+    // the anti-human throttle applies to the button that hurts most too.
+    if (this.kindOf.get(target) === "bot") return;
+    if (session.peekAlliances().areAllied(me, target)) return;
+    if (!this.shouldAttack(target)) return;
 
-    if (beatable && warReady && (!neutral || (p.aggression >= 0.5 && decisive))) {
-      sample = beatable.sample;
-      warTarget = beatable.target;
-    } else if (neutral) {
-      sample = neutral.sample;
-      warTarget = null;
-    } else if (beatable && warReady) {
-      // No neutral land and only this rival is beatable.
-      sample = beatable.sample;
-      warTarget = beatable.target;
-    } else if (beatable) {
-      // Boxed in with a beatable rival but still below the trigger — bank.
+    const silos = grid.buildingCountOf(me, "silo");
+    const gold = grid.goldOf(me);
+    let kind: NukeKind;
+    if (gold >= this.perceivedNukeCost(grid, "hydrogen", silos)) {
+      kind = "hydrogen";
+    } else if (
+      (!this.isHydroNation || this.isUnderHeavyAttack(grid)) &&
+      gold >= this.perceivedNukeCost(grid, "atom", silos)
+    ) {
+      kind = "atom";
+    } else {
       return;
-    } else {
-      // Boxed in by stronger rivals only. Banking income is the right call —
-      // unless the pool is saturating (capped at the territory-scaled ceiling),
-      // in which case further income is lost, so spend down on the softest target.
-      // With nothing left to fight (only allies or neutral-free borders), bank.
-      if (enemies.length === 0) return;
-      if (pool < this.troopCapOf(grid, me) * 0.9) return;
-      const softest = enemies.reduce((a, b) => (grid.troopsOf(b.target) < grid.troopsOf(a.target) ? b : a));
-      sample = softest.sample;
-      warTarget = softest.target;
     }
 
-    // Nation confusion (OpenFront): on lower difficulties a nation sometimes
-    // misdirects its move at a *different* border target than the one it
-    // meant — a readable mistake, not a random click. Candidates exclude
-    // allies (the engine would just reject those); the roll and the pick are
-    // deterministic (hashed tick × seat), so replays stay identical.
-    const confusion = this.config.confusionChance ?? 0;
-    if (confusion > 0 && hash01(session.peekTick(), me) < confusion) {
-      const misdirects = targets.filter(
-        (t) => t.sample !== sample && (t.target === NEUTRAL_PLAYER || !alliances.areAllied(me, t.target)),
-      );
-      if (misdirects.length > 0) {
-        sample = misdirects[(session.peekTick() + me) % misdirects.length].sample;
+    const aim = this.pickNukeAim(grid, map, target);
+    if (aim === null) return;
+    session.queueNuke(this.config.botId, { targetX: map.x(aim), targetY: map.y(aim), kind });
+    // Launching inflates the next warhead's felt price (atom ×1.5, hydrogen
+    // ×1.25) — the simulated saving-for-a-MIRV that stops atom spam.
+    if (kind === "atom") this.atomPerceivedCost = Math.ceil(this.atomPerceivedCost * 1.5);
+    else this.hydroPerceivedCost = Math.ceil(this.hydroPerceivedCost * 1.25);
+  }
+
+  /** OpenFront's nuke target priorities, top first. */
+  private findBestNukeTarget(grid: TerritoryGrid): PlayerId | null {
+    const me = this.myPlayerId!;
+    const session = this.session!;
+    const relations = session.peekRelations();
+    const alliances = session.peekAlliances();
+    const living = grid.players().filter((p) => grid.tileCountOf(p) > 0);
+
+    // Hard/Impossible endgame: two players left → the other one.
+    if ((this.difficulty === "hard" || this.difficulty === "impossible") && living.length === 2) {
+      const other = living.find((p) => p !== me);
+      if (other !== undefined) return other;
+    }
+
+    // Retaliation is the lead trigger.
+    const attacker = this.findIncomingAttacker(grid);
+    if (attacker !== null) return attacker;
+
+    // Impossible + FFA: decapitate a >50%-of-the-map crown outright.
+    const cleanLand = Math.max(1, grid.capturableCount - grid.falloutCount);
+    if (this.difficulty === "impossible") {
+      const crown = [...living].sort((a, b) => grid.tileCountOf(b) - grid.tileCountOf(a))[0];
+      if (crown !== undefined && crown !== me && !alliances.areAllied(me, crown)) {
+        if (grid.tileCountOf(crown) / cleanLand > 0.5) return crown;
       }
     }
 
-    // OpenFront sizing: a war strike keeps the deep reserve at home (and farms
-    // a tribe proportionally), a wilderness grab keeps only the small expand
-    // reserve (near-full commitment). Sizing follows the *intended* target even
-    // when confusion misdirected the click — the mistake is in the aim, not the
-    // muster.
-    if (warTarget !== null) {
-      this.queueTroops(grid, map, me, sample, this.warStrikeTroops(grid, me, warTarget));
-    } else {
-      this.queueSizedAttack(grid, map, me, sample, AI_EXPAND_RATIO, SALT_EXPAND);
+    // An ally's painted target is our target.
+    for (const req of alliances.targetRequestsFor(me)) {
+      if (relations.tierOf(me, req.from) < RELATION_FRIENDLY) continue;
+      if (req.target === me || alliances.areAllied(me, req.target)) continue;
+      if (grid.tileCountOf(req.target) > 0) return req.target;
     }
+
+    // The most hated player — unless they're already so weak the army handles it.
+    for (const entry of relations.sortedOf(me)) {
+      if (entry.tier !== RELATION_HOSTILE) continue;
+      const other = entry.other;
+      if (!grid.hasPlayer(other) || grid.tileCountOf(other) === 0) continue;
+      if (alliances.areAllied(me, other)) continue;
+      if (this.troopCapOf(grid, me) >= this.troopCapOf(grid, other) * 2) continue;
+      return other;
+    }
+
+    // The FFA crown, once its lead over us passes the difficulty threshold.
+    const sorted = [...living].sort((a, b) => grid.tileCountOf(b) - grid.tileCountOf(a));
+    const crown = sorted[0];
+    if (crown !== undefined) {
+      if (this.difficulty === "impossible" && crown === me && sorted.length >= 2) {
+        const second = sorted[1];
+        if (!alliances.areAllied(me, second)) return second;
+      }
+      if (crown !== me && !alliances.areAllied(me, crown)) {
+        const lead = grid.tileCountOf(crown) / cleanLand - grid.tileCountOf(me) / cleanLand;
+        const threshold =
+          this.difficulty === "easy" ? 0.4 : this.difficulty === "medium" ? 0.3 : this.difficulty === "hard" ? 0.2 : 0.1;
+        if (lead > threshold) return crown;
+      }
+    }
+    return null;
+  }
+
+  private isUnderHeavyAttack(grid: TerritoryGrid): boolean {
+    const me = this.myPlayerId!;
+    const incoming = this.session!.peekIncomingAttacks(me).reduce((s, a) => s + a.troops, 0);
+    return incoming >= grid.troopsOf(me);
+  }
+
+  /**
+   * The warhead's *felt* price while saving toward the MIRV+hydrogen stockpile
+   * (real price once the stockpile is banked, only two players remain, or —
+   * on Hard/Impossible — the nation is fighting for its life).
+   */
+  private perceivedNukeCost(grid: TerritoryGrid, kind: NukeKind, silos: number): number {
+    const me = this.myPlayerId!;
+    const real = nukeCost(kind, silos);
+    const living = grid.players().filter((p) => grid.tileCountOf(p) > 0);
+    if (living.length === 2) return real;
+    if (grid.goldOf(me) > nukeCost("mirv", silos) + nukeCost("hydrogen", silos)) return real;
+    if ((this.difficulty === "hard" || this.difficulty === "impossible") && this.isUnderHeavyAttack(grid)) return real;
+    return kind === "atom" ? Math.max(real, this.atomPerceivedCost) : Math.max(real, this.hydroPerceivedCost);
+  }
+
+  /**
+   * The tile the warhead aims at: a bounded, deterministic sample of the
+   * victim's territory, preferring ground far from our shared border so the
+   * fallout doesn't sterilise land we'd take next. (This engine's aiming —
+   * OpenFront additionally scores structures and dodges SAM trajectories.)
+   */
+  private pickNukeAim(grid: TerritoryGrid, map: GameMap, target: PlayerId): TileRef | null {
+    const me = this.myPlayerId!;
+    const tiles = grid.tilesViewOf(target);
+    const total = grid.tileCountOf(target);
+    if (total === 0) return null;
+    const front = this.frontier(grid).find((t) => t.target === target);
+    const refX = front ? map.x(front.sample) : null;
+    const refY = front ? map.y(front.sample) : null;
+
+    const stride = Math.max(1, Math.floor(total / 64));
+    let best: TileRef | null = null;
+    let bestDist = -1;
+    let i = 0;
+    for (const ref of tiles) {
+      if (i++ % stride !== 0) continue;
+      if (refX === null || refY === null) return ref;
+      const d = Math.max(Math.abs(map.x(ref) - refX), Math.abs(map.y(ref) - refY));
+      if (d > bestDist) {
+        bestDist = d;
+        best = ref;
+      }
+    }
+    return best;
   }
 }

@@ -5,8 +5,9 @@ import { NEUTRAL_PLAYER, TerritoryGrid } from "../src/Core/TerritoryGrid.js";
 import { RasterConflict } from "../src/Core/RasterConflict.js";
 import { ALLIANCE_DURATION_TICKS, AllianceRegistry } from "../src/Core/alliances.js";
 import { encodeTile } from "../src/Core/terrainCodec.js";
+import { buildTerrainFromMask } from "../src/Core/terrainBuilder.js";
 import { RasterGameSession } from "../src/Server/RasterGameSession.js";
-import { RasterBotController, type RasterBotPersonality } from "../src/Server/RasterBotController.js";
+import { RasterBotController } from "../src/Server/RasterBotController.js";
 import type { RasterServerMessage, RasterSnapshot } from "../src/Core/types.js";
 
 const flatLand = (width: number, height: number): GameMap => {
@@ -190,48 +191,78 @@ test("expanding into an ally's land is rejected with ALLIED", () => {
 
 // ---- Bots: respond to and seek alliances ---------------------------------
 
-const DEFENSIVE: RasterBotPersonality = {
-  id: "test-defensive",
-  decisionCooldownTicks: 0,
-  minPool: 1,
-  attackPoolRatio: 1.6,
-  aggression: 0.2,
-};
-
-const AGGRESSIVE: RasterBotPersonality = {
-  id: "test-aggressive",
-  decisionCooldownTicks: 0,
-  minPool: 1,
-  attackPoolRatio: 1.0,
-  aggression: 0.9,
-};
-
-test("a defensive bot accepts an alliance offer", () => {
-  const session = new RasterGameSession({ width: 40, height: 28, seed: 11 });
+test("an easy nation honours the earlygame honeymoon: an early offer is accepted", () => {
+  // Flat map split down the middle: nobody can hit the 80% win and freeze the
+  // clock before the nation's decision beats.
+  const flatW = 60;
+  const flatH = 20;
+  const flat = buildTerrainFromMask({
+    width: flatW, height: flatH,
+    land: new Uint8Array(flatW * flatH).fill(1),
+    elevation: new Uint8Array(flatW * flatH),
+  });
+  const session = new RasterGameSession({ prebuiltMap: flat, spawnPhaseTicks: 0 });
   session.subscribe("human", () => {}); // player 1
-  const bot = new RasterBotController({ botId: "bot", personality: DEFENSIVE });
-  bot.attach(session); // player 2
-
-  session.proposeAlliance("human", bot.getPlayerId()!);
-  for (let i = 0; i < 5; i += 1) session.tick();
-
-  assert.equal(session.peekAlliances().areAllied(1, bot.getPlayerId()!), true);
-});
-
-test("an aggressive bot declines an offer from a weaker nation", () => {
-  const session = new RasterGameSession({ width: 40, height: 28, seed: 11 });
-  session.subscribe("human", () => {}); // player 1
-  const bot = new RasterBotController({ botId: "bot", personality: AGGRESSIVE });
+  const bot = new RasterBotController({ botId: "honeymoon", kind: "nation", difficulty: "easy", seed: 0 });
   bot.attach(session); // player 2
   const botId = bot.getPlayerId()!;
+  const grid = session.peekGrid();
+  session.tick();
+  for (let y = 0; y < flatH; y += 1) {
+    for (let x = 0; x < flatW; x += 1) {
+      grid.claim(y * flatW + x, x < 30 ? 1 : botId);
+    }
+  }
+  grid.setTroops(1, 5_000_000);
 
-  // Make the human clearly the weaker party, so a ruthless bot has no reason to ally.
-  session.peekGrid().setTroops(1, 1);
+  // OpenFront's Easy nations accept ~90% of offers in the first five minutes
+  // (the earlygame honeymoon); this seat's fixed PRNG stream accepts.
   session.proposeAlliance("human", botId);
-  for (let i = 0; i < 5; i += 1) session.tick();
+  let allied = false;
+  for (let i = 0; i < 300 && !allied; i += 1) {
+    session.tick();
+    allied = session.peekAlliances().areAllied(1, botId);
+  }
+  assert.equal(allied, true, "the early offer was accepted");
+});
 
-  assert.equal(session.peekAlliances().areAllied(1, botId), false, "the offer is not accepted");
-  assert.deepEqual(session.peekAlliances().incomingProposals(botId), [], "the offer is declined, not left pending");
+test("a nation declines an offer from someone who just attacked it", () => {
+  const flatW = 60;
+  const flatH = 20;
+  const flat = buildTerrainFromMask({
+    width: flatW, height: flatH,
+    land: new Uint8Array(flatW * flatH).fill(1),
+    elevation: new Uint8Array(flatW * flatH),
+  });
+  const session = new RasterGameSession({ prebuiltMap: flat, spawnPhaseTicks: 0 });
+  session.subscribe("human", () => {}); // player 1
+  // Impossible: no coin-flip confusion, and the weak human is no "threat", so
+  // the grudge (relation < neutral after being attacked) decides — a refusal.
+  const bot = new RasterBotController({ botId: "grudge", kind: "nation", difficulty: "impossible", seed: 0 });
+  bot.attach(session); // player 2
+  const botId = bot.getPlayerId()!;
+  const grid = session.peekGrid();
+  session.tick();
+  for (let y = 0; y < flatH; y += 1) {
+    for (let x = 0; x < flatW; x += 1) {
+      grid.claim(y * flatW + x, x < 30 ? 1 : botId);
+    }
+  }
+
+  // The human strikes first — the attacked nation's attitude bottoms out —
+  // then extends a hollow hand.
+  session.queueExpand("human", { targetX: 31, targetY: 10, percent: 1 });
+  session.tick();
+  grid.setTroops(1, 100); // no longer a threat worth appeasing
+  session.proposeAlliance("human", botId);
+
+  let responded = false;
+  for (let i = 0; i < 300 && !responded; i += 1) {
+    session.tick();
+    responded = session.peekAlliances().incomingProposals(botId).length === 0;
+  }
+  assert.ok(responded, "the offer was answered");
+  assert.equal(session.peekAlliances().areAllied(1, botId), false, "the grudge wins: no alliance");
 });
 
 test("a pact expires naturally after its lifetime — announced, no betrayal tally", () => {

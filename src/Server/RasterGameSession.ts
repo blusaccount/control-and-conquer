@@ -4,6 +4,19 @@ import { NEUTRAL_PLAYER, TerritoryGrid, type PlayerId } from "../Core/TerritoryG
 import type { GameMap, TileRef } from "../Core/GameMap.js";
 import { RasterConflict, type AttackIntent, type AttackRejectReason, type SeaAttackIntent } from "../Core/RasterConflict.js";
 import { AllianceRegistry } from "../Core/alliances.js";
+import {
+  ALLIANCE_FORMED_BONUS,
+  ATTACKED_RELATION_PENALTY,
+  BREAK_ALLIANCE_NEIGHBOR_PENALTY,
+  BREAK_ALLIANCE_VICTIM_PENALTY,
+  DONATE_TROOPS_BONUS,
+  donationGoldRelation,
+  EMBARGO_MALUS,
+  EMOJI_HOSTILE_PENALTY,
+  EMOJI_NICE_BONUS,
+  RelationLedger,
+  TARGET_REQUEST_PENALTY,
+} from "../Core/relations.js";
 import type {
   RasterActionRejectedEvent,
   RasterAttackFront,
@@ -334,6 +347,14 @@ export class RasterGameSession {
   private readonly pendingExpands: PendingExpand[] = [];
   private readonly pendingBuilds: PendingBuild[] = [];
   private readonly pendingNukes: PendingNuke[] = [];
+  /**
+   * The OpenFront relations ledger: every player's decaying attitude toward
+   * every other, moved by attacks, pacts, betrayals, donations, embargoes and
+   * emoji. Feeds the nation AI only (grudge targets, alliance decisions,
+   * embargo automation) — it never touches the grid, so replicas that replay
+   * recorded commands can ignore it.
+   */
+  private readonly relations = new RelationLedger();
   /** Tick (exclusive) each Missile Silo, keyed by tile, is ready to fire again. */
   private readonly siloReadyAt = new Map<TileRef, number>();
   private recentEvents: string[] = ["Match started."];
@@ -1068,6 +1089,7 @@ export class RasterGameSession {
       this.pushEvent(`${this.nameOf(me)} proposed an alliance to ${this.nameOf(targetId)}.`);
     } else if (outcome === "accepted") {
       this.pushEvent(`${this.nameOf(me)} and ${this.nameOf(targetId)} formed an alliance.`);
+      this.sealAllianceRelations(me, targetId);
     }
   }
 
@@ -1079,9 +1101,29 @@ export class RasterGameSession {
     if (accept) {
       if (this.alliances.accept(me, targetId, this.conflict.tick)) {
         this.pushEvent(`${this.nameOf(me)} and ${this.nameOf(targetId)} formed an alliance.`);
+        this.sealAllianceRelations(me, targetId);
       }
     } else if (this.alliances.decline(me, targetId)) {
       this.pushEvent(`${this.nameOf(me)} declined ${this.nameOf(targetId)}'s alliance offer.`);
+    }
+  }
+
+  /** A sealed pact vaults both parties' attitudes to full trust (OpenFront's +100/+100). */
+  private sealAllianceRelations(a: PlayerId, b: PlayerId): void {
+    this.relations.update(a, b, ALLIANCE_FORMED_BONUS);
+    this.relations.update(b, a, ALLIANCE_FORMED_BONUS);
+  }
+
+  /**
+   * Relations fallout of `breaker` betraying `victim`: the victim's trust
+   * bottoms out, and every player whose border touches the breaker watched it
+   * happen and distrusts them too (OpenFront's -100 / neighbour -40).
+   */
+  private applyBetrayalRelations(breaker: PlayerId, victim: PlayerId): void {
+    this.relations.update(victim, breaker, BREAK_ALLIANCE_VICTIM_PENALTY);
+    for (const t of this.grid.frontierTargets(breaker)) {
+      if (t.target === NEUTRAL_PLAYER || t.target === victim) continue;
+      this.relations.update(t.target, breaker, BREAK_ALLIANCE_NEIGHBOR_PENALTY);
     }
   }
 
@@ -1112,6 +1154,7 @@ export class RasterGameSession {
       // (OpenFront's traitor debuffs) — see RasterConflict.markTraitor. The
       // registry also auto-embargoes the wronged partner.
       this.conflict.markTraitor(me);
+      this.applyBetrayalRelations(me, targetId);
       this.pushEvent(`${this.nameOf(me)} betrayed their alliance with ${this.nameOf(targetId)}.`);
     }
   }
@@ -1133,12 +1176,16 @@ export class RasterGameSession {
       if (amount < 1) return;
       this.grid.addTroops(me, -amount);
       this.grid.addTroops(targetId, amount);
+      // Goodwill: a troop gift is the strongest gesture in the ledger.
+      this.relations.update(targetId, me, DONATE_TROOPS_BONUS);
       this.pushEvent(`${this.nameOf(me)} sent ${amount} troops to ${this.nameOf(targetId)}.`);
     } else {
       const amount = Math.floor(this.grid.goldOf(me) * (pct / 100));
       if (amount < 1) return;
       this.grid.addGold(me, -amount);
       this.grid.addGold(targetId, amount);
+      // Gold buys goodwill by the chunk, inflating as the match ages.
+      this.relations.update(targetId, me, donationGoldRelation(amount, this.conflict.tick, this.difficulty));
       this.pushEvent(`${this.nameOf(me)} sent ${amount} gold to ${this.nameOf(targetId)}.`);
     }
   }
@@ -1170,9 +1217,12 @@ export class RasterGameSession {
     if (me === null) return;
     if (on) {
       if (this.alliances.setEmbargo(me, targetId)) {
+        // A standing embargo sours its target for as long as it lasts.
+        this.relations.update(targetId, me, EMBARGO_MALUS);
         this.pushEvent(`${this.nameOf(me)} placed a trade embargo on ${this.nameOf(targetId)}.`);
       }
     } else if (this.alliances.clearEmbargo(me, targetId)) {
+      this.relations.update(targetId, me, -EMBARGO_MALUS);
       this.pushEvent(`${this.nameOf(me)} lifted its trade embargo on ${this.nameOf(targetId)}.`);
     }
   }
@@ -1184,6 +1234,8 @@ export class RasterGameSession {
     if (me === null) return;
     if (!this.grid.hasPlayer(targetId) || this.eliminated.has(targetId)) return;
     if (this.alliances.requestTarget(me, allyId, targetId)) {
+      // Painting a target on someone is public — they resent the requester.
+      this.relations.update(targetId, me, TARGET_REQUEST_PENALTY);
       this.pushEvent(`${this.nameOf(me)} asked ${this.nameOf(allyId)} to attack ${this.nameOf(targetId)}.`);
     }
   }
@@ -1206,6 +1258,13 @@ export class RasterGameSession {
     const last = this.lastEmojiTick.get(me);
     if (last !== undefined && this.conflict.tick - last < EMOJI_COOLDOWN_TICKS) return;
     this.lastEmojiTick.set(me, this.conflict.tick);
+    // Emoji carry a small relations charge (OpenFront: a friendly reaction
+    // warms the recipient, a hostile one stings). RASTER_EMOJIS order:
+    // 👍 👎 😂 😡 🤝 🫡 💀 🔥 — 0/4/5 read as friendly, 1/3/6 as hostile.
+    if (targetId !== me) {
+      if (emoji === 0 || emoji === 4 || emoji === 5) this.relations.update(targetId, me, EMOJI_NICE_BONUS);
+      else if (emoji === 1 || emoji === 3 || emoji === 6) this.relations.update(targetId, me, EMOJI_HOSTILE_PENALTY);
+    }
     // Float it over a tile of the reacted-to player (their land is the anchor).
     const anchor = this.grid.anyTileOf(targetId);
     if (anchor === undefined) return;
@@ -1267,8 +1326,15 @@ export class RasterGameSession {
       } else if (result.kind === "land") {
         intents.push(result.intent);
         eventLines.push(this.landEventLine(result.intent));
+        // Being attacked is the big relations hit (harder tiers hold the
+        // grudge harder) — the defender's attitude toward the aggressor drops
+        // the moment the front opens, exactly when OpenFront applies it.
+        if (result.intent.target !== NEUTRAL_PLAYER) {
+          this.relations.update(result.intent.target, attacker, ATTACKED_RELATION_PENALTY[this.difficulty]);
+        }
       } else {
         // Sea assault: dispatch a transport ship now (it persists across ticks).
+        const destOwner = this.grid.ownerOf(result.intent.dest);
         const reason = this.conflict.launchShip(result.intent);
         if (reason) {
           rejections.push({
@@ -1277,6 +1343,9 @@ export class RasterGameSession {
           });
         } else {
           eventLines.push(this.shipEventLine(result.intent));
+          if (destOwner !== NEUTRAL_PLAYER) {
+            this.relations.update(destOwner, attacker, ATTACKED_RELATION_PENALTY[this.difficulty]);
+          }
         }
       }
     }
@@ -1328,6 +1397,10 @@ export class RasterGameSession {
     }
 
     const tickResult = this.conflict.processTick(intents);
+
+    // Attitudes drift back toward neutral a little every tick — old grudges
+    // (and old favours) fade in minutes, exactly like OpenFront's decay.
+    this.relations.decay();
 
     // Track each player's peak territory for the run stats.
     for (const id of this.grid.players()) {
@@ -1395,6 +1468,7 @@ export class RasterGameSession {
         if (this.alliances.areAllied(detonation.attacker, victim)) {
           this.alliances.breakAlliance(detonation.attacker, victim);
           this.conflict.markTraitor(detonation.attacker);
+          this.applyBetrayalRelations(detonation.attacker, victim);
           this.pushEvent(`${this.nameOf(detonation.attacker)} nuked their ally ${this.nameOf(victim)} — the pact is broken!`);
         } else {
           this.pushEvent(`${this.nameOf(detonation.attacker)} detonated ${nukeLabel(detonation.kind)} on ${this.nameOf(victim)}'s territory.`);
@@ -1597,6 +1671,31 @@ export class RasterGameSession {
     return this.conflict.warshipCountOf(playerId);
   }
 
+  /** Bot helper: the relations ledger (grudges/goodwill feeding nation AI decisions). */
+  public peekRelations(): RelationLedger {
+    return this.relations;
+  }
+
+  /** Bot helper: the match's AI difficulty (drives every nation-AI gate). */
+  public peekDifficulty(): RasterDifficulty {
+    return this.difficulty;
+  }
+
+  /** Bot helper: active land attacks pressing `defender` (attacker + committed troops). */
+  public peekIncomingAttacks(defender: PlayerId): Array<{ attacker: PlayerId; troops: number }> {
+    return this.conflict.incomingAttacksOf(defender);
+  }
+
+  /** Bot helper: total troops `attacker` currently has committed to outgoing land attacks. */
+  public peekOutgoingAttackTroops(attacker: PlayerId): number {
+    return this.conflict.outgoingAttackTroopsOf(attacker);
+  }
+
+  /** Bot helper: whether `id` is inside the conflict engine's 30-second traitor window. */
+  public peekConflictTraitor(id: PlayerId): boolean {
+    return this.conflict.isTraitor(id);
+  }
+
   /**
    * Eliminate any player that now holds no territory — a nation is beaten only
    * when its *entire* territory has been captured; there is no capital shortcut.
@@ -1624,8 +1723,9 @@ export class RasterGameSession {
       eliminated.push(playerId);
       this.eliminationTick.set(playerId, this.conflict.tick);
       // A wiped-out nation leaves the diplomacy graph — its pacts and any pending
-      // offers dissolve with it.
+      // offers dissolve with it, and nobody carries an attitude toward the dead.
       this.alliances.removePlayer(playerId);
+      this.relations.removePlayer(playerId);
 
       // Credit the player now holding the eliminated nation's last sampled tile.
       const sample = this.lastTileSeen.get(playerId);
