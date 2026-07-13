@@ -135,12 +135,37 @@ Each radial slice renders the emoji as the button glyph *and* as the text
 label below it (`renderRadialSlices` uses `item.label` for both the tooltip
 and the visible label; for emoji slices label == glyph).
 
-### 5. (Observation) Simulation drift under load
+### 5. (UX) Trade pacing: a new port pays nothing for minutes, silently
+Mechanics are correct (11/11 `tests/tradeSystem.test.ts`; embargo blocking
+included), and bots do build ports. But in a live idle measurement the first
+several minutes after building a port earned **exactly** passive income
+(+120,100 gold observed vs ~120,561 passive over 2 idle minutes, with six
+bot ports on the map); the first payout — a single +27K jump consistent with
+a long-haul `tradeShipGold` arrival — landed ~3.5 minutes in. Nothing in the
+UI tells the player a trade ship was dispatched or arrived (no event line,
+no status), so a port can look broken while partners/routes/trip-time line
+up. Suggest an event/status line on trade arrivals ("Trade ship arrived:
++27K gold") and possibly on first dispatch.
+
+### 6. (UX) "Easy" is unforgiving for passive players
+In three separate easy solo runs, a small nation that stopped expanding (to
+idle-observe the economy) was attacked and fully eliminated by bots within
+3.5–7 minutes. Fine for OpenFront veterans; brutal for a first-time player
+reading the UI. Worth considering a grace period or gentler early aggression
+on easy.
+
+### 7. (Cosmetic) Eliminated player's HUD keeps a live troop pool
+After elimination the control panel shows the dead nation still regenerating
+troops ("1.74K / 10.0K (+266/s)" with Land 0.0%) — sim values for a seat that
+no longer exists on the map. Freeze or hide the resource rows when
+spectating.
+
+### 8. (Observation) Simulation drift under load
 With several concurrent matches + browsers on a 4-core box the server logged
 "Simulation drift detected (1454ms behind)… Resyncing schedule" once and
 recovered cleanly. Not user-visible; worth knowing it triggers under load.
 
-### 6. (Non-issue, for the record)
+### 9. (Non-issue, for the record)
 - On-screen zoom +/- buttons are hidden on desktop — intentional
   (`@media (pointer: coarse)`).
 - Event log is hidden by default and opt-in via settings — intentional;
@@ -160,9 +185,12 @@ From the dedicated verification rounds (solo, Earth Standard, easy):
 - Attack ratio readout: "10% (490)" against a 4.9K displayed pool — exact.
 - Boat: "Expanding toward (219, 5) by boat with 20% of pool" + transport
   event with 36,413 troops.
-- Trade: see the "Trade pacing" note in Issues — mechanics are unit-tested
-  (11/11 pass in `tests/tradeSystem.test.ts`), live pacing was measured with
-  an idle gold integral.
+- Trade (idle gold integral, port at (170,0), six bot ports on the map):
+  income tracked passive exactly for ~3 minutes (60s: +60,300 vs ~60,295;
+  121s: +120,100 vs ~120,561; 181s: +181,100 vs ~180,843), then one +27K
+  single-window jump — the first trade payout — before bots eliminated the
+  idle nation at 209s. See Issue 5 (pacing/feedback) and Issue 6
+  (easy-difficulty aggression).
 
 ## How it was driven
 
