@@ -17,14 +17,25 @@ drives every live `RasterGameSession.tick()`.
 
 For each session tick (`RasterGameSession.tick`):
 
-1. Drain the expand intents queued since the previous tick.
-2. Validate each against the authoritative state; valid ones become
-   `AttackIntent`s, invalid ones become `SERVER_RASTER_ACTION_REJECTED` events.
+1. Drain the expand intents queued since the previous tick. Each is validated
+   against the authoritative state; valid ones become `AttackIntent`s (or
+   dispatch a transport ship), invalid ones become
+   `SERVER_RASTER_ACTION_REJECTED` events. Attacking a player also applies
+   the relations penalty (`src/Core/relations.ts`) at this point.
+2. Drain queued build orders (each spends gold and places/upgrades a
+   structure, or is rejected), then queued nuke launches (each spends gold
+   and reloads its silo, or is rejected — **builds always drain before
+   nukes**, whatever order they were queued in).
 3. Advance the conflict engine one step (`RasterConflict.processTick`).
-4. Broadcast a fresh `RasterSnapshot` to every subscriber.
+4. Decay all relations one step toward neutral.
+5. Broadcast a fresh `RasterSnapshot` to every subscriber.
 
-WebSocket messages never mutate game state immediately. They are enqueued via
-`queueExpand` and only applied at the next tick boundary.
+Expand, build and nuke messages never mutate game state immediately: they are
+enqueued via `queueExpand`/`queueBuild`/`queueNuke` and only applied at the
+next tick boundary. Diplomacy commands (alliances, donations, emoji,
+embargoes) and structure deletion apply on arrival — but every command,
+whichever path it takes, is recorded at the session entry point in exact
+application order, which is what keeps lockstep replicas bit-identical.
 
 ## System Order inside `RasterConflict.processTick`
 
@@ -59,7 +70,8 @@ This stable ordering is critical for reproducible outcomes.
 The only inputs to the engine are the player-supplied intents and the terrain,
 which is generated once at construction from a fixed seed (or loaded from a
 hand-authored map). There is no `Math.random` or `Date.now` in the simulation
-path. Determinism can still be compromised by:
+path; where the engine or the AI needs randomness (nuke scatter, bot dice) it
+draws from a seeded `Prng` (`src/Core/prng.ts`, the sfc32 generator). Determinism can still be compromised by:
 
 - Introducing real-time or unseeded-random rules inside simulation logic.
 - Changing intent processing order away from stable FIFO.

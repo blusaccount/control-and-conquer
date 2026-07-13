@@ -9,6 +9,22 @@
 > (Die früheren Begleit-Dokumente Gap-Analyse, Balance-Replication-Plan und
 > Playthrough-Notizen wurden als veraltet entfernt.)
 
+> **Status-Update (2026-07-13):** Seit dem Review sind über den Plan hinaus
+> gelandet: das PvP-Fundament **M1+M2** (geteilte Lockstep-Sessions, private
+> Lobbys mit Share-Code/Invite-Link/öffentlicher Liste, Reconnect mit
+> Resume-Token + Turn-Backlog — s. `docs/multiplayer-authority.md`), der
+> **Map-Editor** mit `.ccmap`-Import/Export, und ein kompletter
+> **KI-Parity-Rewrite**: die frühere Persönlichkeiten-KI wurde durch
+> OpenFronts exaktes Nation/Tribe-Modell ersetzt (Schwierigkeits-gestaffelte
+> Strategielisten, Relations-Ledger, Allianz-Urteil, MIRV-Programm,
+> SAM-bewusstes Nuke-Aiming, Warship-Retaliation, Emoji-Chatter; Werte ohne
+> Code-Übernahme extrahiert — Ledger in `docs/ai-openfront-parity.md`).
+> Eroberte Gebäude **wechseln seitdem den Besitzer** (OpenFront-Semantik;
+> Defense Posts werden geschleift, Tribes löschen Erbeutetes) — ältere
+> Akzeptanzkriterien unten („Eroberung zerstört Struktur") beschreiben den
+> damaligen Stand. Erwähnungen von „Persönlichkeiten" unten sind ebenso
+> historisch. Teststand: 416 grün.
+
 ## 1) Lizenz-Evaluierung (Grundlage für alles Weitere)
 
 Recherchestand 2026-07-02, Quellen: `LICENSING.md`, `LICENSE`, `LICENSE-ASSETS`
@@ -88,7 +104,7 @@ Defeat/Spectate.
 | L5 | **Win-Condition** | Prozent-Schwelle der Landfläche (FFA; Teams 95 %) → Spiele *enden* | **erledigt (PR B)** — `WIN_TILE_FRACTION = 0.8`, Match endet an der Schwelle; Leaderboard zeigt Sieg-Fortschritt | — |
 | L6 | Emojis / Quick-Chat | Emoji-Reaktionen übers Territorium, Preset-Nachrichten | **erledigt (PR E)** — 8-Emoji-Set, Radial-Ast, über dem Ziel-Territorium schwebend + verblassend, Bot-Reaktionen (🤝/👎/😡); Preset-Chat bewusst als Event-Zeilen | — |
 | L7 | Spenden / Zielanfragen / Embargo | Truppen-/Gold-Spende an Verbündete, Target-Request, Handels-Embargo (manuell + automatisch bei Verrat) | **erledigt (PR F)** — Truppen-/Gold-Spende (Slider-%), „Verbündete angreifen lassen" (Target-Request, Bots folgen), Embargo (manuell + auto bei Verrat, sperrt Trade-Schiffe) | — |
-| L8 | Waffen-Feinheiten | MIRV = Schwarm vieler kleiner Sprengköpfe übers Zielterritorium; SAM-Abfangquote je Waffentyp; Defense-Post-Geschütz (Shells vs. Schiffe) | MIRV splittet in 6; SAM flach 75 %; Forts schießen nicht | mittel |
+| L8 | Waffen-Feinheiten | MIRV = Schwarm vieler kleiner Sprengköpfe übers Zielterritorium; SAM-Abfangquote je Waffentyp; Defense-Post-Geschütz (Shells vs. Schiffe) | **großteils erledigt (PR G)** — MIRV-Schwarm (bis 350 Warheads), Fort-Geschütz, Hydrogen-Radien; offen: SAM-Quote je Waffentyp | niedrig (Rest) |
 | L9 | Map-Katalog | Dutzende kuratierte Karten, Featured/All/Favorites/Suche, Random | 3 Größen derselben Earth-Karte | **hoch** (größte Content-Lücke) |
 | L10 | Schwierigkeit „Impossible" + Nation-Confusion | 4 Stufen (Impossible: Start 31 250, Cap ×1.25, Wachstum ×1.05); Fehlangriffs-Chance 10/5/2.5/0 % | **erledigt (PR J)** — inkl. Fix: Solo-Worker seatet jetzt identisch zum Server (Bot/Nation-Split + Difficulty) | — |
 | L11 | Identität/Kosmetik | Name, Flagge, Muster/Skins, Clans | Farbe/Emoji deterministisch aus Id | mittel |

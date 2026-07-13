@@ -41,9 +41,9 @@ OpenFront uses) and rolls once at seating:
   OpenFront's 1-in-10 early-strike roll.
 - Strategy order by difficulty (Easy dumbest → Impossible sharpest):
   - Easy: nuked, bots, retaliate, assist, betray, hated, weakest
-  - Medium: bots, nuked, retaliate, assist, betray, hated, traitor, weakest, island
-  - Hard: bots, retaliate, assist, betray, nuked, traitor, hated, veryWeak, victim, weakest, island
-  - Impossible: retaliate, bots, veryWeak, assist, traitor, betray, victim, nuked, hated, weakest, island
+  - Medium: bots, nuked, retaliate, assist, betray, hated, afk, traitor, weakest, island
+  - Hard: bots, retaliate, assist, betray, nuked, traitor, afk, hated, veryWeak, victim, weakest, island
+  - Impossible: retaliate, bots, veryWeak, assist, traitor, afk, betray, victim, nuked, hated, weakest, island
 - **Anti-human throttle** (`shouldAttack`): Easy nations follow through on only
   1-in-4 attack decisions against a human, Medium 3-in-4, Hard/Impossible
   always. Neutral land, tribes and traitors are always fair game; tribes never
@@ -60,7 +60,14 @@ OpenFront uses) and rolls once at seating:
 - Strategy details: `victim` = a rival with >50% of their troops already under
   incoming attack; `veryWeak` = under 15% of their ceiling; `weakest` = the
   weakest bordering enemy, only if weaker than us; `traitor` = a marked traitor
-  under 1.2× our troops; `hated` = worst-relation player (≤3× our troops).
+  under 1.2× our troops; `hated` = worst-relation player (≤3× our troops);
+  `afk` = a disconnected human seat (the session tracks socket state per seat,
+  so a player who went dark is easy prey); `island` = when no enemy borders us,
+  boat the nearest rival by territory-centroid Manhattan distance (1-in-3 the
+  second-nearest), falling through the sorted list until a landing sticks.
+- Nations pre-gate `bots`: a bordering tribe that owns structures (captured
+  ground) is attacked before the ordinary strategy walk, structure-holders
+  sorted first — OpenFront's steal-back priority.
 
 ### Tribes (OpenFront `TribeExecution`)
 Accept every alliance offer and second every extension request; punish a
@@ -68,7 +75,16 @@ bordering traitor at 1-in-3 odds (1-in-6 for a traitor *ally*, pact broken
 first); blanket bordering neutral land until none remains (then latch that
 scan off for good); once boxed in, bank to the trigger ratio, retaliate
 against the largest incoming attack, then poke a random neighbour — nations
-and humans skipped half the time.
+and humans skipped half the time. A tribe that captures a structure deletes
+it (one per decision beat) — passive fillers keep no economy, exactly
+OpenFront's tribe-structure rule.
+
+### Capture semantics (engine-level, OpenFront's conquest rules)
+A structure whose tile changes hands **transfers to the conqueror intact**
+(level and upgrade-ramp books move with it). Upstream's exceptions match:
+Defense Posts are razed on capture, and ground falling to *neutral* keeps
+nothing. Tribe deletion of captured structures rides the lockstep wire as
+its own command (`CLIENT_RASTER_DELETE`) so replays stay bit-identical.
 
 ### Relations (`src/Core/relations.ts`)
 Attitude per player pair in [-100, 100], decaying 0.05/tick toward 0; tiers at
@@ -120,25 +136,68 @@ Perceived warhead costs rise ×1.5 (atom) / ×1.25 (hydrogen) per launch until
 the MIRV+hydrogen stockpile is banked — OpenFront's simulated saving that
 stops atom spam.
 
+**Aiming is OpenFront's scored search.** Candidates are random samples of the
+victim's territory (10, Impossible 30) plus their structure tiles; a candidate
+survives only if the whole blast box is legitimate ground (Easy/Medium:
+strictly the target's own land; Hard/Impossible also allow neutral), then
+scores by the structures the blast erases — city 25K, silo 50K, port/factory
+15K, fort 5K, each ×level. Medium rejects any aim with a SAM inside 50 tiles;
+Impossible hydro-nations add +100K for a SAM the blast outranges (hydro outer
+100 vs `SAM_RANGE` 70). Distance from the launching silo costs ×30 per tile
+(floored at 20% of the score), a fresh own crater is −1M for 600 ticks, and
+Hard/Impossible sample the straight-line flight path and drop aims a SAM would
+intercept (nuke flight here is linear, so the check is exact). Impossible
+fires only at strictly positive value.
+
+### MIRV programme (OpenFront `NationMIRVBehavior`)
+Checked at the top of every decision beat, gated on a ready silo, the full
+MIRV price (25M + 15M per owned silo) and a hesitation roll (chance 1-in-2 /
+4 / 8 / 16 by difficulty). Three triggers, top first: **counter-MIRV** (the
+largest rival with a MIRV inbound on our land), **victory denial** (a rival's
+land share past 0.75 / 0.65 / 0.55 / 0.4 by difficulty), **steamroll stop**
+(the city leader once ahead of second place by ×2 / 1.5 / 1.25 / 1.15 with at
+least 20 / 10 / 10 / 8 cities). Never a tribe, never an ally; a shared
+300-tick per-victim cooldown stops pile-ons; the aim is the victim's
+territory centroid; the launch is announced with a broadcast 💀.
+
+### Warships (OpenFront `NationWarshipBehavior`)
+Beyond the 1-in-50 patrol roll, non-Easy nations with a port run naval
+awareness **every tick** (not just decision beats): a trade ship lost to
+capture answers with a retaliation warship at 15 / 50 / 80% odds by
+difficulty (fleet-capped at 10, an angry 😡 to the offender), and ship losses
+feed relations (−7.5 trade, −15 transport). Incoming enemy transports at
+least 20 tiles out with no own warship within 90 of the landing point get the
+same retaliation roll — the interceptor spawns on the transport's track.
+
+### Emoji chatter (OpenFront `NationEmojiBehavior`)
+Mapped onto this engine's 8-emoji set. Targeted emoji go to humans only, one
+per recipient per 300 ticks (upstream's limiter); broadcasts float over own
+land. Per decision beat: 💀 broadcast when incoming ≥3× own troops (1-in-16),
+😂 at an attacker under 10% of our pool (1-in-8), 🔥 broadcast as land-share
+leader (1-in-300), 👍/🤝 to a random ally (1-in-250), 😂 at a freshly nuked
+rival (1-in-40), 👎 to a long-match rival (after tick 6000, 1-in-10000), 👍
+to a human in the opening minute (1-in-250). Launching an attack sends 🔥 at
+1-in-2 odds against a neutral-or-better relation (an unprovoked strike) or 😡
+at 1-in-4 when the grudge already exists; the biggest surviving nation
+salutes (🫡) a human winner once, and alliance/betrayal reactions ride the
+relations ledger (±15 / −10).
+
 ### Field composition (unchanged, already calibrated)
 ~16% Nations / 84% Tribes (OpenFront World: 75 nations + 400 bots), seat
 density anchored to OpenFront World's ~1,370 land tiles per seat.
 
 ## Deliberate divergences (documented, not silent)
 
-- **No MIRV launches.** Nations save toward the MIRV+hydrogen stockpile
-  (which is what shapes their spending) but never fire one.
-- **Simplified nuke aiming.** Deep-territory sampling away from our shared
-  border; OpenFront additionally scores structure clusters and (Hard+) avoids
-  SAM-interceptable trajectories.
-- **`island` strategy approximation.** Weakest reachable enemy globally
-  (1-in-3 the second-weakest) instead of bounding-box distance sorting.
-- **No `afk` or team-game strategies** (no disconnect tracking; no teams).
-- **Stolen-structure branches are moot**: this engine demolishes buildings on
-  capture, so tribes can never own structures and nations never need the
-  recapture-priority path or tribe structure deletion.
-- **Emoji relations are mapped** onto this engine's 8-emoji set (👍🤝🫡 = +15,
-  👎😡💀 = −10) rather than OpenFront's larger table; nation emoji chatter is
-  limited to alliance responses and betrayals.
-- **No warship retaliation ships** (OpenFront spawns extra warships at
-  15/50/80% odds when its ships are sunk; this engine keeps the single patrol).
+- **No team games**, so team-only behaviour (the `donate` strategy, team
+  assists, the 95% team win) has no counterpart here.
+- **Structures still under construction are razed on capture** (upstream
+  transfers the construction site with the ground).
+- **Emoji are mapped** onto this engine's 8-emoji set (👍🤝🫡 = +15,
+  👎😡💀 = −10 in relations) rather than OpenFront's larger table — the
+  chatter *triggers* match, the glyphs differ.
+- **Counter-warship-infestation is not ported** (upstream floods a rival's
+  home waters with warships when its patrol keeps getting sunk there;
+  this engine's answer stops at the per-loss retaliation roll).
+- **Impossible's destroy-enemy-SAM fallback is not ported** (upstream's
+  Impossible tier may upgrade a silo specifically to out-range a blocking
+  SAM; here the +100K outranged-SAM aim bonus covers the same instinct).

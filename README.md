@@ -11,8 +11,9 @@ across land — and across narrow seas by amphibious landing — until you own t
 map. Combat is autonomous: you only express intent (commit N% of your troop pool
 toward a tile); the server resolves the front. Diplomacy layers on top:
 **alliances** are mutual-consent, non-aggression pacts (propose → accept, break to
-betray) — allied nations can't attack each other, and the AI nations weigh
-alliances by personality (see `src/Core/alliances.ts`).
+betray) — allied nations can't attack each other, and the AI nations judge
+every offer through OpenFront's difficulty-gated appraisal (threat, grudges,
+ally caps — see [`docs/ai-openfront-parity.md`](docs/ai-openfront-parity.md)).
 
 ## Quick start
 
@@ -106,18 +107,21 @@ server-side with `RASTER_BOTS` (max 400), e.g. `RASTER_BOTS=200 npm run dev`.
 
 The field is a **bot-heavy** two-tier mix, exactly like OpenFront's Bot/Nation
 split (its default World seats ~400 bots to ~75 nations, ≈1 nation per 5 bots).
-About one seat in six is a full-strategy **Nation** — a distinct personality
-(land-grabber, warmonger, all-rounder, opportunist, turtle) that expands
-deliberately (OpenFront's 45–100-tick decision cadence), allies, reacts with
-emoji, and builds toward OpenFront's late game: a train-and-trade economy
-(cities, ports, a rail-served factory) that bankrolls border forts, warship
-patrols and finally a missile silo — after which it wages nuclear war
-(retaliation first, then deterrence) and stands up SAM cover once warheads fly. The rest are passive **Bot** filler —
-low-threat, difficulty-flat "tribes" (e.g. "Roman Empire") that grab cheap
-neutral land fast (OpenFront's half-price `mag/10` expansion) and, once the map
-fills, keep the borders alive by weakly poking a neighbour (`troops/20` at
-OpenFront's ~1/3 tribe odds) instead of freezing — never build, always ally.
-The result is a living, churning crowd sprinkled with a few real powers.
+About one seat in six is a full-strategy **Nation** running OpenFront's exact
+AI model — per-seat dice (attack cadence, trigger/reserve/expand ratios, the
+1-in-3 "hydro nation" flag), the difficulty-ordered strategy list, the
+anti-human attack throttle, relations-driven diplomacy, emoji chatter, and the
+full economic arc: a train-and-trade economy (cities, ports, a rail-served
+factory) that bankrolls border forts, warships (with per-loss retaliation
+spawns) and finally missile silos — after which it wages nuclear war with
+scored, SAM-aware warhead aiming, up to and including the MIRV endgame
+(counter-MIRV, victory denial, steamroll stop). The rest are passive **Bot**
+filler — low-threat, difficulty-flat "tribes" (e.g. "Roman Empire") that grab
+cheap neutral land fast and, once the map fills, keep the borders alive by
+weakly poking a neighbour instead of freezing — never build (structures they
+capture get razed), always ally. The balancing and behaviour of both tiers
+match openfront.io's implementation; the parity ledger with every constant is
+[`docs/ai-openfront-parity.md`](docs/ai-openfront-parity.md).
 
 ## Combat model
 
@@ -198,7 +202,9 @@ OpenFront PR roadmap.
 
 ## Status
 
-Early prototype. Solo-vs-bots only (no human-vs-human yet); state is in-memory; the faction/nation and
+Early prototype. Solo vs. AI plus human-vs-human via private lobbies (share
+code / invite link / public list) on the server-refereed lockstep mode — no
+accounts, no ranked, no teams yet; state is in-memory. The faction/nation and
 roguelite layers are designed but not yet implemented. See
 [`docs/openfront-pr-plan.md`](docs/openfront-pr-plan.md) for the
 prioritized roadmap.

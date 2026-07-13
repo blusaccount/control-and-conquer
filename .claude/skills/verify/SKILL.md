@@ -23,7 +23,11 @@ Forgetting `npm run build` gives a page stuck on "Connecting…" with 404s on
 Chromium is preinstalled: `chromium.launch({ executablePath: "/opt/pw-browsers/chromium" })`.
 Install playwright into a scratch dir, not the repo. Useful handles:
 
-- Menu: `[data-map="earth-standard"]`, `[data-difficulty="easy"]`, `#startButton`.
+- Menu: the homepage is a lobby browser; solo runs start from the
+  `Practice vs. AI` rail button, then a two-step wizard: step 1 has
+  difficulty chips (`text=easy` … `text=impossible`) and `text=Choose map →`;
+  step 2's map cards are `button.perk-card:has-text("Earth — Standard")` etc.
+  — clicking a card starts the match immediately (no separate start button).
   Pick Earth Standard + easy for fast, readable runs.
 - Spawn: click open land on `#mapCanvas`. Find land/coast by reading canvas
   pixels (`getImageData`; water ≈ blue-dominant, land ≈ green-dominant) and
