@@ -54,9 +54,15 @@ maths against `src/Core` constants.
 - Human-vs-human combat verified in multiplayer: one player conquered the
   other; the loser got the "Eliminated!" overlay (peak territory, survival
   time, Spectate / Play Again) and transitioned to spectating cleanly.
-- Fort builds and costs exactly 50K (linear ramp).
-- Nuke keys arm fine but launching without a silo is rejected with a clear
-  message (verified in the focused run).
+- Fort builds and costs exactly 50K (linear ramp); city and port charge
+  exactly 125,000 each (event log: "built a City (125000 gold)…",
+  "built a Port (125000 gold)…").
+- Weapon launches are validated with clear errors (e.g. a warhead aimed at
+  water answers "A warhead can only target land"); `Shift+R` with no attacker
+  answers "No one has attacked you yet."
+- Being conquered ends cleanly: "Eliminated — spectating" guards further
+  orders, and the Eliminated! overlay shows peak territory / survival time
+  with Spectate + Play Again.
 
 ### Economy & trading (values checked live)
 - Passive gold: HUD shows +1.00K/s; observed +6,000 gold over 6s with no
@@ -70,17 +76,27 @@ maths against `src/Core` constants.
 - Structure spacing enforced: placements within 15 tiles of another owned
   structure are rejected with "Too close to another building — keep 15 tiles
   between structures."
-- City raises max troops; port must sit on a shore (with snap radius) and
-  rejects otherwise.
-- Trade: bots build ports; after building our port, trade-ship payouts land as
-  distinct gold bursts on top of passive income (see focused-run numbers
-  below).
-- Diplomacy economy: donate gold/troops to an ally via the radial Diplomacy
-  ring; embargo toggle exists on rivals (blocks trade pairing per
-  `TradeSystem.isEmbargoed`).
+- City raises max troops by exactly its documented bonus: +250,000 raw
+  manpower = **+25.0K at the HUD's ÷10 display scale** (observed 15.7K →
+  40.7K; `formatTroops` renders manpower/10, OpenFront convention).
+- Port must sit on a shore (coastal snap radius works — clicking near the
+  coast places it); building on unowned land rejects with "Build a port on
+  land you own."
+- Cost ramps display correctly, including the shared port/factory counter:
+  after buying 1 port, both Port and Factory show 250K next-cost while City
+  stays 125K.
+- Diplomacy economy: donate gold/troops and embargo live in the radial
+  Diplomacy sub-ring; embargoes block trade pairing
+  (`TradeSystem.isEmbargoed`, unit-tested).
 - Alliances: `K` offer → easy bots accept in seconds; human-to-human offers
   arrive as action cards with Accept/Reject and both clients show
-  "Allied with 1 nation" after accepting.
+  "Allied with 1 nation" after accepting. Pacts expire on schedule ("The
+  alliance between X and Y has expired") and the renewal-window card
+  (Focus / Renew / Ignore) appears before expiry.
+- Boat transports: `B` + far-coast click → "Expanding toward (x, y) by boat
+  with 20% of pool", the launch event fires ("launched a transport ship with
+  36,413 troops"), the troops leave the pool, and land ticked up afterwards
+  (1.0% → 1.1%).
 
 ### Scaling / responsive audit (1920×1080, 1366×768, 1024×640, 768×1024, 390×844)
 - No horizontal overflow, no clipped controls, no overlapping HUD panels at
@@ -131,15 +147,22 @@ recovered cleanly. Not user-visible; worth knowing it triggers under load.
   alliance offers still surface as action cards.
 - "Playing as Anonymous" only happens when the name field is left empty.
 
-## Focused econ/trade run numbers
+## Focused econ run numbers
 
-(from the dedicated verification run; see `docs/` history or re-run the
-harness) — filled in by the run on this date:
+From the dedicated verification rounds (solo, Earth Standard, easy):
 
-- City built at home: cost within 125K ±, max troops rose.
-- Port built on shore, then trade payout burst(s) observed above passive rate.
-- Boat transport: `B` + far coast click → "Expanding toward (x, y) by boat",
-  "Ships at sea: 1 / 3".
+- Passive gold: +6,000 over 6 idle seconds — exactly the displayed 1.00K/s.
+- Fort: charged ~50K. City: event "built a City (125000 gold) at (170, 0)";
+  max troops 15.7K → 40.7K (= +250K raw manpower, the exact documented
+  city bonus at the ÷10 display scale). Port: event
+  "built a Port (125000 gold) at (168, 0)"; next port/factory cost ramps to
+  250K (shared counter).
+- Attack ratio readout: "10% (490)" against a 4.9K displayed pool — exact.
+- Boat: "Expanding toward (219, 5) by boat with 20% of pool" + transport
+  event with 36,413 troops.
+- Trade: see the "Trade pacing" note in Issues — mechanics are unit-tested
+  (11/11 pass in `tests/tradeSystem.test.ts`), live pacing was measured with
+  an idle gold integral.
 
 ## How it was driven
 
