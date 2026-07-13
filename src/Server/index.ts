@@ -192,7 +192,11 @@ const DOCUMENT_ENTRY = "Client/main.js";
 // so modulepreload can't help them — but the HTTP cache is shared, so plain
 // prefetch links warm their (deep) import graphs during the menu instead of
 // letting a match start discover them level-by-level.
-const WORKER_ENTRIES = ["Client/solo/soloWorker.js", "Client/lockstep/lockstepWorker.js"];
+const WORKER_ENTRIES = [
+  "Client/solo/soloWorker.js",
+  "Client/lockstep/lockstepWorker.js",
+  "Client/names/nameWorker.js",
+];
 let modulePreloadTags: Promise<string> | undefined;
 
 /** Transitive static-import closure of `entries` within dist, incl. the entries. */

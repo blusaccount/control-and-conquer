@@ -458,8 +458,8 @@ const decodeBase64ToBytes = (b64: string): Uint8Array => {
 // one-time check keeps a hypothetical big-endian host correct via a slow path.
 const HOST_IS_LE = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 
-const decodeOwnerArray = (b64: string, expectedLength: number): Uint16Array => {
-  const bytes = decodeBase64ToBytes(b64);
+/** Reinterpret packed little-endian owner bytes as a `Uint16Array`. */
+const ownerArrayFromBytes = (bytes: Uint8Array, expectedLength: number): Uint16Array => {
   if (bytes.length !== expectedLength * 2) {
     throw new Error(`Owner array byte length ${bytes.length} does not match expected ${expectedLength * 2}.`);
   }
@@ -474,10 +474,11 @@ const decodeOwnerArray = (b64: string, expectedLength: number): Uint16Array => {
   return owner;
 };
 
-/** Decode a base64-packed little-endian `Uint32Array` of tile indices (fallout). */
-const decodeTileList = (b64: string): ArrayLike<number> & Iterable<number> => {
-  if (b64.length === 0) return [];
-  const bytes = decodeBase64ToBytes(b64);
+const decodeOwnerArray = (b64: string, expectedLength: number): Uint16Array =>
+  ownerArrayFromBytes(decodeBase64ToBytes(b64), expectedLength);
+
+/** Reinterpret packed little-endian bytes as a tile-index list (fallout). */
+const tileListFromBytes = (bytes: Uint8Array): ArrayLike<number> & Iterable<number> => {
   const count = Math.floor(bytes.length / 4);
   if (HOST_IS_LE && bytes.byteOffset % 4 === 0) {
     return new Uint32Array(bytes.buffer, bytes.byteOffset, count);
@@ -487,6 +488,10 @@ const decodeTileList = (b64: string): ArrayLike<number> & Iterable<number> => {
   for (let i = 0; i < count; i += 1) refs[i] = view.getUint32(i * 4, true);
   return refs;
 };
+
+/** Decode a base64-packed little-endian `Uint32Array` of tile indices (fallout). */
+const decodeTileList = (b64: string): ArrayLike<number> & Iterable<number> =>
+  b64.length === 0 ? [] : tileListFromBytes(decodeBase64ToBytes(b64));
 
 const rgbaToCss = (c: { r: number; g: number; b: number }): string => `rgb(${c.r}, ${c.g}, ${c.b})`;
 
@@ -1185,8 +1190,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     // sidebar and the per-frame nameplate badges — invalidate the memo.
     relCache = null;
     // Establish the static GameMap on the first snapshot that carries terrain.
-    if (snapshot.terrainBase64 && !runtime.map) {
-      const terrainBytes = decodeBase64ToBytes(snapshot.terrainBase64);
+    // Worker transports ship the raster payloads as transferred binary
+    // (`*Bytes`); the WebSocket wire as base64 — binary wins when present.
+    if ((snapshot.terrainBytes || snapshot.terrainBase64) && !runtime.map) {
+      const terrainBytes = snapshot.terrainBytes ?? decodeBase64ToBytes(snapshot.terrainBase64!);
       runtime.map = new GameMap(snapshot.width, snapshot.height, terrainBytes);
       initView();
     }
@@ -1205,11 +1212,16 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     // Ownership arrives either as a full raster (first snapshot / high churn) or
     // as a delta against what we already hold. A full raster repaints the whole
     // base; a delta repaints only the touched tiles.
-    if (snapshot.ownerBase64 !== undefined) {
+    if (snapshot.ownerBytes !== undefined) {
+      runtime.owner = ownerArrayFromBytes(snapshot.ownerBytes, snapshot.width * snapshot.height);
+      repaintBaseFull();
+    } else if (snapshot.ownerBase64 !== undefined) {
       runtime.owner = decodeOwnerArray(snapshot.ownerBase64, snapshot.width * snapshot.height);
       repaintBaseFull();
+    } else if (snapshot.ownerDeltaBytes !== undefined && runtime.owner) {
+      applyOwnerDelta(snapshot.ownerDeltaBytes);
     } else if (snapshot.ownerDeltaBase64 !== undefined && runtime.owner) {
-      applyOwnerDelta(snapshot.ownerDeltaBase64);
+      applyOwnerDelta(decodeBase64ToBytes(snapshot.ownerDeltaBase64));
     }
 
     runtime.capturableTotal = snapshot.capturableCount;
@@ -1267,7 +1279,9 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.nukes = snapshot.nukes ?? [];
     // Fallout is sent whole each snapshot (empty string = nowhere irradiated),
     // so replace the set outright rather than diffing.
-    if (snapshot.falloutBase64 !== undefined) {
+    if (snapshot.falloutBytes !== undefined) {
+      runtime.fallout = new Set(tileListFromBytes(snapshot.falloutBytes));
+    } else if (snapshot.falloutBase64 !== undefined) {
       runtime.fallout = new Set(decodeTileList(snapshot.falloutBase64));
     }
     runtime.rails = snapshot.rails ?? [];
@@ -1401,14 +1415,13 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.captureFlashes.length = 0;
   };
 
-  /** Apply a packed owner delta to the owner array and repaint touched tiles. */
-  const applyOwnerDelta = (deltaBase64: string): void => {
+  /** Apply a packed owner delta (raw bytes) to the owner array and repaint touched tiles. */
+  const applyOwnerDelta = (bytes: Uint8Array): void => {
     const map = runtime.map;
     const owner = runtime.owner;
     const target = ensureBase();
     if (!map || !owner || !target) return;
 
-    const bytes = decodeBase64ToBytes(deltaBase64);
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const records = Math.floor(bytes.length / 6);
     // First apply every ownership change, then repaint: a tile's border status
@@ -1649,6 +1662,37 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     runtime.captureFlashes = survivors;
   };
 
+  // The anchor computation is a full O(map) owner scan (~10ms on the large
+  // Earth) — run on the render thread it was a guaranteed dropped frame twice
+  // a second. It runs in a dedicated worker instead: the main thread ships a
+  // copied owner raster (transferred, so the copy itself is the only cost)
+  // and keeps drawing the previous anchors until fresh ones arrive. At most
+  // one request is in flight; a `null` worker after a failed boot falls back
+  // to the synchronous path.
+  let nameWorker: Worker | null | undefined;
+  let nameRequestId = 0;
+  let nameRequestInFlight = false;
+
+  const ensureNameWorker = (): Worker | null => {
+    if (nameWorker !== undefined) return nameWorker;
+    try {
+      const w = new Worker(new URL("./names/nameWorker.js", import.meta.url), { type: "module" });
+      w.onmessage = (event: MessageEvent<{ id: number; anchors: NameAnchor[] }>): void => {
+        nameRequestInFlight = false;
+        if (event.data.id === nameRequestId) runtime.nameAnchors = event.data.anchors;
+      };
+      w.onerror = () => {
+        // Worker died (or never booted) — fall back to inline computation.
+        nameWorker = null;
+        nameRequestInFlight = false;
+      };
+      nameWorker = w;
+    } catch {
+      nameWorker = null;
+    }
+    return nameWorker;
+  };
+
   /**
    * Recompute each nation's name anchor (throttled). Operates on the live owner
    * raster for every player still holding land, so labels track territory as it
@@ -1658,11 +1702,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     const map = runtime.map;
     const owner = runtime.owner;
     if (!map || !owner) return;
-    // Recompute less often on big maps — labels drift slowly and the pass is a
-    // full O(size) owner scan (~10ms on the 1.6M-tile Earth), so a longer
-    // interval keeps the hitch rare.
+    // Recompute less often on big maps — labels drift slowly, so even off the
+    // main thread there's no point re-scanning a huge raster more often.
     const interval = map.size > 600_000 ? 900 : NAME_RECOMPUTE_MS;
-    if (now - runtime.lastNameComputeMs < interval) return;
+    if (now - runtime.lastNameComputeMs < interval || nameRequestInFlight) return;
     runtime.lastNameComputeMs = now;
 
     const players = runtime.players
@@ -1682,6 +1725,19 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     if (maxSize > 0 && tileTotal === runtime.lastNameTileTotal && maxSize * runtime.view.scale < MIN_NAME_FONT_PX) return;
     runtime.lastNameTileTotal = tileTotal;
 
+    const worker = ensureNameWorker();
+    if (worker) {
+      nameRequestId += 1;
+      nameRequestInFlight = true;
+      // The worker needs its own copy (the live raster keeps mutating);
+      // transferring the copy makes the hand-off itself free.
+      const ownerCopy = Uint16Array.from(owner);
+      worker.postMessage(
+        { id: nameRequestId, width: map.width, height: map.height, owner: ownerCopy, players },
+        [ownerCopy.buffer],
+      );
+      return;
+    }
     runtime.nameAnchors = computeNameAnchors(map.width, map.height, owner, players);
   };
 

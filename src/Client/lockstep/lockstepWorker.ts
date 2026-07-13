@@ -1,5 +1,6 @@
 import { RasterGameSession } from "../../Server/RasterGameSession.js";
 import { LockstepReplica } from "./replica.js";
+import { binarySnapshotTransfer } from "../workerBinary.js";
 import { fetchPrebuiltMap } from "../mapFetch.js";
 import type { RasterLockstepStartPayload, RasterTurn } from "../../Core/lockstep.js";
 import type { RasterServerMessage } from "../../Core/types.js";
@@ -31,13 +32,15 @@ type Inbound =
 /** Minimal typing for the dedicated-worker global (avoids the WebWorker lib
  * alongside DOM, which would clash on shared globals). */
 interface WorkerScope {
-  postMessage(message: unknown): void;
+  postMessage(message: unknown, transfer?: ArrayBuffer[]): void;
   onmessage: ((event: { data: Inbound }) => void) | null;
 }
 const ctx = self as unknown as WorkerScope;
 
 const emit = (message: RasterServerMessage): void => {
-  ctx.postMessage({ type: "SERVER", message });
+  // Raster payloads leave as transferred binary, not base64 (see workerBinary).
+  const { message: out, transfer } = binarySnapshotTransfer(message);
+  ctx.postMessage({ type: "SERVER", message: out }, transfer);
 };
 
 /**

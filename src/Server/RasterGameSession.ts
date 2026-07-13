@@ -28,6 +28,15 @@ import { LAND_ATTACK_REACH, SPAWN_BLOB_RADIUS, SPAWN_IMMUNITY_SECONDS, WIN_TILE_
 import { NUKE_DEFS, nukeCost, SILO_RELOAD_TICKS, type NukeKind } from "../Core/nukes.js";
 import { BUILDING_CONSTRUCTION_TICKS, BUILDING_DEFS, buildingCost, COASTAL_BUILDING_TYPES, COASTAL_SNAP_RADIUS, CONQUER_GOLD_FRACTION_AI, CONQUER_GOLD_FRACTION_HUMAN, costCounterTypes, STRUCTURE_MIN_DIST, UPGRADABLE_BUILDING_TYPES } from "../Core/buildings.js";
 import { SIMULATION_TICK_RATE } from "./simulationConfig.js";
+
+/**
+ * How many relay turns the resume/replay history may hold before it is
+ * dropped (see {@link RasterGameSession.turnLogTruncated}): 30 minutes at the
+ * simulation tick rate. Beyond this a disconnected player can no longer
+ * rejoin (their replica would have to replay the whole match), but the
+ * server stops accruing unbounded per-turn command history.
+ */
+const RESUME_HISTORY_MAX_TURNS = 30 * 60 * SIMULATION_TICK_RATE;
 import { RASTER_EMOJIS, type RasterDifficulty } from "../Core/messages.js";
 import { IDENTITY_MODIFIERS } from "../Core/playerModifiers.js";
 import {
@@ -369,6 +378,14 @@ export class RasterGameSession {
    * by construction, a complete replay of the match.
    */
   private readonly turnLog: RasterTurn[] = [];
+  /**
+   * Set once the log outgrew {@link RESUME_HISTORY_MAX_TURNS} and was dropped.
+   * The log exists solely so a reconnecting client can replay the match from
+   * tick 0; without a cap an hours-long lockstep match accumulates every
+   * command of up to 408 seats forever. Past the cap the match keeps running
+   * normally — only the resume affordance is given up.
+   */
+  private turnLogTruncated = false;
   private matchEndedBroadcast = false;
   /**
    * The match's winner once decided, including a timeLimit finish (where
@@ -691,16 +708,26 @@ export class RasterGameSession {
     };
     this.recordedCommands = [];
     this.turnCounter += 1;
-    this.turnLog.push(turn);
+    if (!this.turnLogTruncated) {
+      this.turnLog.push(turn);
+      if (this.turnLog.length > RESUME_HISTORY_MAX_TURNS) {
+        this.turnLog.length = 0;
+        this.turnLogTruncated = true;
+      }
+    }
     this.turnListener?.(turn);
     for (const sub of this.subscribers.values()) {
       if (sub.lockstep) sub.send({ type: "SERVER_RASTER_TURN", payload: turn });
     }
   }
 
-  /** The full relay-turn history (resume backlog / replay source). */
-  public turnBacklog(): readonly RasterTurn[] {
-    return this.turnLog;
+  /**
+   * The full relay-turn history (resume backlog / replay source), or `null`
+   * once the match outlived {@link RESUME_HISTORY_MAX_TURNS} and the history
+   * was dropped — a replay from tick 0 is no longer possible.
+   */
+  public turnBacklog(): readonly RasterTurn[] | null {
+    return this.turnLogTruncated ? null : this.turnLog;
   }
 
   /**

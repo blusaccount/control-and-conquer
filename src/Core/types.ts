@@ -355,6 +355,19 @@ export interface RasterSnapshot {
    * `ownerBase64` / `ownerDeltaBase64` is present on any snapshot.
    */
   ownerDeltaBase64?: string;
+  /**
+   * Binary alternatives to `terrainBase64` / `ownerBase64` /
+   * `ownerDeltaBase64` / `falloutBase64`, byte-for-byte the same payloads
+   * before base64. Never sent on the WebSocket wire (JSON) — they exist for
+   * the in-browser worker transports (solo host, lockstep replica), where
+   * `postMessage` moves raw buffers with a transfer list for free instead of
+   * round-tripping multi-MB rasters through base64 strings on the render
+   * thread. When a binary field is present it wins over its base64 twin.
+   */
+  terrainBytes?: Uint8Array;
+  ownerBytes?: Uint8Array;
+  ownerDeltaBytes?: Uint8Array;
+  falloutBytes?: Uint8Array;
   /** Player standings in deterministic ascending playerId order. */
   players: RasterPlayerInfo[];
   /** Total capturable (passable land) tiles — convenience for victory bars. */
