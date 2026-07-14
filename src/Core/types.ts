@@ -30,6 +30,7 @@ import type {
   RasterLobbyStateServerMessage,
   RasterResumeClientMessage,
   RasterRetreatClientMessage,
+  RasterDeleteClientMessage,
   RasterSpawnClientMessage,
   RasterTargetRequestClientMessage,
 } from "./messages.js";
@@ -594,6 +595,7 @@ export type RasterClientMessage =
   | RasterAllyBreakClientMessage
   | RasterAllyRenewClientMessage
   | RasterRetreatClientMessage
+  | RasterDeleteClientMessage
   | RasterDonateClientMessage
   | RasterEmbargoClientMessage
   | RasterTargetRequestClientMessage

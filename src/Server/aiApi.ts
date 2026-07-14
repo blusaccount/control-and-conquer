@@ -27,7 +27,7 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { RasterGameSession, type RasterGameSessionOptions } from "./RasterGameSession.js";
-import { RasterBotController, RASTER_BOT_PERSONALITIES } from "./RasterBotController.js";
+import { RasterBotController } from "./RasterBotController.js";
 import { NEUTRAL_PLAYER, type PlayerId } from "../Core/TerritoryGrid.js";
 import type {
   RasterServerMessage,
@@ -180,11 +180,10 @@ export class AiGameSession {
       playerName,
     ) ?? (() => {});
 
-    // Seat bots as opponents
+    // Seat bots as opponents (all Nations at medium — the API's classic field).
     const botSlots = Math.max(0, Math.min(botCount, 31));
     for (let i = 0; i < botSlots; i++) {
-      const personality = RASTER_BOT_PERSONALITIES[i % RASTER_BOT_PERSONALITIES.length];
-      const bot = new RasterBotController({ botId: `${gameId}-bot-${i + 1}`, personality });
+      const bot = new RasterBotController({ botId: `${gameId}-bot-${i + 1}`, kind: "nation", difficulty: "medium", seed: i });
       this.unsubBots.push(bot.attach(this.session));
     }
   }

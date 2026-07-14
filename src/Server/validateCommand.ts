@@ -8,6 +8,7 @@ import {
   RasterAllyRenewPayload,
   RasterAllyProposePayload,
   RasterAllyRespondPayload,
+  RasterDeletePayload,
   RasterDonatePayload,
   RasterEmbargoPayload,
   RasterEmojiPayload,
@@ -60,6 +61,20 @@ const parseRetreat = (payload: unknown): RasterRetreatPayload => {
     throw new Error("targetId must be a non-negative integer player id (0 = neutral).");
   }
   return { targetId };
+};
+
+const parseDelete = (payload: unknown): RasterDeletePayload => {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("CLIENT_RASTER_DELETE.payload must be an object.");
+  }
+  const { targetX, targetY } = payload as Record<string, unknown>;
+  if (
+    typeof targetX !== "number" || !Number.isInteger(targetX) || targetX < 0 ||
+    typeof targetY !== "number" || !Number.isInteger(targetY) || targetY < 0
+  ) {
+    throw new Error("targetX/targetY must be non-negative integer tile coordinates.");
+  }
+  return { targetX, targetY };
 };
 
 const parseDonate = (payload: unknown): RasterDonatePayload => {
@@ -349,6 +364,9 @@ export const validateCommand = (raw: unknown): RasterClientMessage => {
   }
   if (message.type === "CLIENT_RASTER_RETREAT") {
     return { type: "CLIENT_RASTER_RETREAT", payload: parseRetreat(message.payload) };
+  }
+  if (message.type === "CLIENT_RASTER_DELETE") {
+    return { type: "CLIENT_RASTER_DELETE", payload: parseDelete(message.payload) };
   }
   if (message.type === "CLIENT_RASTER_DONATE") {
     return { type: "CLIENT_RASTER_DONATE", payload: parseDonate(message.payload) };

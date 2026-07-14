@@ -1,4 +1,4 @@
-import { FILLER_PERSONALITY, RASTER_BOT_PERSONALITIES, type RasterBotConfig, type RasterBotPersonality } from "./RasterBotController.js";
+import type { RasterBotConfig } from "./RasterBotController.js";
 import type { RasterDifficulty } from "../Core/messages.js";
 import type { RasterPlayerKind } from "../Core/types.js";
 
@@ -167,30 +167,13 @@ export const NATION_GROWTH_MULTIPLIER: Record<RasterDifficulty, number> = {
 };
 
 /**
- * Chance per decision that a nation **misdirects** its move at a different
- * border target than the one it meant. Weaker tiers make more readable
- * mistakes; Impossible plays flawlessly. Rolled deterministically (hashed tick
- * × seat, no RNG) so replays stay identical.
- *
- * NOTE: current OpenFront `main` no longer carries an explicit per-difficulty
- * "confusion" percentage (it was community-documented for older versions and
- * appears to have been folded into `AiAttackBehavior`'s random-boat rolls). We
- * keep a small, shrinking-with-difficulty version as our own readable-mistakes
- * flavour — it is not claimed as a source-exact OpenFront value.
- */
-export const NATION_CONFUSION_CHANCE: Record<RasterDifficulty, number> = {
-  easy: 0.1,
-  medium: 0.05,
-  hard: 0.025,
-  impossible: 0,
-};
-
-/**
- * Ticks between a **Nation**'s attack decisions, drawn deterministically per
- * seat from OpenFront's per-difficulty range (`NationExecution` cadence):
- * Easy 65–100, Medium 55–70, Hard 45–60, Impossible 30–50. So nations act
- * deliberately (every ~3–10 s), not frantically — the measured OpenFront
- * rhythm, with Impossible reacting roughly twice as often as Easy.
+ * Ticks between a **Nation**'s attack decisions, drawn per seat (from the
+ * seat's own PRNG, in {@link RasterBotController}) out of OpenFront's
+ * per-difficulty `nextInt` bounds — Easy 65–100, Medium 55–70, Hard 45–60,
+ * Impossible 30–50 (max exclusive). Nations act deliberately (every ~3–10 s),
+ * with Impossible reacting roughly twice as often as Easy. Each seat also
+ * rolls a phase offset inside its cadence, so a large field never decides in
+ * lockstep (OpenFront's `attackTick`).
  */
 export const NATION_DECISION_TICKS: Record<RasterDifficulty, readonly [number, number]> = {
   easy: [65, 100],
@@ -199,26 +182,8 @@ export const NATION_DECISION_TICKS: Record<RasterDifficulty, readonly [number, n
   impossible: [30, 50],
 };
 
-/** Ticks between a passive **Bot** (Tribe)'s attacks — OpenFront's `nextInt(40, 80)`. */
+/** Ticks between a passive **Bot** (Tribe)'s decisions — OpenFront's `nextInt(40, 80)`. */
 export const BOT_DECISION_TICKS: readonly [number, number] = [40, 80];
-
-/** Deterministic per-seat integer in `[lo, hi]` — a stand-in for OpenFront's per-seat RNG cadence. */
-const seatPick = (seatIndex: number, [lo, hi]: readonly [number, number]): number => {
-  let h = (Math.imul(seatIndex + 1, 2654435761) ^ 0x9e3779b9) >>> 0;
-  h = (h ^ (h >>> 15)) >>> 0;
-  return lo + (h % (hi - lo + 1));
-};
-
-/** A Nation's per-seat decision cadence for `difficulty` (from {@link NATION_DECISION_TICKS}). */
-export const nationDecisionCadence = (difficulty: RasterDifficulty, seatIndex: number): number =>
-  seatPick(seatIndex, NATION_DECISION_TICKS[difficulty]);
-
-/** A Bot's per-seat decision cadence (from {@link BOT_DECISION_TICKS}). */
-export const botDecisionCadence = (seatIndex: number): number => seatPick(seatIndex, BOT_DECISION_TICKS);
-
-/** A per-seat phase offset so the field doesn't all decide on the same tick (thundering herd). */
-export const seatPhaseOffset = (seatIndex: number, cadence: number): number =>
-  seatPick(seatIndex + 7919, [0, Math.max(0, cadence - 1)]);
 
 /**
  * **Land tiles per AI seat**, by difficulty — the field's density anchor,
@@ -259,34 +224,17 @@ export const scaleFieldCount = (capturableTiles: number, difficulty: RasterDiffi
 export const scaleBotCount = scaleFieldCount;
 
 /**
- * Tilt a Nation personality by difficulty. Cadence now comes from
- * {@link nationDecisionCadence} (per-seat, applied by the seat loop), so this
- * only scales **aggression**: Easy nations pick fewer fights, Hard/Impossible
- * press harder. Medium keeps the preset.
- */
-export const scalePersonality = (
-  p: RasterBotPersonality,
-  difficulty: RasterDifficulty,
-): RasterBotPersonality => {
-  if (difficulty === "impossible") return { ...p, aggression: Math.min(1, p.aggression * 1.5) };
-  if (difficulty === "hard") return { ...p, aggression: Math.min(1, p.aggression * 1.3) };
-  if (difficulty === "easy") return { ...p, aggression: p.aggression * 0.6 };
-  return p;
-};
-
-/**
  * Build the ordered {@link RasterBotConfig} list for an AI field — the single
  * source of truth both seating paths (the authoritative {@link MatchRegistry}
  * and the browser solo worker) use, so they can never drift.
  *
  * `total` is the AI opponent count (from the lobby's `fieldSize` or
  * {@link scaleFieldCount}); {@link splitField} carves it bot-heavy. The first
- * `nations` seats are full **Nations** — difficulty-scaled aggression, a
- * per-seat {@link nationDecisionCadence}, and the per-difficulty confusion
- * chance — and take the most-spread spawn tiles. The rest are passive **Bot**
- * fillers on OpenFront's flat Tribe numbers with a per-seat
- * {@link botDecisionCadence}. Every seat gets a {@link seatPhaseOffset} so the
- * field doesn't all decide on the same tick. `idPrefix` namespaces the bot ids.
+ * `nations` seats are full **Nations**, the rest passive **Bot** fillers —
+ * there are no per-seat personalities (OpenFront has none): each controller
+ * rolls its own cadence, phase and attack ratios from a per-seat PRNG, and the
+ * match `difficulty` drives every behavioural gate. `idPrefix` namespaces the
+ * bot ids; the seat index doubles as PRNG seed entropy.
  */
 export const buildFieldConfigs = (
   total: number,
@@ -297,29 +245,12 @@ export const buildFieldConfigs = (
   const configs: RasterBotConfig[] = [];
   const seats = nations + bots;
   for (let i = 0; i < seats; i += 1) {
-    const kind = kindForSeat(i, nations);
-    if (kind === "nation") {
-      const cadence = nationDecisionCadence(difficulty, i);
-      configs.push({
-        botId: `${idPrefix}-bot-${i + 1}`,
-        personality: {
-          ...scalePersonality(RASTER_BOT_PERSONALITIES[i % RASTER_BOT_PERSONALITIES.length], difficulty),
-          decisionCooldownTicks: cadence,
-        },
-        kind,
-        confusionChance: NATION_CONFUSION_CHANCE[difficulty],
-        phaseOffset: seatPhaseOffset(i, cadence),
-      });
-    } else {
-      const cadence = botDecisionCadence(i);
-      configs.push({
-        botId: `${idPrefix}-bot-${i + 1}`,
-        personality: { ...FILLER_PERSONALITY, decisionCooldownTicks: cadence },
-        kind,
-        confusionChance: 0,
-        phaseOffset: seatPhaseOffset(i, cadence),
-      });
-    }
+    configs.push({
+      botId: `${idPrefix}-bot-${i + 1}`,
+      kind: kindForSeat(i, nations),
+      difficulty,
+      seed: i,
+    });
   }
   return configs;
 };

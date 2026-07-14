@@ -15,8 +15,12 @@ import type { RasterServerMessage } from "../src/Core/types.js";
 // replay its turn stream into a replica, and compare.
 // ---------------------------------------------------------------------------
 
-/** Session options shared by referee and replica — identical sim inputs. */
-const SESSION_OPTIONS = { spawnPhaseTicks: 20 } as const;
+/**
+ * Session options shared by referee and replica — identical sim inputs. Wider
+ * than the default test map so a 7-seat field can't hit the 80% win threshold
+ * (which would freeze the turn stream) inside the 400-tick replay window.
+ */
+const SESSION_OPTIONS = { spawnPhaseTicks: 20, width: 128, height: 80 } as const;
 
 /** First neutral capturable land tile — a deterministic spawn target. */
 const firstOpenTile = (session: RasterGameSession): { x: number; y: number } => {
@@ -35,7 +39,7 @@ const firstOpenTile = (session: RasterGameSession): { x: number; y: number } => 
  * target that keeps working once the field has swallowed all neutral land
  * (attacks against rivals are as good as land-grabs for the replay test).
  */
-const targetTileFor = (session: RasterGameSession, attackerId: number): { x: number; y: number } => {
+const targetTileFor = (session: RasterGameSession, attackerId: number): { x: number; y: number } | null => {
   const grid = session.peekGrid();
   const map = session.peekMap();
   for (let ref = 0; ref < map.size; ref += 1) {
@@ -43,7 +47,8 @@ const targetTileFor = (session: RasterGameSession, attackerId: number): { x: num
       return { x: map.x(ref), y: map.y(ref) };
     }
   }
-  throw new Error("no attackable tile");
+  // Total conquest (possible on this tiny map) — nothing left to attack.
+  return null;
 };
 
 /** Subscribe a lockstep human and capture the relay-turn stream. */
@@ -138,8 +143,11 @@ test("a replica fed the referee's turns reproduces a bot-field match exactly", (
     // Sporadic human intents, including ones the session must reject — the
     // replica has to walk the identical accept/reject path.
     if (i % 60 === 10) {
+      // Small commits: the point is a steady command stream, not conquest — a
+      // human steamrolling this tiny map would end the match (80% win) before
+      // the 400-turn stream the replay assertions need.
       const target = targetTileFor(referee, 1);
-      referee.queueExpand("net-client", { targetX: target.x, targetY: target.y, percent: 25 });
+      if (target) referee.queueExpand("net-client", { targetX: target.x, targetY: target.y, percent: 5 });
     }
     if (i === 75) referee.proposeAlliance("net-client", 2);
     if (i === 90) referee.queueBuild("net-client", { targetX: spawn.x, targetY: spawn.y, building: "city" });

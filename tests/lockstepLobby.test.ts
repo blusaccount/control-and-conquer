@@ -172,7 +172,9 @@ test("a dropped member resumes by token: setup + backlog fast-forward to the liv
   const registry = new MatchRegistry();
   const host = makeClient();
   const guest = makeClient();
-  const code = registry.createLobby("h", host.send, "test-map", "Test Map", {}, "medium", 2, "Alice");
+  // No AI seats: this test is about resume plumbing, and an AI field on this
+  // tiny map can win (and freeze the match) inside the pre-resume tick window.
+  const code = registry.createLobby("h", host.send, "test-map", "Test Map", {}, "medium", 0, "Alice");
   registry.joinLobby("g", guest.send, code, "Bob");
   registry.startLobby("h");
   const hostSetup = host.setup();

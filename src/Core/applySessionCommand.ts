@@ -47,6 +47,9 @@ export const applySessionCommand = (
     case "CLIENT_RASTER_RETREAT":
       session.retreat(clientId, message.payload.targetId);
       break;
+    case "CLIENT_RASTER_DELETE":
+      session.deleteBuilding(clientId, message.payload.targetX, message.payload.targetY);
+      break;
     case "CLIENT_RASTER_DONATE":
       session.donate(clientId, message.payload.targetId, message.payload.resource, message.payload.percent);
       break;

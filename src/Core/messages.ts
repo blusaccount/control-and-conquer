@@ -295,6 +295,22 @@ export type RasterRetreatClientMessage = {
 };
 
 /**
+ * Client → server: tear down your own finished structure on the tile at
+ * (`targetX`, `targetY`) — OpenFront's unit deletion. Its main user is the
+ * Tribe AI, which razes structures it *captured* (a passive map-filler wants
+ * no economy), but it is a general command any owner may issue.
+ */
+export interface RasterDeletePayload {
+  targetX: number;
+  targetY: number;
+}
+
+export type RasterDeleteClientMessage = {
+  type: "CLIENT_RASTER_DELETE";
+  payload: RasterDeletePayload;
+};
+
+/**
  * Client → server: donate a slice of your own resource to an ally — troops or
  * gold, `percent` (1..100) of your current pool. OpenFront's ally donation;
  * only ever between standing allies.

@@ -59,4 +59,25 @@ export class Prng {
   roll(p: number): boolean {
     return this.next() < p;
   }
+
+  /** True with probability `1/odds` — OpenFront's `PseudoRandom.chance` semantics. */
+  chance(odds: number): boolean {
+    return this.nextInt(0, odds) === 0;
+  }
+
+  /** A uniformly random element of `arr` (undefined when empty). */
+  pick<T>(arr: readonly T[]): T | undefined {
+    if (arr.length === 0) return undefined;
+    return arr[this.nextInt(0, arr.length)];
+  }
+
+  /** A shuffled copy of `arr` (Fisher–Yates over this stream). */
+  shuffled<T>(arr: readonly T[]): T[] {
+    const out = [...arr];
+    for (let i = out.length - 1; i > 0; i -= 1) {
+      const j = this.nextInt(0, i + 1);
+      [out[i], out[j]] = [out[j], out[i]];
+    }
+    return out;
+  }
 }
