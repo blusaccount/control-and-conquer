@@ -2006,10 +2006,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   /**
-   * Draw each trade ship as an owner-coloured dot ringed in gold, at its
+   * Draw each trade ship as an owner-coloured hull cased in gold, at its
    * fractional position along the sea lane between two ports. A completed trip
    * pays both ports gold, so a busy sea lane is the visible payoff of a port
-   * network — distinguished from trains by the gold ring.
+   * network — distinguished from trains by the gold casing.
    */
   const drawTradeShips = (ctx: CanvasRenderingContext2D, scale: number): void => {
     if (runtime.tradeShips.length === 0 || scale < 2) return;
@@ -2024,28 +2024,27 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     for (const ship of runtime.tradeShips) {
       const p = worldToScreen(ship.x + 0.5, ship.y + 0.5);
       if (p.x < -radius || p.y < -radius || p.x > cw + radius || p.y > ch + radius) continue;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, radius + 1.4, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(234, 179, 8, 0.85)"; // gold halo marks a trade run
-      ctx.fill();
+      // Gold casing marks a trade run, replacing the old gold halo disc.
       ctx.fillStyle = rgbaToCss(colorOf(ship.playerId));
-      drawIcon(ctx, "ship", p.x, p.y, radius);
+      drawIcon(ctx, "ship", p.x, p.y, radius, {
+        color: "rgba(234, 179, 8, 0.9)",
+        width: Math.max(1.2, radius * 0.22),
+      });
     }
     ctx.restore();
   };
 
   /**
-   * Draw each structure as an OpenFront-style marker: a filled **disc in the
-   * owner's colour** (darkened) with a brighter owner-colour ring, and the
-   * building icon laid on top. Anchoring the icon on a player-coloured base —
-   * rather than floating a bare emoji over the terrain — makes structures read
-   * as *owned* and legible against any ground, at a deliberately generous size.
+   * Draw each structure as a bare icon silhouette, OpenFront-style: a white
+   * glyph with a dark casing outline sitting directly on the terrain — no
+   * badge disc or shaped token behind it. Ownership reads from the territory
+   * colour underneath (which is what the structure stands on anyway), and the
+   * casing keeps the glyph legible against any ground colour.
    *
-   * Zoom LOD keeps a crowded map tidy: below a readable size the marker drops
-   * its 3-D treatment (shadow, gradient, badge) and becomes a compact flat
-   * token — but it keeps the per-type silhouette and white glyph at a firm
-   * minimum screen size, so even at full-map zoom you can still tell *what*
-   * stands *where* (OpenFront keeps structure icons readable at every zoom).
+   * Zoom LOD: zoomed out the icon simply clamps to a firm minimum screen size
+   * (and drops its cast shadow), so even at full-map view you can still tell
+   * *what* stands *where* — OpenFront keeps structure icons readable at every
+   * zoom.
    */
   const drawBuildings = (ctx: CanvasRenderingContext2D, scale: number): void => {
     if (runtime.buildings.length === 0) return;
@@ -2058,131 +2057,50 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     // below scale 2 — which is the *fit* zoom for the default Large/Huge maps,
     // so at full-map view no structures showed at all.
     const dpr = Math.max(1, window.devicePixelRatio || 1);
-    // Below this zoom the full 3-D token treatment is too big/cluttered, so we
-    // draw compact flat markers — still shaped + glyphed per type, with a firm
-    // minimum screen size so they always read.
+    // Below this zoom the icon rides its firm minimum size and skips the cast
+    // shadow (too small to read as depth, it just muddies the glyph).
     const compactMode = scale < 6;
     const radius = compactMode
       ? Math.max(6.5 * dpr, Math.min(scale * 1.1, 9 * dpr))
       : Math.max(12, Math.min(scale * 0.72, 30));
-    // Monochrome glyphs read clearly even when large, so the icon fills most of
-    // the disc (OpenFront's white-on-colour markers).
-    const iconPx = radius * 1.5;
-
-    type Rgb = { r: number; g: number; b: number };
-    const lighten = (c: Rgb, t: number): string =>
-      rgbaToCss({ r: c.r + (255 - c.r) * t, g: c.g + (255 - c.g) * t, b: c.b + (255 - c.b) * t });
-    const darken = (c: Rgb, t: number): string =>
-      rgbaToCss({ r: c.r * (1 - t), g: c.g * (1 - t), b: c.b * (1 - t) });
-    // Distinct silhouette per structure type (like OpenFront's per-type shapes),
-    // so a glance at the outline already tells city from port from fort. `sides`
-    // 0 means a circle; `rot` orients the polygon.
-    const SHAPE: Record<string, { sides: number; rot: number }> = {
-      city: { sides: 0, rot: 0 },
-      port: { sides: 5, rot: -Math.PI / 2 },
-      factory: { sides: 6, rot: -Math.PI / 2 },
-      fort: { sides: 8, rot: Math.PI / 8 },
-      warship: { sides: 4, rot: 0 },
-      silo: { sides: 3, rot: -Math.PI / 2 },
-    };
-    const tracePath = (cx: number, cy: number, r: number, type: string): void => {
-      const shape = SHAPE[type] ?? { sides: 0, rot: 0 };
-      ctx.beginPath();
-      if (shape.sides === 0) {
-        ctx.arc(cx, cy, r, 0, Math.PI * 2);
-        return;
-      }
-      for (let i = 0; i < shape.sides; i += 1) {
-        const a = shape.rot + (i * 2 * Math.PI) / shape.sides;
-        const x = cx + r * Math.cos(a);
-        const y = cy + r * Math.sin(a);
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.closePath();
-    };
 
     ctx.save();
     for (const b of runtime.buildings) {
       const { x: sx, y: sy } = worldToScreen(b.x + 0.5, b.y + 0.5);
       if (sx < -radius * 2 || sy < -radius * 2 || sx > cw + radius * 2 || sy > ch + radius * 2) continue;
-      const col = colorOf(b.playerId);
+
+      // Cities (the anchor of an empire) draw slightly larger than the rest.
+      const r = b.type === "city" ? radius * 1.12 : radius;
+      const casing = Math.max(1.2 * dpr, r * 0.18);
+
+      // A structure still going up is drawn dimmed, with a progress bar below.
+      if (b.underConstruction) ctx.globalAlpha = 0.55;
+
+      if (!compactMode) {
+        // Soft cast shadow under the glyph so it sits ON the land rather than
+        // floating flat on top of it.
+        ctx.beginPath();
+        ctx.ellipse(sx, sy + r * 0.72, r * 0.8, r * 0.3, 0, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(0, 0, 0, 0.25)";
+        ctx.fill();
+      }
+
+      // The building icon itself: a white vector silhouette with a dark
+      // casing, drawn bare on the terrain (no badge disc behind it).
+      ctx.fillStyle = "rgba(255, 255, 255, 0.97)";
+      drawIcon(ctx, b.type, sx, sy, r * 0.92, { color: "rgba(15, 17, 23, 0.82)", width: casing });
 
       if (compactMode) {
-        // Zoomed out: a compact flat token — dark halo, owner-coloured per-type
-        // silhouette, white glyph. No gradient/shadow/badge at this size, but
-        // the *kind* of structure stays identifiable from the whole-map view.
-        // Cities (the anchor of an empire) get a slightly fatter token.
-        const r = b.type === "city" ? radius * 1.15 : radius;
-        if (b.underConstruction) ctx.globalAlpha = 0.55;
-        ctx.beginPath();
-        ctx.arc(sx, sy, r + dpr, 0, Math.PI * 2);
-        ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
-        ctx.fill();
-        tracePath(sx, sy, r, b.type);
-        ctx.fillStyle = rgbaToCss(col);
-        ctx.fill();
-        ctx.lineWidth = Math.max(1, r * 0.14);
-        ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
-        ctx.stroke();
-        ctx.fillStyle = "rgba(255, 255, 255, 0.97)";
-        drawIcon(ctx, b.type, sx, sy, r * 0.72);
         ctx.globalAlpha = 1;
         continue;
       }
 
-      // A structure still going up is drawn dimmed, with a progress bar below.
-      if (b.underConstruction) ctx.globalAlpha = 0.5;
-
-      // 1. Cast shadow — a soft ellipse below the marker so it sits ON the land
-      //    and casts a shadow, instead of floating flat on top of it.
-      ctx.beginPath();
-      ctx.ellipse(sx, sy + radius * 0.6, radius * 0.95, radius * 0.42, 0, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(0, 0, 0, 0.30)";
-      ctx.fill();
-
-      // 2. Shaped base, filled with a radial gradient (light top-left → dark
-      //    bottom-right) so the token reads as a raised dome, not a flat disc.
-      const grad = ctx.createRadialGradient(
-        sx - radius * 0.38, sy - radius * 0.42, radius * 0.1,
-        sx, sy, radius * 1.08,
-      );
-      grad.addColorStop(0, lighten(col, 0.5));
-      grad.addColorStop(0.55, rgbaToCss(col));
-      grad.addColorStop(1, darken(col, 0.5));
-      tracePath(sx, sy, radius, b.type);
-      ctx.fillStyle = grad;
-      ctx.fill();
-      // Crisp dark outline around the silhouette.
-      ctx.lineWidth = Math.max(1.2, radius * 0.11);
-      ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
-      ctx.stroke();
-
-      // 3. Rim highlight along the top edge — the glint that sells the volume.
-      ctx.beginPath();
-      ctx.arc(sx, sy, radius * 0.82, Math.PI * 1.12, Math.PI * 1.92);
-      ctx.lineWidth = Math.max(1, radius * 0.13);
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.55)";
-      ctx.stroke();
-
-      // 4. A faint dark well behind the glyph so the icon reads cleanly on top.
-      ctx.beginPath();
-      ctx.arc(sx, sy, radius * 0.6, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(0, 0, 0, 0.18)";
-      ctx.fill();
-
-      // 5. The building icon: a crisp **white** vector silhouette (custom-drawn,
-      //    not a system emoji font) so it reads cleanly and identically across
-      //    every platform, on top of any owner colour.
-      ctx.fillStyle = "rgba(255, 255, 255, 0.97)";
-      drawIcon(ctx, b.type, sx, sy, iconPx * 0.5);
-
-      // 5b. Level badge on an upgraded structure (OpenFront's level digits): a
-      //     small dark disc with the level, bottom-right of the token.
+      // Level badge on an upgraded structure (OpenFront's level digits): a
+      // small dark chip with the level, bottom-right of the icon.
       if (b.level > 1) {
-        const br = Math.max(5, radius * 0.42);
-        const bcx = sx + radius * 0.78;
-        const bcy = sy + radius * 0.78;
+        const br = Math.max(5, r * 0.42);
+        const bcx = sx + r * 0.78;
+        const bcy = sy + r * 0.78;
         ctx.beginPath();
         ctx.arc(bcx, bcy, br, 0, Math.PI * 2);
         ctx.fillStyle = "rgba(15, 17, 23, 0.92)";
@@ -2200,10 +2118,10 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
       // 6. Build-progress bar under a structure still under construction.
       if (b.underConstruction) {
         ctx.globalAlpha = 1;
-        const bw = radius * 1.8;
-        const bh = Math.max(2.5, radius * 0.22);
+        const bw = r * 1.8;
+        const bh = Math.max(2.5, r * 0.22);
         const bx = sx - bw / 2;
-        const by = sy + radius + bh * 1.4;
+        const by = sy + r + bh * 1.4;
         ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
         ctx.fillRect(bx - 1, by - 1, bw + 2, bh + 2);
         ctx.fillStyle = "rgba(70, 72, 82, 0.95)";
@@ -2460,7 +2378,11 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
     ctx.strokeRect(sx, sy, size, size);
     if (scale >= 10) {
       ctx.fillStyle = isUpgrade ? "#facc15" : valid ? "#4ade80" : "#f87171";
-      drawIcon(ctx, type, sx + size / 2, sy + size / 2, Math.min(scale * 0.3, 11));
+      const ghostR = Math.min(scale * 0.3, 11);
+      drawIcon(ctx, type, sx + size / 2, sy + size / 2, ghostR, {
+        color: "rgba(15, 17, 23, 0.7)",
+        width: Math.max(1, ghostR * 0.16),
+      });
       if (isUpgrade) {
         // Spell out what the click does: raise this structure to the next level.
         ctx.font = `600 ${Math.max(9, Math.min(scale * 0.35, 13))}px system-ui, sans-serif`;
@@ -2566,8 +2488,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
   };
 
   // Ease each ship's drawn position toward its latest server position, then
-  // draw it as a haloed hull icon with a troop-count label (OpenFront labels
-  // its boats) and its remaining course line ahead of the bow. A firm
+  // draw it as an outlined hull icon with a troop-count label (OpenFront
+  // labels its boats) and its remaining course line ahead of the bow. A firm
   // DPR-aware minimum size keeps every transport identifiable even at
   // full-map zoom instead of shrinking into an unreadable speck.
   const drawShips = (ctx: CanvasRenderingContext2D, scale: number): void => {
@@ -2581,14 +2503,13 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
 
       ctx.save();
       drawCourseLine(ctx, ship.color, p, ship.route, dpr);
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, radius + Math.max(1.5, radius * 0.2), 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
-      ctx.fill();
-      // The ship has no owner-coloured badge behind it (unlike buildings), so
-      // the icon itself is tinted directly to the owner's colour.
+      // Owner-coloured hull with a white casing — the casing (not a halo
+      // disc) is what keeps the silhouette readable against dark water.
       ctx.fillStyle = ship.color;
-      drawIcon(ctx, "ship", p.x, p.y, radius);
+      drawIcon(ctx, "ship", p.x, p.y, radius, {
+        color: "rgba(255, 255, 255, 0.9)",
+        width: Math.max(1.5, radius * 0.22),
+      });
       drawUnitLabel(ctx, formatTroops(ship.troops), p.x, p.y + radius, dpr);
       ctx.restore();
     }
@@ -2598,8 +2519,8 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
    * Ease and draw every mobile warship: the hull icon (owner-tinted, like a
    * transport ship, with a firm minimum screen size so the fleet stays
    * identifiable at full-map zoom), a health bar above it once damaged
-   * (OpenFront: "only warships have health bars"), and a cyan halo instead of
-   * white while retreating home to heal — a distinct "fleeing" cue from its
+   * (OpenFront: "only warships have health bars"), and a cyan casing instead
+   * of white while retreating home to heal — a distinct "fleeing" cue from its
    * normal/engaging look. Each hull also shows its current course as a dashed
    * line to its steering objective (chase, retreat haven, or patrol waypoint),
    * and your own warships mark their assigned patrol sector with a faint ring,
@@ -2635,12 +2556,13 @@ export const startRasterClient = (ui: UiElements, options: RasterClientOptions):
         ctx.setLineDash([]);
         ctx.globalAlpha = 1;
       }
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, radius + Math.max(1.5, radius * 0.2), 0, Math.PI * 2);
-      ctx.fillStyle = w.retreating ? "rgba(56, 189, 248, 0.9)" : "rgba(255, 255, 255, 0.85)";
-      ctx.fill();
+      // Owner-coloured hull; the casing flips to cyan while retreating home
+      // to heal — the same "fleeing" cue the old halo disc carried.
       ctx.fillStyle = w.color;
-      drawIcon(ctx, "warship", p.x, p.y, radius);
+      drawIcon(ctx, "warship", p.x, p.y, radius, {
+        color: w.retreating ? "rgba(56, 189, 248, 0.95)" : "rgba(255, 255, 255, 0.9)",
+        width: Math.max(1.5, radius * 0.22),
+      });
 
       if (w.hp < w.maxHp) {
         const barW = Math.max(14, radius * 2.2);

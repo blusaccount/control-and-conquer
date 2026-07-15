@@ -330,17 +330,48 @@ const applyToCtx = (ctx: CanvasRenderingContext2D, segs: Seg[]): void => {
   }
 };
 
+/** Casing stroke drawn behind an icon's fill; `width` is in device px. */
+export interface IconOutline {
+  color: string;
+  width: number;
+}
+
 /**
  * Paint icon `key` centred at `(cx, cy)` with half-size `size` (device px),
- * using the caller's current `ctx.fillStyle`. Call with white for the
- * OpenFront-style badge-marker look, or a player colour directly (e.g. for
- * ships, which have no coloured badge behind them).
+ * using the caller's current `ctx.fillStyle`.
+ *
+ * With `outline` set, every path is stroked *before* any fill happens (SVG
+ * `paint-order: stroke fill`), so the stroke survives only where it pokes
+ * outside the filled silhouette — a uniform casing around the outer edge (and
+ * inside punched holes), never lines cutting across the body. This is what
+ * lets icons sit bare on the terrain, OpenFront-style, with no badge disc
+ * behind them: the casing alone provides the contrast against any ground.
  */
-export function drawIcon(ctx: CanvasRenderingContext2D, key: IconKey, cx: number, cy: number, size: number): void {
+export function drawIcon(
+  ctx: CanvasRenderingContext2D,
+  key: IconKey,
+  cx: number,
+  cy: number,
+  size: number,
+  outline?: IconOutline,
+): void {
   ctx.save();
   ctx.translate(cx, cy);
   ctx.scale(size, size);
-  for (const g of iconGroups(key)) {
+  const groups = iconGroups(key);
+  if (outline) {
+    // Divide out the scale so the casing keeps a constant screen width.
+    ctx.lineWidth = outline.width / size;
+    ctx.strokeStyle = outline.color;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    for (const g of groups) {
+      ctx.beginPath();
+      applyToCtx(ctx, g.segs);
+      ctx.stroke();
+    }
+  }
+  for (const g of groups) {
     ctx.beginPath();
     applyToCtx(ctx, g.segs);
     ctx.fill(g.rule);
